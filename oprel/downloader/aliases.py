@@ -279,6 +279,13 @@ def get_model_category(alias: str) -> Optional[str]:
     for category, models in OFFICIAL_REPOS.items():
         if alias in models:
             return category
+
+    # Allow repo_id lookups too, so cached model scans can classify
+    # models like "HamSFL/Ideation" even when they are not stored by alias.
+    for category, models in OFFICIAL_REPOS.items():
+        if alias in models.values():
+            return category
+
     return None
 
 

@@ -58,6 +58,7 @@ class ModelInfo(BaseModel):
     backend: str = "llama.cpp"
     loaded: bool = False
     status: str = "cached"
+    category: str | None = None
 
 
 class RenameConversationRequest(BaseModel):

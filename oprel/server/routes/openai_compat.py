@@ -326,7 +326,7 @@ async def v1_list_models():
         "text-to-image": ["image", "text-to-image"],
     }
 
-    skip_categories = ["embeddings", "text-to-video"]
+    skip_categories = ["embeddings", "text-to-video", "text-to-image"]
 
     alias_to_repo: dict[str, str] = {}
     repo_to_alias: dict[str, str] = {}

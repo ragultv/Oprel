@@ -4,7 +4,7 @@ from typing import Any
 
 from oprel.server.domain.models import ModelInfoData
 from oprel.server.domain.state import get_state
-from oprel.server.services.context import CONFIG, logger, track_backend_pid
+from oprel.server.services.context import CONFIG, logger, synchronized_backend_operation, track_backend_pid
 from oprel.server.services.model_state import force_unload_model, mark_model_used, scan_cached_models
 
 
@@ -93,6 +93,7 @@ def get_local_quantizations(model_id: str) -> dict[str, Any]:
         raise
 
 
+@synchronized_backend_operation
 def load_model(
     model_id: str,
     quantization: str | None = None,
@@ -247,6 +248,7 @@ def load_model(
         raise
 
 
+@synchronized_backend_operation
 def unload_model(model_id: str) -> dict[str, Any]:
     state = get_state()
     from oprel.downloader.aliases import resolve_model_id
@@ -268,6 +270,7 @@ def unload_model(model_id: str) -> dict[str, Any]:
         raise
 
 
+@synchronized_backend_operation
 def delete_model_quant(model_id: str, quantization: str) -> dict[str, Any]:
     from oprel.downloader.aliases import resolve_model_id
     from oprel.downloader.metadata import get_repo_id_from_filename, infer_repo_id_from_cache

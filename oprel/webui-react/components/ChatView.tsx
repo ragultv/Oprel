@@ -594,23 +594,31 @@ export function ChatView({
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   const activeConv = useMemo(() => conversations.find((c) => c.id === activeConversationId), [conversations, activeConversationId]);
+  const chatLocalModels = useMemo(
+    () => localModels.filter((m) => m.category !== 'text-to-image'),
+    [localModels]
+  );
+  const chatModels = useMemo(
+    () => models.filter((m) => m.category !== 'text-to-image'),
+    [models]
+  );
   // Prefer localModels (which have alias·quant names) for the active model display.
   // localModels IDs are "repo_id::QUANT", so match by activeModelId first, then by loaded status.
   const activeModel = useMemo(() => {
     if (!activeModelId) return undefined;
     // Exact match by composite ID in localModels
-    const exactLocal = localModels.find(m => m.id === activeModelId)
+    const exactLocal = chatLocalModels.find(m => m.id === activeModelId)
     if (exactLocal) return exactLocal
     // Exact match in registry/external models
-    const exactGlobal = models.find((m) => m.id === activeModelId)
+    const exactGlobal = chatModels.find((m) => m.id === activeModelId)
     if (exactGlobal) return exactGlobal
 
     // Fallback to loaded model from localModels
-    const loadedLocal = localModels.find(m => m.status === 'loaded')
+    const loadedLocal = chatLocalModels.find(m => m.status === 'loaded')
     if (loadedLocal) return loadedLocal
     // Fall back to any loaded model
-    return models.find(m => m.status === 'loaded')
-  }, [localModels, models, activeModelId]);
+    return chatModels.find(m => m.status === 'loaded')
+  }, [chatLocalModels, chatModels, activeModelId]);
   // Use a ref so sendMessage always has latest conversation without being in deps
   const activeConvRef = useRef(activeConv);
   useEffect(() => { activeConvRef.current = activeConv; }, [activeConv]);
@@ -619,7 +627,7 @@ export function ChatView({
   // (Sidebar history click, dropdown selection), force-unload any running local models to save VRAM 
   useEffect(() => {
     if (activeModel?.category === 'external') {
-      const loadedLocal = localModels.find(lm => lm.status === 'loaded');
+      const loadedLocal = chatLocalModels.find(lm => lm.status === 'loaded');
       if (loadedLocal) {
         const repoToUnload = loadedLocal.modelRepoId || (loadedLocal.id.includes('::') ? loadedLocal.id.split('::')[0] : loadedLocal.id);
         API.unloadModel(repoToUnload)
@@ -627,7 +635,7 @@ export function ChatView({
           .catch(err => console.error("Auto-unload failed:", err));
       }
     }
-  }, [activeModel?.category, localModels, refreshModels]);
+  }, [activeModel?.category, chatLocalModels, refreshModels]);
 
   // Load conversation history - only trigger when activeConversationId changes
   const loadedConvIdRef = useRef<string | null>(null);
@@ -1020,57 +1028,59 @@ export function ChatView({
                   Local Inference
                 </div>
                 <div className="max-h-[30vh] overflow-y-auto">
-                  {localModels.length > 0 ? localModels.map((m) => {
-                    const repoId = m.modelRepoId || (m.id.includes('::') ? m.id.split('::')[0] : m.id)
-                    const quant = m.quantization
-                    const isActive = m.id === activeModelId
-                    return (
-                      <button
-                        key={m.id}
-                        onClick={async () => {
-                          setModelDropdown(false)
-                          if (!isActive) {
-                            setIsModelLoading(true)
-                            try {
-                              setActiveModelId(m.id)
-                              await API.loadModel(repoId, { quantization: quant })
-                              await refreshModels()
-                            } catch (err) {
-                              console.error("Failed to switch model:", err)
-                            } finally {
-                              setIsModelLoading(false)
+                  {chatLocalModels.length > 0 ? (
+                    chatLocalModels.map((m) => {
+                      const repoId = m.modelRepoId || (m.id.includes('::') ? m.id.split('::')[0] : m.id)
+                      const quant = m.quantization
+                      const isActive = m.id === activeModelId
+                      return (
+                        <button
+                          key={m.id}
+                          onClick={async () => {
+                            setModelDropdown(false)
+                            if (!isActive) {
+                              setIsModelLoading(true)
+                              try {
+                                setActiveModelId(m.id)
+                                await API.loadModel(repoId, { quantization: quant })
+                                await refreshModels()
+                              } catch (err) {
+                                console.error("Failed to switch model:", err)
+                              } finally {
+                                setIsModelLoading(false)
+                              }
                             }
-                          }
-                        }}
-                        className={cn(
-                          "w-full text-left px-3 py-2 rounded-lg text-xs transition-all flex items-center justify-between gap-2 my-0.5",
-                          isActive
-                            ? "bg-primary/10 text-primary font-bold"
-                            : "text-muted-foreground hover:bg-secondary hover:text-foreground"
-                        )}
-                      >
-                        <div className="min-w-0">
-                          <div className="font-semibold truncate">{m.name}</div>
-                          <div className="text-[10px] opacity-60">{m.size}</div>
-                        </div>
-                        {m.status === "loaded" && (
-                          <span className="text-[9px] px-1.5 py-0.5 rounded-md bg-green-500/10 text-green-500 font-bold shrink-0">LOADED</span>
-                        )}
-                      </button>
-                    )
-                  }) : (
+                          }}
+                          className={cn(
+                            "w-full text-left px-3 py-2 rounded-lg text-xs transition-all flex items-center justify-between gap-2 my-0.5",
+                            isActive
+                              ? "bg-primary/10 text-primary font-bold"
+                              : "text-muted-foreground hover:bg-secondary hover:text-foreground"
+                          )}
+                        >
+                          <div className="min-w-0">
+                            <div className="font-semibold truncate">{m.name}</div>
+                            <div className="text-[10px] opacity-60">{m.size}</div>
+                          </div>
+                          {m.status === "loaded" && (
+                            <span className="text-[9px] px-1.5 py-0.5 rounded-md bg-green-500/10 text-green-500 font-bold shrink-0">LOADED</span>
+                          )}
+                        </button>
+                      )
+                    })
+                  ) : (
                     <div className="px-3 py-4 text-center opacity-50 italic text-[10px]">No local models</div>
                   )}
                 </div>
 
                 {/* External Provider Models Section */}
-                {models.some(m => m.category === 'external') && (
+                {chatModels.some(m => m.category === 'external') && (
                   <>
                     <div className="px-2 py-1.5 text-[10px] font-bold text-muted-foreground uppercase tracking-wider bg-secondary/30 border-t border-border/50">
                       External Providers
                     </div>
                     <div className="max-h-[30vh] overflow-y-auto pt-1">
-                      {models
+                      {chatModels
                         .filter(m => m.category === 'external')
                         .map((m) => {
                           const isActive = m.id === activeModelId

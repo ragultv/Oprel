@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import time
 from pathlib import Path
 
+from oprel.client_api import generate_image as client_generate_image
 from oprel.core.config import Config
 from oprel.runtime.binaries.installer import ensure_binary
-from oprel.runtime.image_generation import ImageGenerationParams, generate_image_file
 from oprel.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -18,23 +19,30 @@ def cmd_gen_image(args: argparse.Namespace) -> int:
     """Generate an image using stable-diffusion.cpp."""
     try:
         output_path = Path(args.output).expanduser().resolve() if args.output else None
-        params = ImageGenerationParams(
-            model=args.model,
-            prompt=args.prompt,
+        print(f"Generating with stable-diffusion.cpp GGUF model: {args.model}")
+        print(f"Prompt: {args.prompt}")
+        start = time.time()
+        response = client_generate_image(
+            args.model,
+            args.prompt,
+            size=f"{args.width}x{args.height}",
             negative_prompt=args.negative or "",
-            width=args.width,
-            height=args.height,
             steps=args.steps,
             cfg_scale=args.guidance or 7.0,
             seed=getattr(args, "seed", -1),
             sampler=getattr(args, "sampler", None),
-            output_path=output_path,
         )
 
-        print(f"Generating with stable-diffusion.cpp GGUF model: {args.model}")
-        print(f"Prompt: {args.prompt}")
-        start = time.time()
-        generated_path = generate_image_file(params)
+        image_entry = response.data[0] if response.data else {}
+        image_payload = image_entry.get("b64_json") or image_entry.get("url") or ""
+        if image_payload.startswith("data:image"):
+            image_payload = image_payload.split(",", 1)[1]
+
+        if output_path is None:
+            output_path = Path.cwd() / f"oprel_{int(time.time())}.png"
+
+        output_path.write_bytes(base64.b64decode(image_payload))
+        generated_path = output_path
         elapsed = time.time() - start
 
         print(f"Saved to: {generated_path}")
