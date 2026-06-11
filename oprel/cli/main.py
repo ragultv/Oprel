@@ -10,7 +10,6 @@ from pathlib import Path
 # Important: Imports are deferred inside commands where possible to speed up startup
 from oprel import __version__
 from oprel.utils.logging import set_log_level, get_logger
-from oprel.desktop.launcher import launch_desktop_app, prepare_runtime
 
 # Import decoupled command modules
 from .text import cmd_chat, cmd_generate, cmd_run
@@ -343,7 +342,6 @@ def cmd_serve(args: argparse.Namespace) -> int:
         
         port = args.port
         host = args.host
-        prepare_runtime(port)
         
         print(f"Starting Oprel daemon server...")
         print(f"  Host: {host}")
@@ -367,9 +365,25 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
 def cmd_start(args: argparse.Namespace) -> int:
     """Start the server and open the Web UI"""
+    import webbrowser
+    import threading
+    import time
+    
     port = getattr(args, 'port', 11435)
     host = getattr(args, 'host', '127.0.0.1')
-    return launch_desktop_app(host=host, port=port)
+    
+    # Function to open browser after a delay
+    def open_browser():
+        time.sleep(2)  # Wait for server to start
+        url = f"http://{host}:{port}/gui/"
+        print(f"Opening Oprel Studio at {url}...")
+        webbrowser.open(url)
+        
+    # Start browser thread
+    threading.Thread(target=open_browser, daemon=True).start()
+    
+    # Start server (this blocks)
+    return cmd_serve(args)
 
 
 
