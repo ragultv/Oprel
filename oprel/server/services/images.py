@@ -12,8 +12,10 @@ from pathlib import Path
 from typing import Any, AsyncIterator
 
 from oprel.core.config import Config
+from oprel.server.domain.state import get_state
 from oprel.runtime.image_generation import ImageGenerationParams, generate_image_file, generate_image_file_with_progress
-from oprel.server.services.context import CONFIG, logger
+from oprel.server.services.context import CONFIG, logger, synchronized_backend_operation
+from oprel.server.services.model_state import force_unload_model
 from oprel.downloader.image_hub import resolve_image_model_assets
 
 
@@ -256,6 +258,53 @@ def _prepare_image_model(model: str) -> str:
     return prepared_model
 
 
+def _ensure_exclusive_backend() -> None:
+    state = get_state()
+    for model_id, model in list(state.models.items()):
+        logger.info("Unloading active model before image generation: %s", model_id)
+        force_unload_model(model_id, model)
+        state.models.pop(model_id, None)
+        state.model_configs.pop(model_id, None)
+        state.model_last_used.pop(model_id, None)
+
+
+@synchronized_backend_operation
+def _run_image_generation_job(
+    job_id: str,
+    params: ImageGenerationParams,
+    prompt: str,
+    response_format: str | None,
+) -> None:
+    _ensure_exclusive_backend()
+    _update_job(job_id, status="running", progress=1.0, message="Starting backend")
+
+    def on_progress(progress: float, message: str) -> None:
+        _update_job(job_id, progress=progress, message=message)
+
+    try:
+        output_path = generate_image_file_with_progress(
+            params,
+            progress_callback=on_progress,
+            config=Config(**CONFIG.model_dump()),
+        )
+        image_bytes = Path(output_path).read_bytes()
+        image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+
+        result = {
+            "created": int(time_module.time()),
+            "data": [
+                {
+                    **_format_image_data(image_b64, response_format),
+                    "revised_prompt": prompt,
+                }
+            ],
+        }
+
+        _update_job(job_id, status="completed", progress=100.0, message="Completed", result=result)
+    except Exception as exc:
+        _update_job(job_id, status="error", error=str(exc), message="Failed")
+
+
 def _release_image_model(prepared_model: str) -> None:
     with _prepared_image_models_lock:
         original_model = _prepared_image_models.pop(prepared_model, None)
@@ -264,6 +313,7 @@ def _release_image_model(prepared_model: str) -> None:
         logger.info("Released image model after generation: %s", prepared_model)
 
 
+@synchronized_backend_operation
 def start_image_generation(
     prompt: str,
     model: str | None,
@@ -279,6 +329,7 @@ def start_image_generation(
     if not model:
         raise ValueError("Image generation requires a GGUF model path or GGUF repo ID.")
 
+    _ensure_exclusive_backend()
     prepared_model = _prepare_image_model(model)
 
     params = ImageGenerationParams(
@@ -297,32 +348,7 @@ def start_image_generation(
 
     def run_job() -> None:
         try:
-            _update_job(job.id, status="running", progress=1.0, message="Starting backend")
-
-            def on_progress(progress: float, message: str) -> None:
-                _update_job(job.id, progress=progress, message=message)
-
-            output_path = generate_image_file_with_progress(
-                params,
-                progress_callback=on_progress,
-                config=Config(**CONFIG.model_dump()),
-            )
-            image_bytes = Path(output_path).read_bytes()
-            image_b64 = base64.b64encode(image_bytes).decode("utf-8")
-
-            result = {
-                "created": int(time_module.time()),
-                "data": [
-                    {
-                        **_format_image_data(image_b64, response_format),
-                        "revised_prompt": prompt,
-                    }
-                ],
-            }
-
-            _update_job(job.id, status="completed", progress=100.0, message="Completed", result=result)
-        except Exception as exc:
-            _update_job(job.id, status="error", error=str(exc), message="Failed")
+            _run_image_generation_job(job.id, params, prompt, response_format)
         finally:
             _release_image_model(prepared_model)
 
@@ -354,6 +380,7 @@ async def stream_image_generation_progress(job_id: str) -> AsyncIterator[str]:
         yield f"data: {json.dumps({'error': str(exc)})}\n\n"
 
 
+@synchronized_backend_operation
 async def generate_image(
     prompt: str,
     model: str | None,
@@ -369,6 +396,7 @@ async def generate_image(
     if not model:
         raise ValueError("Image generation requires a GGUF model path or GGUF repo ID.")
 
+    _ensure_exclusive_backend()
     selected_model = _prepare_image_model(model)
 
     params = ImageGenerationParams(

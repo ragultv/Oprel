@@ -7,6 +7,7 @@ allowing easy migration and familiar syntax.
 
 import time
 import uuid
+import base64
 from typing import Dict, List, Any, Optional, Iterator, Union
 from pathlib import Path
 
@@ -15,6 +16,7 @@ import requests
 from oprel.core.model import Model
 from oprel.core.config import Config
 from oprel.downloader.cache import list_cached_models as _list_cached_models
+from oprel.runtime.image_generation import ImageGenerationParams, generate_image_file
 from oprel.api_models import (
     ChatResponse,
     GenerateResponse,
@@ -279,13 +281,41 @@ class Client:
         if sampler:
             payload["sampler"] = sampler
 
-        res = requests.post(
-            f"{self.host}/api/images/generate",
-            json=payload,
-            timeout=self.timeout,
+        if self._server_is_running():
+            res = requests.post(
+                f"{self.host}/api/images/generate",
+                json=payload,
+                timeout=self.timeout,
+            )
+            res.raise_for_status()
+            return ImageResponse(**res.json())
+
+        output_path = generate_image_file(
+            ImageGenerationParams(
+                model=model,
+                prompt=prompt,
+                negative_prompt=negative_prompt or "",
+                width=int(size.split("x", 1)[0]),
+                height=int(size.split("x", 1)[1]),
+                steps=steps or 20,
+                cfg_scale=cfg_scale if cfg_scale is not None else 7.0,
+                seed=seed if seed is not None else -1,
+                sampler=sampler,
+            ),
+            config=self._config,
         )
-        res.raise_for_status()
-        return ImageResponse(**res.json())
+
+        image_b64 = base64.b64encode(Path(output_path).read_bytes()).decode("utf-8")
+        data_key = "b64_json" if response_format == "b64_json" else "url"
+        image_data = {data_key: image_b64 if data_key == "b64_json" else f"data:image/png;base64,{image_b64}"}
+        return ImageResponse(created=int(time.time()), data=[{**image_data, "revised_prompt": prompt}])
+
+    def _server_is_running(self) -> bool:
+        try:
+            response = requests.get(f"{self.host}/health", timeout=2)
+            return response.status_code == 200
+        except requests.RequestException:
+            return False
     
     def _generate_stream(
         self,

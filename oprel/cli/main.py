@@ -10,6 +10,7 @@ from pathlib import Path
 # Important: Imports are deferred inside commands where possible to speed up startup
 from oprel import __version__
 from oprel.utils.logging import set_log_level, get_logger
+from oprel.desktop.launcher import launch_desktop_app, prepare_runtime
 
 # Import decoupled command modules
 from .text import cmd_chat, cmd_generate, cmd_run
@@ -338,62 +339,11 @@ def cmd_pull(args: argparse.Namespace) -> int:
 def cmd_serve(args: argparse.Namespace) -> int:
     """Start the oprel daemon server"""
     try:
-        import psutil
-        import time
         from oprel.server.daemon import run_server
         
         port = args.port
         host = args.host
-        
-        # Step 1: Stop any previous server on this port
-        try:
-            for conn in psutil.net_connections():
-                if conn.laddr.port == port and conn.status == 'LISTEN':
-                    pid = conn.pid
-                    if pid:
-                        try:
-                            process = psutil.Process(pid)
-                            process_name = process.name()
-                            print(f"Port {port} is already in use by process {pid} ({process_name})")
-                            print(f"Stopping previous server...")
-                            
-                            process.terminate()
-                            try:
-                                process.wait(timeout=5)
-                                print(f"Previous server stopped successfully")
-                            except psutil.TimeoutExpired:
-                                print(f"Process didn't stop, forcing...")
-                                process.kill()
-                                process.wait()
-                                print(f"Previous server killed")
-                            
-                            time.sleep(1)
-                            
-                        except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
-                            print(f"Warning: Could not stop process {pid}: {e}")
-                    break
-        except Exception as e:
-            logger.debug(f"Could not check for existing server: {e}")
-        
-        # Step 2: Kill ALL orphaned oprel-backend processes before starting
-        # This prevents accumulation from previous crashed/restarted daemon instances
-        try:
-            killed_backends = []
-            for proc in psutil.process_iter(['pid', 'name']):
-                try:
-                    proc_name = proc.info.get('name', '').lower()
-                    if 'oprel-backend' in proc_name:
-                        proc.kill()
-                        proc.wait(timeout=3)
-                        killed_backends.append((proc.info['pid'], proc.info['name']))
-                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.TimeoutExpired):
-                    continue
-            
-            if killed_backends:
-                print(f"Cleaned up {len(killed_backends)} orphaned backend process(es)")
-                time.sleep(0.5)
-        except Exception as e:
-            logger.debug(f"Error cleaning orphaned backends: {e}")
+        prepare_runtime(port)
         
         print(f"Starting Oprel daemon server...")
         print(f"  Host: {host}")
@@ -417,25 +367,9 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
 def cmd_start(args: argparse.Namespace) -> int:
     """Start the server and open the Web UI"""
-    import webbrowser
-    import threading
-    import time
-    
     port = getattr(args, 'port', 11435)
     host = getattr(args, 'host', '127.0.0.1')
-    
-    # Function to open browser after a delay
-    def open_browser():
-        time.sleep(2) # Wait for server to start
-        url = f"http://{host}:{port}/gui/"
-        print(f"Opening Oprel Studio at {url}...")
-        webbrowser.open(url)
-        
-    # Start browser thread
-    threading.Thread(target=open_browser, daemon=True).start()
-    
-    # Start server (this blocks)
-    return cmd_serve(args)
+    return launch_desktop_app(host=host, port=port)
 
 
 

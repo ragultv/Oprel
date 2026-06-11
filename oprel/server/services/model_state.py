@@ -164,9 +164,10 @@ def scan_cached_models() -> list[ModelInfoData]:
     ]
 
     for model_id, config in state.model_configs.items():
-        from oprel.downloader.aliases import get_model_category, get_best_alias_for_repo
+        from oprel.downloader.aliases import get_category_info, get_model_category, get_best_alias_for_repo
 
         cat = get_model_category(model_id)
+        backend = get_category_info(cat).get("backend", config.get("backend", "llama.cpp")) if cat else config.get("backend", "llama.cpp")
 
         model_id_lower = model_id.lower()
         is_unwanted = any(
@@ -192,9 +193,10 @@ def scan_cached_models() -> list[ModelInfoData]:
             ModelInfoData(
                 model_id=model_id,
                 quantization=quant,
-                backend=config.get("backend", "llama.cpp"),
+                backend=backend,
                 loaded=True,
                 name=display_name,
+                category=cat,
             )
         )
 
@@ -204,7 +206,7 @@ def scan_cached_models() -> list[ModelInfoData]:
 
     try:
         from oprel.downloader.metadata import get_repo_id_from_filename, infer_repo_id_from_cache
-        from oprel.downloader.aliases import get_model_category, get_best_alias_for_repo
+        from oprel.downloader.aliases import get_category_info, get_model_category, get_best_alias_for_repo
 
         for gguf_file in cache_dir.rglob("*.gguf"):
             if not gguf_file.is_file() or gguf_file.stat().st_size == 0:
@@ -221,19 +223,18 @@ def scan_cached_models() -> list[ModelInfoData]:
                 or infer_repo_id_from_cache(cache_dir, filename)
                 or filename
             )
-
-            if repo_id != filename:
-                cat = get_model_category(repo_id)
-                repo_id_lower = repo_id.lower()
-                is_unwanted = any(
-                    kw in repo_id_lower
-                    for kw in [
-                        "embed", "embedding", "nomic-embed", "bge-m3",
-                        "flux", "stable-diffusion", "sdxl", "pixart",
-                    ]
-                )
-                if is_unwanted or cat in ["embeddings", "text-to-image", "text-to-video"]:
-                    continue
+            # Determine category for the repo_id (works even if repo_id == filename)
+            cat = get_model_category(repo_id)
+            repo_id_lower = repo_id.lower()
+            is_unwanted = any(
+                kw in repo_id_lower
+                for kw in [
+                    "embed", "embedding", "nomic-embed", "bge-m3",
+                    "flux", "stable-diffusion", "sdxl", "pixart",
+                ]
+            )
+            if is_unwanted or cat in ["embeddings", "text-to-image", "text-to-video"]:
+                continue
 
             file_key = (repo_id, filename)
             if file_key in seen_files:
@@ -258,6 +259,7 @@ def scan_cached_models() -> list[ModelInfoData]:
                     break
 
             size_gb = gguf_file.stat().st_size / (1024 ** 3)
+            backend = get_category_info(cat).get("backend", "llama.cpp") if cat else "llama.cpp"
 
             best_alias = get_best_alias_for_repo(repo_id)
             if best_alias:
@@ -279,10 +281,11 @@ def scan_cached_models() -> list[ModelInfoData]:
                 ModelInfoData(
                     model_id=repo_id,
                     quantization=quant if quant != "Unknown" else None,
-                    backend="llama.cpp",
+                    backend=backend,
                     loaded=is_loaded,
                     size_gb=round(size_gb, 2),
                     name=display_name,
+                    category=cat,
                 )
             )
 

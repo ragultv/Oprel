@@ -144,7 +144,7 @@ export const API = {
         status: m.loaded ? 'loaded' : 'available',
         downloaded: true,
         tags: [],
-        category: 'text-generation',
+        category: m.category || 'text-generation',
       }));
     } catch {
       return [];

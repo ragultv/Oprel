@@ -76,12 +76,19 @@ print(model.generate("Write a binary search in Python"))
 
 **Oprel Studio** is a premium, browser-based command center for your local AI models. Designed for engineers and researchers, it provides a state-of-the-art interface that transforms raw inference into a productive workspace.
 
+It now also includes image generation, so you can stay inside the same workspace for chat, model management, document chat, and visual creation.
+
 ### ✨ Immersive Chat Experience
 - **Fluid Streaming**: ultra-fast Server-Sent Events (SSE) for instant, typewriter-style responses.
 - **Thinking Process Visualization**: DeepSeek-R1 and other reasoning models show their internal "chain of thought" in a beautiful, expandable workspace.
 - **Rich Markdown & Code**: Full GFM support with syntax highlighting for 50+ languages.
 - **Artifacts Canvas**: Generate Mermaid diagrams or HTML/Tailwind previews and view them in a dedicated side-panel next to your chat.
 - **Multi-modal Support**: Drag and drop images for vision-capable models (Qwen-VL, Llama-3.2 Vision).
+
+### 🎨 Image Generation
+- **Built In**: Generate images from downloaded local GGUF image models directly inside Oprel Studio.
+- **Same Backend, Same Workflow**: The web UI and `oprel gen-image` share the same image-generation backend.
+- **Simple Controls**: Pick a model, prompt, size, steps, sampler, and negative prompt without leaving the app.
 
 ### 🔌 Beyond Local: External Cloud Providers
 Manage your local models alongside industry-leading cloud APIs in one unified interface:

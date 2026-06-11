@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import inspect
 import os
+import threading
+from functools import wraps
 from pathlib import Path
 
 from oprel.core.config import Config
@@ -10,6 +13,8 @@ CONFIG = Config()
 CONFIG.ensure_dirs()
 
 logger = get_logger(__name__)
+
+BACKEND_RUNTIME_LOCK = threading.RLock()
 
 PID_FILE = CONFIG.cache_dir / "daemon.pid"
 BACKEND_PIDS_FILE = CONFIG.cache_dir / "backend_pids.txt"
@@ -94,3 +99,21 @@ def kill_orphaned_backends() -> None:
 
     if killed > 0:
         logger.info(f"Cleaned up {killed} orphaned backend process(es)")
+
+
+def synchronized_backend_operation(func):
+    if inspect.iscoroutinefunction(func):
+
+        @wraps(func)
+        async def async_wrapper(*args, **kwargs):
+            with BACKEND_RUNTIME_LOCK:
+                return await func(*args, **kwargs)
+
+        return async_wrapper
+
+    @wraps(func)
+    def sync_wrapper(*args, **kwargs):
+        with BACKEND_RUNTIME_LOCK:
+            return func(*args, **kwargs)
+
+    return sync_wrapper
