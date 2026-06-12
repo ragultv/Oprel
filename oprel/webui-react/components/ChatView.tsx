@@ -36,6 +36,9 @@ import type { ChatMessage, Conversation, AIModel } from "@/services/data"
 import { PROVIDER_PRESETS, providerChatStream, type ProviderType } from "@/services/providers"
 import { useToast } from "@/components/ui/use-toast"
 import { ArtifactCard, ArtifactPanel, type Artifact } from "@/components/ArtifactPanel"
+import { SkillPicker } from "@/components/SkillPicker"
+import { SkillChip } from "@/components/SkillChip"
+import { Skill, recordSkillUsage, ALL_SKILLS } from "@/services/skills"
 
 function TypingIndicator() {
   return (
@@ -266,6 +269,7 @@ function MessageBubble({
   isStreaming?: boolean
   onOpenArtifact?: (artifact: Artifact) => void
 }) {
+  const { skills } = useApp()
   const isUser = message.role === "user"
   const [copied, setCopied] = useState(false)
 
@@ -444,6 +448,24 @@ function MessageBubble({
           {/* Image attachments */}
           {imgs}
 
+          {/* Skill chip if present */}
+          {message.skill && (
+            <div className="mb-1">
+              <SkillChip
+                skill={skills.find(s => s.id === message.skill?.id) || {
+                  id: message.skill.id,
+                  name: message.skill.name,
+                  description: "",
+                  command: message.skill.id,
+                  icon: "Sparkles",
+                  category: "Writing",
+                  systemPrompt: ""
+                }}
+                className="opacity-90 border-white/10 dark:border-white/5 pointer-events-none select-none"
+              />
+            </div>
+          )}
+
           {/* Text bubble — simple rounded pill */}
           {text && (
             <div className="px-4 py-2.5 rounded-2xl bg-[#2d2d2d] border border-white/[0.05] text-foreground text-sm leading-relaxed whitespace-pre-wrap break-words shadow-sm">
@@ -548,10 +570,14 @@ export function ChatView({
     setConversationMessages,
     user,
     ragEnabled,
-    setRagEnabled
+    setRagEnabled,
+    skills
   } = useApp()
 
   const [input, setInput] = useState("")
+  const [activeSkill, setActiveSkill] = useState<Skill | null>(null)
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const [searchQuery, setSearchQuery] = useState("")
   const [thinking, setThinking] = useState(false)
   const [modelDropdown, setModelDropdown] = useState(false)
   const [showTyping, setShowTyping] = useState(false)
@@ -803,6 +829,7 @@ export function ChatView({
       role: 'user',
       content: userContent,
       timestamp: new Date(),
+      skill: activeSkill ? { id: activeSkill.id, name: activeSkill.name } : undefined,
     };
 
     const currentConv = activeConvRef.current;
@@ -815,6 +842,7 @@ export function ChatView({
 
     addMessage(finalConvId, userMsg);
     setInput('');
+    setActiveSkill(null);
     clearImage();
     setAttachments([]);
     setIsGenerating(true);
@@ -847,6 +875,7 @@ export function ChatView({
             top_p: settings.topP,
             conversation_id: finalConvId.startsWith('temp-') ? undefined : finalConvId,
             rag: ragEnabled,
+            skill: userMsg.skill,
           },
           (token) => {
             if (abort.signal.aborted) return;
@@ -877,6 +906,7 @@ export function ChatView({
             top_k: settings.topK,
             repeat_penalty: settings.repeatPenalty,
             rag: ragEnabled,
+            skill: userMsg.skill,
           },
           (token) => {
             if (abort.signal.aborted) return;
@@ -959,6 +989,7 @@ export function ChatView({
       setStreamingMessage(null);
     }
   }, [
+    activeSkill,
     input,
     selectedImage,
     attachments,
@@ -978,10 +1009,44 @@ export function ChatView({
     linkConversation,
   ]);
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
+  const handleInputChange = (val: string) => {
+    setInput(val)
+    if (!activeSkill) {
+      if (val.startsWith("/")) {
+        setPickerOpen(true)
+        setSearchQuery(val.slice(1))
+      } else {
+        setPickerOpen(false)
+        setSearchQuery("")
+      }
+    }
+  }
+
+  const handleSelectSkill = (skill: Skill) => {
+    setActiveSkill(skill)
+    recordSkillUsage(skill.id)
+    setInput("")
+    setPickerOpen(false)
+    setSearchQuery("")
+    setTimeout(() => {
+      textareaRef.current?.focus()
+    }, 10)
+  }
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (pickerOpen) {
+      if (e.key === "ArrowUp" || e.key === "ArrowDown" || e.key === "Enter" || e.key === "Escape") {
+        // Picker handles these keyboard actions via window listener
+        return
+      }
+    }
+
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault()
       sendMessage()
+    } else if (e.key === "Backspace" && input === "" && activeSkill) {
+      e.preventDefault()
+      setActiveSkill(null)
     }
   }
 
@@ -1241,19 +1306,37 @@ export function ChatView({
 
           <div
             className={cn(
-              "bg-[#1e1e1e] border border-border rounded-xl overflow-hidden transition-all",
+              "bg-[#1e1e1e] border border-border rounded-xl overflow-visible transition-all relative",
               "focus-within:border-primary/50 focus-within:ring-1 focus-within:ring-primary/20"
             )}
           >
-            <textarea
-              ref={textareaRef}
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder="Message..."
-              rows={1}
-              className="w-full bg-transparent text-foreground px-4 pt-4 pb-2 text-sm resize-none focus:outline-none placeholder:text-muted-foreground min-h-[52px] max-h-[200px]"
-            />
+            {pickerOpen && (
+              <SkillPicker
+                searchQuery={searchQuery}
+                onSelect={handleSelectSkill}
+                onClose={() => setPickerOpen(false)}
+              />
+            )}
+
+            <div className="flex flex-wrap items-start gap-2 px-4 pt-3.5 pb-1 min-h-[52px]">
+              {activeSkill && (
+                <div className="flex items-center h-[26px]">
+                  <SkillChip
+                    skill={activeSkill}
+                    onRemove={() => setActiveSkill(null)}
+                  />
+                </div>
+              )}
+              <textarea
+                ref={textareaRef}
+                value={input}
+                onChange={(e) => handleInputChange(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder={activeSkill ? "Add details for skill..." : "Message..."}
+                rows={1}
+                className="flex-1 bg-transparent text-foreground py-1 text-sm resize-none focus:outline-none placeholder:text-muted-foreground min-h-[26px] max-h-[200px]"
+              />
+            </div>
 
             <input
               type="file"

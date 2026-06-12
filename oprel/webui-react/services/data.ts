@@ -8,6 +8,10 @@ export interface ChatMessage {
   content: string | any[]
   timestamp: Date
   tps?: number
+  skill?: {
+    id: string
+    name: string
+  }
 }
 
 export interface Conversation {

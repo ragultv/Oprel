@@ -190,7 +190,7 @@ export async function providerChatStream(
   provider: ProviderConfig,
   modelId: string,
   messages: any[],
-  options: { max_tokens?: number; temperature?: number; top_p?: number; conversation_id?: string; rag?: boolean },
+  options: { max_tokens?: number; temperature?: number; top_p?: number; conversation_id?: string; rag?: boolean; skill?: { id: string; name: string } },
   onToken: (t: string) => void,
   onConversationId?: (id: string) => void,
   signal?: AbortSignal
@@ -201,11 +201,13 @@ export async function providerChatStream(
     body: JSON.stringify({
       model: modelId,
       messages,
+      stream: true,
       max_tokens: options.max_tokens,
       temperature: options.temperature,
       top_p: options.top_p,
       conversation_id: options.conversation_id,
       rag: options.rag,
+      skill: options.skill,
     }),
     signal,
   })

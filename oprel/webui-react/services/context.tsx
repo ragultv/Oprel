@@ -3,6 +3,7 @@
 import { createContext, useContext, useState, useCallback, useEffect, useRef, type ReactNode } from "react"
 import { DEFAULT_SETTINGS, type View, type Conversation, type ChatMessage, type AIModel, type GenerationSettings } from "@/services/data"
 import { API, Model, Conversation as ApiConversation } from "@/services/api"
+import { type Skill, ALL_SKILLS } from "@/services/skills"
 import {
   type ProviderConfig,
   loadAllProviders,
@@ -62,6 +63,17 @@ interface AppContextType {
   // Knowledge / RAG
   ragEnabled: boolean
   setRagEnabled: (v: boolean) => void
+
+  // Skills CRUD
+  skills: Skill[]
+  refreshSkills: () => Promise<void>
+  saveSkill: (skill: Skill) => Promise<void>
+  deleteSkill: (id: string) => Promise<void>
+
+  // Background Tasks
+  backgroundTasks: Array<{ id: string; label: string }>
+  addBackgroundTask: (id: string, label: string) => void
+  removeBackgroundTask: (id: string) => void
 }
 
 const AppContext = createContext<AppContextType | null>(null)
@@ -81,6 +93,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [isModelLoading, setIsModelLoading] = useState(false)
   const [user, setUser] = useState({ name: "User", role: "Researcher", initials: "TR" })
   const [ragEnabled, setRagEnabled] = useState(false)
+  const [skills, setSkills] = useState<Skill[]>(ALL_SKILLS)
+  const [backgroundTasks, setBackgroundTasks] = useState<Array<{ id: string; label: string }>>([])
 
   const initialLoadAttempted = useRef(false)
   const isClient = useRef(false)
@@ -317,6 +331,80 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const addBackgroundTask = useCallback((id: string, label: string) => {
+    setBackgroundTasks(prev => {
+      if (prev.some(t => t.id === id)) return prev
+      return [...prev, { id, label }]
+    })
+  }, [])
+
+  const removeBackgroundTask = useCallback((id: string) => {
+    setBackgroundTasks(prev => prev.filter(t => t.id !== id))
+  }, [])
+
+  const refreshSkills = useCallback(async () => {
+    try {
+      const dbSkills = await API.fetchSkills()
+      const mappedSkills: Skill[] = dbSkills.map((s: any) => ({
+        id: s.id,
+        name: s.name,
+        description: s.description || "",
+        command: s.command,
+        icon: s.icon,
+        category: s.category,
+        systemPrompt: s.system_prompt,
+        temperature: s.temperature ?? undefined,
+        maxTokens: s.max_tokens ?? undefined,
+        outputSchema: s.output_schema ?? undefined,
+        isPremium: Boolean(s.is_premium),
+        enabled: Boolean(s.enabled),
+      }))
+      setSkills(mappedSkills)
+    } catch (err) {
+      console.error("Failed to fetch skills, keeping defaults:", err)
+    }
+  }, [])
+
+  const saveSkill = useCallback(async (skill: Skill) => {
+    addBackgroundTask("save-skill", `Saving skill "${skill.name}" to database`)
+    try {
+      const dbPayload = {
+        id: skill.id,
+        name: skill.name,
+        description: skill.description,
+        command: skill.command,
+        icon: skill.icon,
+        category: skill.category,
+        system_prompt: skill.systemPrompt,
+        temperature: skill.temperature ?? null,
+        max_tokens: skill.maxTokens ?? null,
+        output_schema: skill.outputSchema ?? null,
+        is_premium: skill.isPremium ? true : false,
+        enabled: skill.enabled ?? true,
+      }
+      await API.saveSkill(dbPayload)
+      await refreshSkills()
+    } catch (err) {
+      console.error("Failed to save skill:", err)
+      throw err
+    } finally {
+      removeBackgroundTask("save-skill")
+    }
+  }, [refreshSkills, addBackgroundTask, removeBackgroundTask])
+
+  const deleteSkill = useCallback(async (id: string) => {
+    addBackgroundTask("delete-skill", "Deleting skill from database")
+    try {
+      await API.deleteSkill(id)
+      await refreshSkills()
+    } catch (err) {
+      console.error("Failed to delete skill:", err)
+      throw err
+    } finally {
+      removeBackgroundTask("delete-skill")
+    }
+  }, [refreshSkills, addBackgroundTask, removeBackgroundTask])
+
   const refreshUser = useCallback(async () => {
     try {
       const u = await API.fetchUser();
@@ -336,7 +424,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     refreshSettings();
     refreshUser();
     refreshProviders();
-  }, [refreshModels, refreshConversations, refreshSettings, refreshUser, refreshProviders]);
+    refreshSkills();
+  }, [refreshModels, refreshConversations, refreshSettings, refreshUser, refreshProviders, refreshSkills]);
 
   const createConversation = useCallback(() => {
     // Just set a temp active ID — do NOT add to the sidebar list.
@@ -464,7 +553,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setIsModelLoading,
         user,
         ragEnabled,
-        setRagEnabled
+        setRagEnabled,
+        skills,
+        refreshSkills,
+        saveSkill,
+        deleteSkill,
+        backgroundTasks,
+        addBackgroundTask,
+        removeBackgroundTask
       }}
     >
       {children}

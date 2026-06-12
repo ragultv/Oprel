@@ -101,10 +101,66 @@ async def fetch_provider_models(provider_id: str) -> list[str]:
     base_url = p.get("base_url")
     p_type = p.get("type", "openai")
 
+    if p_type == "nvidia":
+        # Curated NVIDIA NIM chat-compatible models — returned directly without API call
+        return [
+            "abacusai/dracarys-llama-3.1-70b-instruct",
+            "bytedance/seed-oss-36b-instruct",
+            "deepseek-ai/deepseek-v4-flash",
+            "deepseek-ai/deepseek-v4-pro",
+            "google/codegemma-7b",
+            "google/gemma-2-2b-it",
+            "google/gemma-7b",
+            "meta/llama2-70b",
+            "meta/llama-3.1-8b-instruct",
+            "meta/llama-3.1-70b-instruct",
+            "meta/llama-3.2-1b-instruct",
+            "meta/llama-3.2-3b-instruct",
+            "meta/llama-3.3-70b-instruct",
+            "microsoft/phi-4-mini-instruct",
+            "microsoft/phi-4-mini-flash-reasoning",
+            "minimaxai/minimax-m2.5",
+            "minimaxai/minimax-m2.7",
+            "mistralai/mistral-nemotron",
+            "mistralai/mixtral-8x7b-instruct",
+            "mistralai/mixtral-8x22b-instruct",
+            "moonshotai/kimi-k2-instruct",
+            "moonshotai/kimi-k2-thinking",
+            "nvidia/gliner-pii",
+            "nvidia/llama-3.1-nemoguard-8b-content-safety",
+            "nvidia/llama-3.1-nemoguard-8b-topic-control",
+            "nvidia/llama-3.1-nemotron-nano-8b-v1",
+            "nvidia/llama-3.1-nemotron-safety-guard-8b-v3",
+            "nvidia/llama-3.1-nemotron-ultra-253b-v1",
+            "nvidia/llama-3.3-nemotron-super-49b-v1",
+            "nvidia/llama-3.3-nemotron-super-49b-v1.5",
+            "nvidia/nemotron-3-nano-30b-a3b",
+            "nvidia/nemotron-3-super-120b-a12b",
+            "nvidia/nemotron-3-ultra-550b-a55b",
+            "nvidia/nemotron-content-safety-reasoning-4b",
+            "nvidia/nemotron-mini-4b-instruct",
+            "nvidia/nemoguard-jailbreak-detect",
+            "nvidia/nvidia-nemotron-nano-9b-v2",
+            "nvidia/riva-translate-4b-instruct-v1_1",
+            "nvidia/usdcode",
+            "openai/gpt-oss-20b",
+            "openai/gpt-oss-120b",
+            "qwen/qwen3-5-122b-a10b",
+            "qwen/qwen3-coder-480b-a35b-instruct",
+            "qwen/qwen3-next-80b-a3b-instruct",
+            "qwen/qwen3-next-80b-a3b-thinking",
+            "qwen/qwq-32b",
+            "sarvamai/sarvam-m",
+            "stepfun-ai/step-3-5-flash",
+            "stockmark/stockmark-2-100b-instruct",
+            "upstage/solar-10.7b-instruct",
+            "z-ai/glm4.7",
+            "z-ai/glm5.1",
+        ]
+
     presets = {
         "openai": "https://api.openai.com/v1",
         "gemini": "https://generativelanguage.googleapis.com/v1beta",
-        "nvidia": "https://integrate.api.nvidia.com/v1",
         "groq": "https://api.groq.com/openai/v1",
         "openrouter": "https://openrouter.ai/api/v1",
     }
@@ -142,33 +198,10 @@ async def fetch_provider_models(provider_id: str) -> list[str]:
             raise
 
 
-async def provider_chat_proxy(provider_id: str, body: Any) -> GenerateResult | StreamResult:
-    p = db.get_provider(provider_id)
-    if not p:
-        raise KeyError("Provider not found")
+# ─── Context Preparation Helper ──────────────────────────────────────────────
 
-    api_key = p.get("api_key")
-    base_url = p.get("base_url")
-    p_type = p.get("type", "openai")
-
-    effective_conv_id = body.conversation_id
-    if not effective_conv_id:
-        title = "New Chat"
-        if body.messages:
-            first_msg = body.messages[0].get("content", "")
-            if isinstance(first_msg, str) and first_msg:
-                title = first_msg[:60] + ("..." if len(first_msg) > 60 else "")
-        effective_conv_id = db.create_conversation(model_id=body.model, title=title)
-
-    presets = {
-        "openai": "https://api.openai.com/v1",
-        "nvidia": "https://integrate.api.nvidia.com/v1",
-        "groq": "https://api.groq.com/openai/v1",
-        "openrouter": "https://openrouter.ai/api/v1",
-    }
-    url = base_url or presets.get(p_type, "")
-
-    messages = [dict(message) for message in body.messages]
+async def _prepare_chat_context(body: Any, raw_messages: list[dict], p_type: str) -> list[dict]:
+    messages = [dict(msg) for msg in raw_messages]
 
     if body.rag and messages:
         last_user_index = next((i for i in range(len(messages) - 1, -1, -1) if messages[i]["role"] == "user"), None)
@@ -280,182 +313,369 @@ async def provider_chat_proxy(provider_id: str, body: Any) -> GenerateResult | S
                 f"Provider {p_type}: trimmed prompt from ~{total_tokens} to ~{compute_prompt_tokens(messages)} tokens to fit request budget"
             )
 
-    user_msg = messages[-1] if messages else None
+    return messages
+
+
+# ─── Provider Callers (Non-Streaming) ────────────────────────────────────────
+
+async def _call_openai(api_key: str, base_url: str, body: Any, messages: list[dict]) -> str:
+    clean_messages = [{k: v for k, v in message.items() if not k.startswith("_")} for message in messages]
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        resp = await client.post(
+            f"{base_url}/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={
+                "model": body.model,
+                "messages": clean_messages,
+                "stream": False,
+                "max_tokens": body.max_tokens,
+                "temperature": body.temperature,
+            },
+        )
+        if resp.status_code != 200:
+            raise RuntimeError(f"OpenAI API Error: {resp.text}")
+        data = resp.json()
+        return data.get("choices", [{}])[0].get("message", {}).get("content", "")
+
+
+async def _call_nvidia(api_key: str, base_url: str, body: Any, messages: list[dict]) -> str:
+    url = base_url or "https://integrate.api.nvidia.com/v1"
+    return await _call_openai(api_key, url, body, messages)
+
+
+async def _call_groq(api_key: str, base_url: str, body: Any, messages: list[dict]) -> str:
+    from groq import AsyncGroq
+
+    # The groq SDK appends /openai/v1 internally — strip it if already present in base_url
+    groq_root: str | None = None
+    if base_url:
+        groq_root = base_url.rstrip("/")
+        if groq_root.endswith("/openai/v1"):
+            groq_root = groq_root[: -len("/openai/v1")]
+
+    clean_messages = [{k: v for k, v in message.items() if not k.startswith("_")} for message in messages]
+    client = AsyncGroq(api_key=api_key, base_url=groq_root) if groq_root else AsyncGroq(api_key=api_key)
+
+    response = await client.chat.completions.create(
+        model=body.model,
+        messages=clean_messages,
+        max_tokens=body.max_tokens,
+        temperature=body.temperature,
+        stream=False,
+    )
+    return response.choices[0].message.content or ""
+
+
+async def _call_openrouter(api_key: str, base_url: str, body: Any, messages: list[dict]) -> str:
+    url = base_url or "https://openrouter.ai/api/v1"
+    clean_messages = [{k: v for k, v in message.items() if not k.startswith("_")} for message in messages]
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        resp = await client.post(
+            f"{url}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "HTTP-Referer": "https://oprel.ai",
+                "X-Title": "OPREL",
+            },
+            json={
+                "model": body.model,
+                "messages": clean_messages,
+                "stream": False,
+                "max_tokens": body.max_tokens,
+                "temperature": body.temperature,
+            },
+        )
+        if resp.status_code != 200:
+            raise RuntimeError(f"OpenRouter API Error: {resp.text}")
+        data = resp.json()
+        return data.get("choices", [{}])[0].get("message", {}).get("content", "")
+
+
+async def _call_gemini(api_key: str, body: Any, messages: list[dict]) -> str:
+    from google import genai
+    from google.genai import types
+
+    model_name = body.model
+    if model_name.startswith("models/"):
+        model_name = model_name.replace("models/", "")
+
+    system_msg = next((message for message in messages if message["role"] == "system"), None)
+    contents = []
+    use_system_instruction = "gemma" not in body.model.lower()
+
+    for index, message in enumerate(messages):
+        if message["role"] == "system":
+            continue
+        role = "model" if message["role"] == "assistant" else "user"
+        content_text = str(message["content"])
+        if not use_system_instruction and system_msg and index == 1:
+            content_text = f"{system_msg['content']}\n\n{content_text}"
+        contents.append({"role": role, "parts": [{"text": content_text}]})
+
+    system_instruction = None
+    if use_system_instruction and system_msg:
+        system_instruction = str(system_msg["content"])
+
+    config = types.GenerateContentConfig(
+        max_output_tokens=body.max_tokens or 4096,
+        temperature=body.temperature if body.temperature is not None else 0.7,
+        system_instruction=system_instruction,
+    )
+
+    client = genai.Client(api_key=api_key)
+    response = await client.aio.models.generate_content(
+        model=model_name,
+        contents=contents,
+        config=config,
+    )
+    return response.text or ""
+
+
+# ─── Provider Streamers (Streaming) ──────────────────────────────────────────
+
+async def _stream_openai(api_key: str, base_url: str, body: Any, messages: list[dict]) -> AsyncIterator[str]:
+    clean_messages = [{k: v for k, v in message.items() if not k.startswith("_")} for message in messages]
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        async with client.stream(
+            "POST",
+            f"{base_url}/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={
+                "model": body.model,
+                "messages": clean_messages,
+                "stream": True,
+                "max_tokens": body.max_tokens,
+                "temperature": body.temperature,
+            },
+        ) as resp:
+            if resp.status_code not in (200, 206):
+                err_body = await resp.aread()
+                raise RuntimeError(f"OpenAI Stream Error {resp.status_code}: {err_body.decode()}")
+            async for line in resp.aiter_lines():
+                yield line + "\n"
+
+
+async def _stream_nvidia(api_key: str, base_url: str, body: Any, messages: list[dict]) -> AsyncIterator[str]:
+    url = base_url or "https://integrate.api.nvidia.com/v1"
+    async for line in _stream_openai(api_key, url, body, messages):
+        yield line
+
+
+async def _stream_groq(api_key: str, base_url: str, body: Any, messages: list[dict]) -> AsyncIterator[str]:
+    from groq import AsyncGroq
+
+    # The groq SDK appends /openai/v1 internally — strip it if already present in base_url
+    groq_root: str | None = None
+    if base_url:
+        groq_root = base_url.rstrip("/")
+        if groq_root.endswith("/openai/v1"):
+            groq_root = groq_root[: -len("/openai/v1")]
+
+    clean_messages = [{k: v for k, v in message.items() if not k.startswith("_")} for message in messages]
+    client = AsyncGroq(api_key=api_key, base_url=groq_root) if groq_root else AsyncGroq(api_key=api_key)
+
+    response_stream = await client.chat.completions.create(
+        model=body.model,
+        messages=clean_messages,
+        max_tokens=body.max_tokens,
+        temperature=body.temperature,
+        stream=True,
+    )
+
+    async for chunk in response_stream:
+        yield f"data: {json.dumps(chunk.model_dump())}\n\n"
+
+
+async def _stream_openrouter(api_key: str, base_url: str, body: Any, messages: list[dict]) -> AsyncIterator[str]:
+    url = base_url or "https://openrouter.ai/api/v1"
+    clean_messages = [{k: v for k, v in message.items() if not k.startswith("_")} for message in messages]
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        async with client.stream(
+            "POST",
+            f"{url}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "HTTP-Referer": "https://oprel.ai",
+                "X-Title": "OPREL",
+            },
+            json={
+                "model": body.model,
+                "messages": clean_messages,
+                "stream": True,
+                "max_tokens": body.max_tokens,
+                "temperature": body.temperature,
+            },
+        ) as resp:
+            if resp.status_code not in (200, 206):
+                err_body = await resp.aread()
+                raise RuntimeError(f"OpenRouter Stream Error {resp.status_code}: {err_body.decode()}")
+            async for line in resp.aiter_lines():
+                yield line + "\n"
+
+
+async def _stream_gemini(api_key: str, body: Any, messages: list[dict]) -> AsyncIterator[str]:
+    from google import genai
+    from google.genai import types
+
+    model_name = body.model
+    if model_name.startswith("models/"):
+        model_name = model_name.replace("models/", "")
+
+    system_msg = next((message for message in messages if message["role"] == "system"), None)
+    contents = []
+    use_system_instruction = "gemma" not in body.model.lower()
+
+    for index, message in enumerate(messages):
+        if message["role"] == "system":
+            continue
+        role = "model" if message["role"] == "assistant" else "user"
+        content_text = str(message["content"])
+        if not use_system_instruction and system_msg and index == 1:
+            content_text = f"{system_msg['content']}\n\n{content_text}"
+        contents.append({"role": role, "parts": [{"text": content_text}]})
+
+    system_instruction = None
+    if use_system_instruction and system_msg:
+        system_instruction = str(system_msg["content"])
+
+    config = types.GenerateContentConfig(
+        max_output_tokens=body.max_tokens or 4096,
+        temperature=body.temperature if body.temperature is not None else 0.7,
+        system_instruction=system_instruction,
+    )
+
+    client = genai.Client(api_key=api_key)
+    try:
+        response_stream = await client.aio.models.generate_content_stream(
+            model=model_name,
+            contents=contents,
+            config=config,
+        )
+        async for chunk in response_stream:
+            token = chunk.text or ""
+            if token:
+                mock_data = {
+                    "candidates": [{
+                        "content": {
+                            "parts": [{"text": token}]
+                        }
+                    }]
+                }
+                yield f"data: {json.dumps(mock_data)}\n\n"
+    except Exception as exc:
+        logger.error(f"Gemini SDK Stream Error: {exc}")
+        raise
+
+
+# ─── Unified Chat Proxy Entrypoint ───────────────────────────────────────────
+
+async def provider_chat_proxy(provider_id: str, body: Any) -> GenerateResult | StreamResult:
+    p = db.get_provider(provider_id)
+    if not p:
+        raise KeyError("Provider not found")
+
+    api_key = p.get("api_key")
+    base_url = p.get("base_url")
+    p_type = p.get("type", "openai")
+
+    # Determine conversation context
+    effective_conv_id = body.conversation_id
+    if not effective_conv_id:
+        title = "New Chat"
+        if body.messages:
+            first_msg = body.messages[0].get("content", "")
+            if isinstance(first_msg, str) and first_msg:
+                title = first_msg[:60] + ("..." if len(first_msg) > 60 else "")
+        effective_conv_id = db.create_conversation(model_id=body.model, title=title)
+
+    # Context Preparation (RAG search, prompt trimming, limits processing)
+    prepared_messages = await _prepare_chat_context(body, body.messages, p_type)
+
+    # Save User message to history (use the original content before context wrapper expansion)
+    user_msg = prepared_messages[-1] if prepared_messages else None
     if user_msg:
         db.add_message(effective_conv_id, user_msg["role"], user_msg.get("_original_content", user_msg["content"]))
 
+    # 1. Non-Streaming Flow
     if not body.stream:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            full_response = ""
+        if p_type == "gemini":
+            full_response = await _call_gemini(api_key, body, prepared_messages)
+        elif p_type == "nvidia":
+            full_response = await _call_nvidia(api_key, base_url, body, prepared_messages)
+        elif p_type == "groq":
+            full_response = await _call_groq(api_key, base_url, body, prepared_messages)
+        elif p_type == "openrouter":
+            full_response = await _call_openrouter(api_key, base_url, body, prepared_messages)
+        else:
+            full_response = await _call_openai(api_key, base_url, body, prepared_messages)
 
-            if p_type == "gemini":
-                model_name = body.model if body.model.startswith("models/") else f"models/{body.model}"
-                system_msg = next((message for message in messages if message["role"] == "system"), None)
-                contents = []
-                use_system_instruction = "gemma" not in body.model.lower()
-
-                for index, message in enumerate(messages):
-                    if message["role"] == "system":
-                        continue
-                    role = "model" if message["role"] == "assistant" else "user"
-                    content_text = str(message["content"])
-                    if not use_system_instruction and system_msg and index == 1:
-                        content_text = f"{system_msg['content']}\n\n{content_text}"
-                    contents.append({"role": role, "parts": [{"text": content_text}]})
-
-                gemini_body = {
-                    "contents": contents,
-                    "generationConfig": {
-                        "maxOutputTokens": body.max_tokens or 4096,
-                        "temperature": body.temperature if body.temperature is not None else 0.7,
-                    },
-                }
-                if use_system_instruction and system_msg:
-                    gemini_body["systemInstruction"] = {"parts": [{"text": str(system_msg["content"])}]}
-
-                resp = await client.post(
-                    f"https://generativelanguage.googleapis.com/v1beta/{model_name}:generateContent?key={api_key}",
-                    json=gemini_body,
-                )
-                if resp.status_code != 200:
-                    raise RuntimeError(f"Gemini API Error: {resp.text}")
-
-                data = resp.json()
-                try:
-                    full_response = data["candidates"][0]["content"]["parts"][0]["text"]
-                except Exception:
-                    full_response = "Error parsing Gemini response"
-            else:
-                clean_messages = [{k: v for k, v in message.items() if not k.startswith("_")} for message in messages]
-                resp = await client.post(
-                    f"{url}/chat/completions",
-                    headers={"Authorization": f"Bearer {api_key}"},
-                    json={
-                        "model": body.model,
-                        "messages": clean_messages,
-                        "stream": False,
-                        "max_tokens": body.max_tokens,
-                        "temperature": body.temperature,
-                    },
-                )
-                if resp.status_code != 200:
-                    raise RuntimeError(f"Provider {p_type} Error: {resp.text}")
-
-                data = resp.json()
-                full_response = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-
-            if full_response.strip():
-                db.add_message(effective_conv_id, "assistant", full_response)
-                db.add_inference_log(
-                    model_id=body.model,
-                    prompt_tokens=_estimate_tokens(_message_content_to_text(messages[-1]["content"] if messages else ""), body.model),
-                    completion_tokens=_estimate_tokens(full_response, body.model),
-                    latency_ms=100.0,
-                    tps=0.0,
-                )
-
-            return GenerateResult(
-                text=full_response,
+        if full_response.strip():
+            db.add_message(effective_conv_id, "assistant", full_response)
+            db.add_inference_log(
                 model_id=body.model,
-                conversation_id=effective_conv_id,
-                message_count=len(messages) + 1,
+                prompt_tokens=_estimate_tokens(_message_content_to_text(prepared_messages[-1]["content"] if prepared_messages else ""), body.model),
+                completion_tokens=_estimate_tokens(full_response, body.model),
+                latency_ms=100.0,
+                tps=0.0,
             )
 
+        return GenerateResult(
+            text=full_response,
+            model_id=body.model,
+            conversation_id=effective_conv_id,
+            message_count=len(prepared_messages) + 1,
+        )
+
+    # 2. Streaming Flow
     async def stream_generator(conv_id: str) -> AsyncIterator[str]:
         full_response = ""
-
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        try:
             if p_type == "gemini":
-                model_name = body.model if body.model.startswith("models/") else f"models/{body.model}"
-                system_msg = next((message for message in messages if message["role"] == "system"), None)
-                contents = []
-                use_system_instruction = "gemma" not in body.model.lower()
-
-                for index, message in enumerate(messages):
-                    if message["role"] == "system":
-                        continue
-                    role = "model" if message["role"] == "assistant" else "user"
-                    content_text = str(message["content"])
-                    if not use_system_instruction and system_msg and index == 1:
-                        content_text = f"{system_msg['content']}\n\n{content_text}"
-                    contents.append({"role": role, "parts": [{"text": content_text}]})
-
-                gemini_body = {
-                    "contents": contents,
-                    "generationConfig": {
-                        "maxOutputTokens": body.max_tokens or 4096,
-                        "temperature": body.temperature if body.temperature is not None else 0.7,
-                    },
-                }
-                if use_system_instruction and system_msg:
-                    gemini_body["systemInstruction"] = {"parts": [{"text": str(system_msg["content"])}]}
-
-                try:
-                    async with client.stream(
-                        "POST",
-                        f"https://generativelanguage.googleapis.com/v1beta/{model_name}:streamGenerateContent?key={api_key}&alt=sse",
-                        json=gemini_body,
-                    ) as resp:
-                        if resp.status_code != 200:
-                            err_body = await resp.aread()
-                            error_msg = f"Gemini API Error {resp.status_code}: {err_body.decode()}"
-                            yield f"data: {json.dumps({'error': error_msg})}\n\n"
-                            return
-
-                        async for line in resp.aiter_lines():
-                            if line.startswith("data: "):
-                                try:
-                                    json_data = json.loads(line[6:])
-                                    token = (
-                                        json_data.get("candidates", [{}])[0]
-                                        .get("content", {})
-                                        .get("parts", [{}])[0]
-                                        .get("text", "")
-                                    )
-                                    if token:
-                                        full_response += token
-                                except Exception:
-                                    pass
-                            yield line + "\n"
-                except Exception as exc:
-                    yield f"data: {json.dumps({'error': f'Streaming error: {str(exc)}'})}\n\n"
+                async for line in _stream_gemini(api_key, body, prepared_messages):
+                    if line.startswith("data: "):
+                        try:
+                            json_data = json.loads(line[6:])
+                            token = (
+                                json_data.get("candidates", [{}])[0]
+                                .get("content", {})
+                                .get("parts", [{}])[0]
+                                .get("text", "")
+                            )
+                            if token:
+                                full_response += token
+                        except Exception:
+                            pass
+                    yield line
             else:
-                clean_messages = [{k: v for k, v in message.items() if not k.startswith("_")} for message in messages]
-                async with client.stream(
-                    "POST",
-                    f"{url}/chat/completions",
-                    headers={"Authorization": f"Bearer {api_key}"},
-                    json={
-                        "model": body.model,
-                        "messages": clean_messages,
-                        "stream": True,
-                        "max_tokens": body.max_tokens,
-                        "temperature": body.temperature,
-                    },
-                ) as resp:
-                    if resp.status_code not in (200, 206):
-                        err_body = await resp.aread()
-                        error_msg = f"Provider {p_type} error {resp.status_code}: {err_body.decode()}"
-                        logger.error(f"Streaming provider error: {error_msg}")
-                        yield f"data: {json.dumps({'error': error_msg})}\n\n"
-                        return
+                if p_type == "nvidia":
+                    stream_iter = _stream_nvidia(api_key, base_url, body, prepared_messages)
+                elif p_type == "groq":
+                    stream_iter = _stream_groq(api_key, base_url, body, prepared_messages)
+                elif p_type == "openrouter":
+                    stream_iter = _stream_openrouter(api_key, base_url, body, prepared_messages)
+                else:
+                    stream_iter = _stream_openai(api_key, base_url, body, prepared_messages)
 
-                    async for line in resp.aiter_lines():
-                        if line.startswith("data: "):
-                            try:
-                                chunk = json.loads(line[6:])
-                                token = chunk.get("choices", [{}])[0].get("delta", {}).get("content", "")
-                                if token:
-                                    full_response += token
-                            except Exception:
-                                pass
-                        yield line + "\n"
+                async for line in stream_iter:
+                    if line.startswith("data: "):
+                        try:
+                            chunk = json.loads(line[6:])
+                            token = chunk.get("choices", [{}])[0].get("delta", {}).get("content", "")
+                            if token:
+                                full_response += token
+                        except Exception:
+                            pass
+                    yield line
+        except Exception as exc:
+            logger.error(f"Streaming error on provider {p_type}: {exc}")
+            yield f"data: {json.dumps({'error': f'Streaming error: {str(exc)}'})}\n\n"
+            return
 
         if full_response.strip():
             db.add_message(conv_id, "assistant", full_response)
             db.add_inference_log(
                 model_id=body.model,
-                prompt_tokens=_estimate_tokens(_message_content_to_text(messages[-1]["content"] if messages else ""), body.model),
+                prompt_tokens=_estimate_tokens(_message_content_to_text(prepared_messages[-1]["content"] if prepared_messages else ""), body.model),
                 completion_tokens=_estimate_tokens(full_response, body.model),
                 latency_ms=100.0,
                 tps=0.0,

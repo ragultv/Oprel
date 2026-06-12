@@ -344,6 +344,30 @@ export const API = {
     return res.json();
   },
 
+  async fetchSkills(): Promise<any[]> {
+    const res = await fetch(`${API_BASE}/skills`);
+    if (!res.ok) throw new Error('Failed to fetch skills');
+    return res.json();
+  },
+
+  async saveSkill(skill: any): Promise<any> {
+    const res = await fetch(`${API_BASE}/skills`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(skill),
+    });
+    if (!res.ok) throw new Error('Failed to save skill');
+    return res.json();
+  },
+
+  async deleteSkill(skillId: string): Promise<any> {
+    const res = await fetch(`${API_BASE}/skills/${encodeURIComponent(skillId)}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) throw new Error('Failed to delete skill');
+    return res.json();
+  },
+
   async fetchModelInfo(modelId: string): Promise<ModelDetailedInfo> {
     const encodedId = encodeURIComponent(modelId);
     const res = await fetch(`${API_BASE}/models/info/${encodedId}`);
