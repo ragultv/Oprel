@@ -10,7 +10,7 @@ from fastapi.responses import StreamingResponse
 from oprel.server.domain.state import get_state
 from oprel.server.schemas.openai import OpenAIChatRequest, OpenAICompletionRequest
 from oprel.server.services.generation import GenerateParams, StreamResult, generate_text
-from oprel.server.services.context import CONFIG
+from oprel.server.services.context import CONFIG, logger
 from oprel.server import db
 
 router = APIRouter()
@@ -22,6 +22,30 @@ def _is_webui_request(referer: str) -> bool:
 
 async def _handle_chat_completions(request: OpenAIChatRequest, referer: str):
     is_webui_request = _is_webui_request(referer)
+
+    # Apply skill system prompt injections and overrides if active
+    if request.skill and "id" in request.skill:
+        try:
+            skill_info = db.get_skill(request.skill["id"])
+            if skill_info and skill_info.get("enabled", True):
+                skill_system = skill_info.get("system_prompt")
+                if skill_system:
+                    has_system = False
+                    for m in request.messages:
+                        if m.role == "system":
+                            m.content = f"{skill_system}\n\n{m.content}" if m.content else skill_system
+                            has_system = True
+                            break
+                    if not has_system:
+                        from oprel.server.schemas.openai import OpenAIChatMessage
+                        request.messages.insert(0, OpenAIChatMessage(role="system", content=skill_system))
+
+                if skill_info.get("temperature") is not None:
+                    request.temperature = skill_info["temperature"]
+                if skill_info.get("max_tokens") is not None:
+                    request.max_tokens = skill_info["max_tokens"]
+        except Exception as exc:
+            logger.warning(f"Failed to apply skill '{request.skill.get('id')}' configurations: {exc}")
 
     p_id = request.model
     m_name = None

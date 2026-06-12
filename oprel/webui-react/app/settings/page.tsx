@@ -1,19 +1,50 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
+import * as Icons from 'lucide-react'
 import {
   Settings2, Cpu, SlidersHorizontal, ChevronLeft,
   Plus, Trash2, RefreshCw, Eye, EyeOff, Check, X,
   Loader2, Zap, ChevronDown, ChevronUp, RotateCcw,
-  Globe, KeyRound, Server, BookOpen, Save,
+  Globe, KeyRound, Server, BookOpen, Save, Sparkles, Lock,
 } from 'lucide-react'
 import { useApp } from '@/services/context'
+import { type Skill } from '@/services/skills'
 import {
   type ProviderConfig, type ProviderType,
   PROVIDER_PRESETS, fetchProviderModels,
 } from '@/services/providers'
 import { cn } from '@/services/utils'
+
+// ─── Skill Categories & Icons ────────────────────────────────────────────────
+const CATEGORY_COLORS: Record<string, { text: string; bg: string; border: string }> = {
+  Writing: { text: "text-cyan-500", bg: "bg-cyan-500/10 border-cyan-500/20", border: "border-cyan-500/20" },
+  Development: { text: "text-indigo-500", bg: "bg-indigo-500/10 border-indigo-500/20", border: "border-indigo-500/20" },
+  Research: { text: "text-emerald-500", bg: "bg-emerald-500/10 border-emerald-500/20", border: "border-emerald-500/20" },
+  Documents: { text: "text-amber-500", bg: "bg-amber-500/10 border-amber-500/20", border: "border-amber-500/20" },
+  Media: { text: "text-rose-500", bg: "bg-rose-500/10 border-rose-500/20", border: "border-rose-500/20" },
+}
+
+const AVAILABLE_ICONS = [
+  "Brain", "Sparkles", "Code2", "Bug", "Eye", "Search", "Globe", "Mail", 
+  "FileText", "Presentation", "ImageIcon", "Wand2", "Edit3", "Calculator", 
+  "Terminal", "Briefcase", "TrendingUp", "Compass", "Layers", "Target"
+]
+
+const emptySkill: Skill = {
+  id: '',
+  name: '',
+  description: '',
+  command: '',
+  icon: 'Sparkles',
+  category: 'Writing',
+  systemPrompt: '',
+  temperature: 0.7,
+  maxTokens: 4096,
+  enabled: true,
+  isPremium: false,
+}
 
 // ─── Sidebar Tab definitions ──────────────────────────────────────────────────
 
@@ -21,6 +52,7 @@ const TABS = [
   { id: 'config', label: 'Generation', icon: SlidersHorizontal },
   { id: 'presets', label: 'Prompt Presets', icon: BookOpen },
   { id: 'providers', label: 'AI Providers', icon: Globe },
+  { id: 'skills', label: 'Skills', icon: Sparkles },
 ] as const
 
 type TabId = (typeof TABS)[number]['id']
@@ -494,6 +526,7 @@ export default function SettingsPage() {
   const {
     settings, setSettings, saveSettings,
     providers, saveProvider, removeProvider,
+    skills, saveSkill, deleteSkill,
   } = useApp()
   const [activeTab, setActiveTab] = useState<TabId>('config')
   const [localSettings, setLocalSettings] = useState(settings)
@@ -501,6 +534,90 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false)
   const [savedFeedback, setSavedFeedback] = useState(false)
   const [showAddProvider, setShowAddProvider] = useState(false)
+
+  // Skills Editor State
+  const [activeSkill, setActiveSkill] = useState<Skill | null>(null)
+  const [editSkill, setEditSkill] = useState<Skill | null>(null)
+  const [panelOpen, setPanelOpen] = useState(false)
+  const [validationError, setValidationError] = useState<string | null>(null)
+
+  const handleOpenSkill = (skill: Skill) => {
+    setActiveSkill(skill)
+    setEditSkill(skill)
+    setValidationError(null)
+    setTimeout(() => setPanelOpen(true), 10)
+  }
+
+  const handleCloseSkill = () => {
+    setPanelOpen(false)
+    setValidationError(null)
+    setTimeout(() => {
+      setActiveSkill(null)
+      setEditSkill(null)
+    }, 300)
+  }
+
+  const updateEditSkill = <K extends keyof Skill>(key: K, value: Skill[K]) => {
+    setEditSkill(prev => prev ? { ...prev, [key]: value } : null)
+  }
+
+  const validateSkill = (skill: Skill): string | null => {
+    if (!skill.name.trim()) return "Skill name is required."
+    if (!skill.command.trim()) return "Slash command is required."
+    if (!/^[a-zA-Z0-9_-]+$/.test(skill.command)) return "Command must contain only alphanumeric characters, underscores, or hyphens."
+    if (!skill.systemPrompt.trim()) return "System prompt is required."
+    if (skill.temperature !== undefined && skill.temperature !== null && (skill.temperature < 0 || skill.temperature > 2)) {
+      return "Temperature must be between 0.0 and 2.0."
+    }
+    // Check command uniqueness (case insensitive)
+    const commandConflict = skills.some(s => s.command.toLowerCase() === skill.command.toLowerCase() && s.id !== skill.id)
+    if (commandConflict) return `A skill with command /${skill.command} already exists.`
+    return null
+  }
+
+  const handleSaveSkill = async () => {
+    if (!editSkill) return
+    const error = validateSkill(editSkill)
+    if (error) {
+      setValidationError(error)
+      return
+    }
+    setValidationError(null)
+    try {
+      const finalSkill: Skill = {
+        ...editSkill,
+        id: editSkill.id || `custom-${Date.now()}`,
+        command: editSkill.command.toLowerCase().trim(),
+      }
+      await saveSkill(finalSkill)
+      handleCloseSkill()
+    } catch (err: any) {
+      setValidationError(err.message || "Failed to save skill.")
+    }
+  }
+
+  const handleDeleteSkill = async () => {
+    if (!editSkill?.id) return
+    if (!confirm(`Are you sure you want to delete the skill "${editSkill.name}"?`)) return
+    try {
+      await deleteSkill(editSkill.id)
+      handleCloseSkill()
+    } catch (err: any) {
+      setValidationError(err.message || "Failed to delete skill.")
+    }
+  }
+
+  const handleToggleSkill = async (skill: Skill) => {
+    try {
+      const updatedSkill: Skill = {
+        ...skill,
+        enabled: skill.enabled === false ? true : false,
+      }
+      await saveSkill(updatedSkill)
+    } catch (err) {
+      console.error("Failed to toggle skill state:", err)
+    }
+  }
 
   // Sync when settings load from server
   useEffect(() => { setLocalSettings(settings) }, [settings])
@@ -570,7 +687,10 @@ export default function SettingsPage() {
 
       {/* ── Content area ── */}
       <main className="flex-1 min-w-0 overflow-y-auto">
-        <div className="max-w-2xl mx-auto px-6 py-8 space-y-6">
+        <div className={cn(
+          "mx-auto px-6 py-8 space-y-6 transition-all duration-300",
+          activeTab === 'skills' ? 'max-w-5xl' : 'max-w-2xl'
+        )}>
 
           {/* ── Generation Config ── */}
           {activeTab === 'config' && (
@@ -758,8 +878,380 @@ export default function SettingsPage() {
             </>
           )}
 
+          {/* ── Skills Tab ── */}
+          {activeTab === 'skills' && (
+            <>
+              <div className="flex items-center justify-between">
+                <div>
+                  <h1 className="text-xl font-bold text-foreground">Skills Settings</h1>
+                  <p className="text-sm text-muted-foreground mt-0.5">
+                    Configure and manage active slash-command skills
+                  </p>
+                </div>
+                <button
+                  onClick={() => handleOpenSkill(emptySkill)}
+                  className="flex items-center gap-1.5 px-3 py-2 text-sm rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 transition-all font-semibold cursor-pointer"
+                >
+                  <Plus size={14} />
+                  New Skill
+                </button>
+              </div>
+
+              {/* Grid Layout */}
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {/* "+" New Skill card */}
+                <button
+                  onClick={() => handleOpenSkill(emptySkill)}
+                  className="border border-dashed border-border hover:border-primary/50 bg-secondary/10 hover:bg-primary/5 rounded-xl p-4 flex flex-col items-center justify-center h-44 transition-all duration-300 group text-muted-foreground hover:text-primary cursor-pointer"
+                >
+                  <div className="w-9 h-9 rounded-full border border-dashed border-border group-hover:border-primary/50 flex items-center justify-center mb-2">
+                    <Plus size={16} />
+                  </div>
+                  <span className="text-xs font-semibold">Add Custom Skill</span>
+                  <span className="text-[10px] opacity-60 mt-0.5">Build custom commands</span>
+                </button>
+
+                {skills.map(skill => {
+                  const IconComponent = (Icons as any)[skill.icon] || Icons.Sparkles
+                  const colors = CATEGORY_COLORS[skill.category] || { text: "text-primary", bg: "bg-primary/10 border-primary/20", border: "border-primary/20" }
+
+                  return (
+                    <div
+                      key={skill.id}
+                      onClick={() => handleOpenSkill(skill)}
+                      className={cn(
+                        "text-left border bg-card/40 rounded-xl p-4 flex flex-col justify-between h-44 hover:border-primary/50 hover:bg-secondary/20 transition-all duration-300 group shadow-md hover:shadow-lg relative overflow-hidden cursor-pointer",
+                        skill.enabled === false ? "opacity-60 border-border/40" : "border-border"
+                      )}
+                    >
+                      <div>
+                        <div className="flex items-center justify-between gap-2 mb-3">
+                          <div className={cn("w-8 h-8 rounded-lg flex items-center justify-center border", colors.bg, colors.text, colors.border)}>
+                            <IconComponent size={16} />
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[10px] font-mono bg-secondary px-1.5 py-0.5 rounded text-muted-foreground/90 font-semibold">
+                              /{skill.command}
+                            </span>
+                            {skill.isPremium && (
+                              <span className="text-[8px] tracking-wide uppercase px-1 py-0.2 bg-primary/15 text-primary border border-primary/20 rounded font-bold scale-90">
+                                PRO
+                              </span>
+                            )}
+                            <span className={cn("text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded scale-90", colors.bg, colors.text)}>
+                              {skill.category}
+                            </span>
+                            {/* Toggle Switch */}
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleToggleSkill(skill);
+                              }}
+                              className={cn(
+                                "relative inline-flex h-4.5 w-8.5 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-0 ml-1.5 z-10",
+                                skill.enabled !== false ? "bg-primary" : "bg-neutral-700"
+                              )}
+                              title={skill.enabled !== false ? "Disable skill" : "Enable skill"}
+                            >
+                              <span
+                                className={cn(
+                                  "pointer-events-none inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out",
+                                  skill.enabled !== false ? "translate-x-4" : "translate-x-0"
+                                )}
+                              />
+                            </button>
+                          </div>
+                        </div>
+
+                        <h3 className="font-bold text-sm text-foreground group-hover:text-primary transition-colors truncate">
+                          {skill.name}
+                        </h3>
+                        <p className="text-xs text-muted-foreground line-clamp-2 mt-1 leading-relaxed">
+                          {skill.description || "No description provided."}
+                        </p>
+                      </div>
+
+                      <div className="mt-3 pt-3 border-t border-border/40 flex items-center justify-between text-[10px] text-muted-foreground/75 font-semibold">
+                        <span>Temp: {skill.temperature ?? 0.7}</span>
+                        <span>Tokens: {skill.maxTokens ?? 'Max'}</span>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </>
+          )}
+
         </div>
       </main>
+
+      {/* Sliding Sidepanel Drawer for Skill Editor */}
+      {activeSkill && (
+        <div className="fixed inset-0 z-50 flex justify-end">
+          {/* Backdrop */}
+          <div
+            className={cn(
+              "absolute inset-0 bg-black/60 backdrop-blur-sm transition-opacity duration-300",
+              panelOpen ? "opacity-100" : "opacity-0"
+            )}
+            onClick={handleCloseSkill}
+          />
+          {/* Drawer */}
+          <div
+            className={cn(
+              "relative w-full max-w-xl h-full bg-[#181818] border-l border-border shadow-2xl flex flex-col transition-all duration-300 ease-in-out transform z-10",
+              panelOpen ? "translate-x-0" : "translate-x-full"
+            )}
+          >
+            {/* Header */}
+            <div className="px-6 py-5 border-b border-border/60 flex items-center justify-between bg-card/45 select-none">
+              <div>
+                <h2 className="text-base font-bold text-foreground">
+                  {editSkill?.id ? `Edit Skill: ${editSkill.name}` : "Create Custom Skill"}
+                </h2>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Configure trigger, instructions, parameters, and aesthetics.
+                </p>
+              </div>
+              <button
+                onClick={handleCloseSkill}
+                className="p-1 rounded-lg hover:bg-secondary text-muted-foreground hover:text-foreground transition-all cursor-pointer"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            {/* Scrollable Form */}
+            <div className="flex-1 overflow-y-auto p-6 space-y-5">
+              {validationError && (
+                <div className="text-xs text-destructive bg-destructive/10 border border-destructive/20 px-3 py-2 rounded-lg leading-relaxed select-none animate-in fade-in duration-200">
+                  {validationError}
+                </div>
+              )}
+
+              {/* Name & Command */}
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-xs font-semibold text-muted-foreground uppercase tracking-widest block mb-1.5">
+                    Skill Name
+                  </label>
+                  <input
+                    type="text"
+                    value={editSkill?.name || ''}
+                    onChange={e => updateEditSkill('name', e.target.value)}
+                    placeholder="e.g. Translator"
+                    className="w-full bg-secondary/60 border border-border rounded-lg px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary/50"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-muted-foreground uppercase tracking-widest block mb-1.5">
+                    Slash Command
+                  </label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm font-mono font-bold">/</span>
+                    <input
+                      type="text"
+                      value={editSkill?.command || ''}
+                      onChange={e => updateEditSkill('command', e.target.value)}
+                      placeholder="translate"
+                      className="w-full bg-secondary/60 border border-border rounded-lg pl-6 pr-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary/50 font-mono"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Category & Selectable Icons */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="text-xs font-semibold text-muted-foreground uppercase tracking-widest block mb-1.5">
+                    Category
+                  </label>
+                  <select
+                    value={editSkill?.category || 'Writing'}
+                    onChange={e => updateEditSkill('category', e.target.value as any)}
+                    className="w-full bg-secondary/60 border border-border rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary/50 cursor-pointer"
+                  >
+                    <option value="Writing">Writing</option>
+                    <option value="Development">Development</option>
+                    <option value="Research">Research</option>
+                    <option value="Documents">Documents</option>
+                    <option value="Media">Media</option>
+                  </select>
+                </div>
+                
+                <div>
+                  <label className="text-xs font-semibold text-muted-foreground uppercase tracking-widest block mb-1.5">
+                    Aesthetics: Active Icon
+                  </label>
+                  <div className="flex items-center gap-3 bg-secondary/20 border border-border/60 rounded-xl px-3 py-2">
+                    <div className="w-8 h-8 rounded-lg flex items-center justify-center bg-primary/10 text-primary border border-primary/20 font-semibold">
+                      {React.createElement((Icons as any)[editSkill?.icon || 'Sparkles'] || Icons.Sparkles, { size: 16 })}
+                    </div>
+                    <div className="text-xs">
+                      <span className="font-bold text-foreground block">{editSkill?.icon || 'Sparkles'}</span>
+                      <span className="text-[10px] text-muted-foreground">Lucide icon</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Visual Icon Grid Selection */}
+              <div>
+                <label className="text-xs font-semibold text-muted-foreground uppercase tracking-widest block mb-1.5">
+                  Pick an Icon
+                </label>
+                <div className="grid grid-cols-10 gap-1.5 border border-border/60 bg-secondary/20 rounded-xl p-2.5 max-h-36 overflow-y-auto">
+                  {AVAILABLE_ICONS.map(iconName => {
+                    const isSelected = editSkill?.icon === iconName;
+                    return (
+                      <button
+                        key={iconName}
+                        type="button"
+                        onClick={() => updateEditSkill('icon', iconName)}
+                        className={cn(
+                          "p-2 rounded-lg border flex items-center justify-center transition-all hover:bg-secondary cursor-pointer",
+                          isSelected
+                            ? "border-primary bg-primary/15 text-primary"
+                            : "border-transparent text-muted-foreground hover:text-foreground"
+                        )}
+                        title={iconName}
+                      >
+                        {React.createElement((Icons as any)[iconName] || Icons.HelpCircle, { size: 14 })}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+
+              {/* Description */}
+              <div>
+                <label className="text-xs font-semibold text-muted-foreground uppercase tracking-widest block mb-1.5">
+                  Description
+                </label>
+                <input
+                  type="text"
+                  value={editSkill?.description || ''}
+                  onChange={e => updateEditSkill('description', e.target.value)}
+                  placeholder="Summarize the action..."
+                  className="w-full bg-secondary/60 border border-border rounded-lg px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary/50"
+                />
+              </div>
+
+              {/* Parameters */}
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-xs font-semibold text-muted-foreground uppercase tracking-widest block mb-1.5">
+                    Temperature (0.0 - 2.0)
+                  </label>
+                  <input
+                    type="number"
+                    step={0.1}
+                    min={0}
+                    max={2}
+                    value={editSkill?.temperature !== undefined && editSkill.temperature !== null ? editSkill.temperature : ''}
+                    onChange={e => {
+                      const val = e.target.value === '' ? undefined : Number(e.target.value);
+                      updateEditSkill('temperature', val);
+                    }}
+                    placeholder="0.7 (Default)"
+                    className="w-full bg-secondary/60 border border-border rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary/50"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-muted-foreground uppercase tracking-widest block mb-1.5">
+                    Max Tokens
+                  </label>
+                  <input
+                    type="number"
+                    step={256}
+                    min={256}
+                    max={32768}
+                    value={editSkill?.maxTokens !== undefined && editSkill.maxTokens !== null ? editSkill.maxTokens : ''}
+                    onChange={e => {
+                      const val = e.target.value === '' ? undefined : Number(e.target.value);
+                      updateEditSkill('maxTokens', val);
+                    }}
+                    placeholder="4096 (Default)"
+                    className="w-full bg-secondary/60 border border-border rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-primary/50"
+                  />
+                </div>
+              </div>
+
+              {/* System Prompt (character & word count) */}
+              <div className="space-y-1.5">
+                <div className="flex justify-between items-center select-none">
+                  <label className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">
+                    System Prompt / Instructions
+                  </label>
+                  <span className="text-[10px] text-muted-foreground/85 font-semibold font-mono bg-secondary px-2 py-0.5 rounded border border-border/40">
+                    {editSkill?.systemPrompt ? editSkill.systemPrompt.trim().split(/\s+/).filter(Boolean).length : 0} words / {editSkill?.systemPrompt?.length || 0} chars
+                  </span>
+                </div>
+                <textarea
+                  value={editSkill?.systemPrompt || ''}
+                  onChange={e => updateEditSkill('systemPrompt', e.target.value)}
+                  rows={8}
+                  className="w-full bg-secondary/40 border border-border rounded-xl px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary/40 resize-y font-mono leading-relaxed overflow-y-auto"
+                  placeholder="Enter custom instructions or system prompt..."
+                />
+              </div>
+
+              {/* Toggles */}
+              <div className="flex items-center gap-6 pt-2 select-none border-t border-border/40">
+                <label className="flex items-center gap-2.5 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={editSkill?.enabled ?? true}
+                    onChange={e => updateEditSkill('enabled', e.target.checked)}
+                    className="rounded bg-secondary border-border text-primary focus:ring-0 focus:ring-offset-0 w-4 h-4 cursor-pointer"
+                  />
+                  <span className="text-xs font-semibold text-foreground/80">Enabled</span>
+                </label>
+                <label className="flex items-center gap-2.5 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={editSkill?.isPremium ?? false}
+                    onChange={e => updateEditSkill('isPremium', e.target.checked)}
+                    className="rounded bg-secondary border-border text-primary focus:ring-0 focus:ring-offset-0 w-4 h-4 cursor-pointer"
+                  />
+                  <span className="text-xs font-semibold text-foreground/80">Pro Level Skill</span>
+                </label>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="px-6 py-4 border-t border-border/60 flex items-center justify-between bg-card/25 select-none">
+              {editSkill?.id ? (
+                <button
+                  type="button"
+                  onClick={handleDeleteSkill}
+                  className="flex items-center gap-1.5 px-3 py-2 text-xs rounded-lg border border-destructive/30 hover:border-destructive text-destructive hover:bg-destructive/10 transition-all font-semibold cursor-pointer"
+                >
+                  <Trash2 size={13} /> Delete Skill
+                </button>
+              ) : <div />}
+              
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={handleCloseSkill}
+                  className="px-4 py-2 text-xs font-semibold rounded-lg border border-border text-muted-foreground hover:bg-secondary transition-all cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSaveSkill}
+                  className="flex items-center gap-1.5 px-4 py-2 text-xs font-bold rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 transition-all cursor-pointer"
+                >
+                  <Save size={13} /> Save Skill
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

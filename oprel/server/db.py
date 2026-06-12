@@ -109,6 +109,48 @@ def init_db():
         )
     """)
     
+    # Create skills table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS skills (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT,
+            system_prompt TEXT NOT NULL,
+            category TEXT NOT NULL,
+            icon TEXT NOT NULL,
+            temperature REAL,
+            max_tokens INTEGER,
+            output_schema TEXT,
+            is_premium INTEGER DEFAULT 0,
+            enabled INTEGER DEFAULT 1,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
+    # Pre-populate skills if empty
+    cursor.execute("SELECT COUNT(*) FROM skills")
+    if cursor.fetchone()[0] == 0:
+        default_skills = [
+            ("explain", "Explain", "Explain a concept simply", "You are an expert tutor. Break down complex concepts into simple, intuitive explanations using analogies, clear examples, and step-by-step guidance. Tailor your explanation to be easily understood by anyone.", "Writing", "Brain", 0.7, 4096, None, 0, 1),
+            ("summarize", "Summarize", "Create a concise summary", "You are a professional summarizer. Distill the following text into a structured, concise summary. Capture all key facts, critical arguments, and core conclusions. Organize the summary with key takeaways first, followed by a bulleted breakdown of crucial points.", "Writing", "Sparkles", 0.5, 4096, None, 0, 1),
+            ("rewrite", "Rewrite", "Rewrite text casually or professionally", "You are an expert editor. Rewrite the provided text according to the user's instructions while keeping the core message intact. Enhance clarity, flow, readability, and engagement. Adapt the tone (professional, casual, persuasive, etc.) as requested.", "Writing", "RefreshCw", 0.7, 4096, None, 0, 1),
+            ("translate", "Translate", "Translate text to another language", "You are a professional translator fluent in multiple languages. Translate the provided text into the target language accurately, preserving nuance, cultural context, and the original formatting. Do not add any introductory or explanatory text in your response.", "Writing", "Globe", 0.3, 4096, None, 0, 1),
+            ("email", "Write Email", "Generate professional emails", "You are an email drafting specialist. Craft a professional, clear, and well-structured email based on the user's prompt. Ensure the tone is appropriate for the context, includes a clear subject line, and ends with a professional sign-off.", "Writing", "Mail", 0.6, 2048, None, 0, 1),
+            ("code", "Generate Code", "Generate high-quality code snippets", "You are an elite software engineer. Write clean, efficient, and well-documented code that solves the user's problem. Follow industry best practices for the specified programming language. Include explanatory comments inside the code block for tricky parts.", "Development", "Code2", 0.2, 8192, None, 0, 1),
+            ("debug", "Debug Code", "Find and resolve code issues", "You are a senior debugging specialist. Analyze the provided code for errors, performance bottlenecks, syntax bugs, and security weaknesses. Explain the root cause of the issue and provide the corrected code block showing how to resolve it.", "Development", "Bug", 0.1, 8192, None, 0, 1),
+            ("reviewcode", "Review Code", "Analyze code quality and security", "You are a principal code architect. Perform a comprehensive code review of the submitted source. Evaluate: code quality, performance, architecture patterns, security flaws, and maintainability. Provide a structured review report highlighting improvements.", "Development", "Eye", 0.2, 8192, None, 0, 1),
+            ("websearch", "Web Search", "Search the web for current information", "You are a search assistant. Utilize search results to provide accurate, factual, and up-to-date answers. Cite sources appropriately, cross-reference assertions, and clarify any ambiguities in the retrieved data.", "Research", "Search", 0.4, 4096, None, 0, 1),
+            ("deepresearch", "Deep Research", "Comprehensive multi-step research", "You are a lead researcher. Perform an exhaustive, rigorous deep dive into the query. Utilize a scientific research methodology: identify core themes, cross-reference facts, validate sources, and structure findings into a comprehensive research report. Format output with: Executive Summary, Detailed Comparison Framework, Source Validation, Fact-Checking Process, and Confidence Scoring.", "Research", "Layers", 0.3, 8192, None, 1, 1),
+            ("competitoranalysis", "Competitor Analysis", "Analyze competitor options & features", "You are a market analyst. Evaluate the competitor landscapes and perform a detailed SWOT and competitor analysis for the options specified. Analyze price points, feature parity, strengths, weaknesses, and market opportunities. Format as a structured comparison report.", "Research", "Target", 0.3, 8192, None, 1, 1),
+            ("analyzepdf", "Analyze PDF", "Extract insights from PDF documents", "You are a document extraction system. Read the text extracted from the PDF file and answer questions based strictly on the content of the file. Provide page number citations if available. If the answer cannot be found in the document, state that clearly.", "Documents", "FileText", 0.3, 4096, None, 0, 1),
+            ("presentation", "Generate Presentation", "Create structured presentation slides", "You are a presentation design consultant. Structure slide outlines, talk tracks, and key content for a slide presentation deck. Group into logical sections: Intro, Main Arguments/Data, Conclusion, and Next Steps. For each slide, write the Slide Title, Key Bullet Points, and Speaker Notes.", "Documents", "Presentation", 0.6, 4096, None, 1, 1),
+            ("generateimage", "Generate Image", "Create images from text descriptions", "You are an AI image generator prompt engineer. Expand the user's description into a highly descriptive, professional prompt optimized for Stable Diffusion or Flux. Include camera angles, art style, lighting parameters (e.g. volumetric lighting, octane render), and specific color schemes.", "Media", "ImageIcon", 0.7, 2048, None, 1, 1)
+        ]
+        cursor.executemany("""
+            INSERT INTO skills (id, name, description, system_prompt, category, icon, temperature, max_tokens, output_schema, is_premium, enabled)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, default_skills)
+
     conn.commit()
     conn.close()
 
@@ -487,3 +529,77 @@ def _row_to_provider(row) -> dict:
     except Exception:
         d["available_model_ids"] = []
     return d
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Skills CRUD
+# ──────────────────────────────────────────────────────────────────────────────
+
+def list_skills() -> List[dict]:
+    """Return all configured skills."""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM skills ORDER BY category, name ASC")
+    rows = cursor.fetchall()
+    conn.close()
+    
+    skills = []
+    for r in rows:
+        d = dict(r)
+        d["is_premium"] = bool(d.get("is_premium", 0))
+        d["enabled"] = bool(d.get("enabled", 1))
+        skills.append(d)
+    return skills
+
+
+def get_skill(skill_id: str) -> Optional[dict]:
+    """Retrieve a single skill by ID."""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM skills WHERE id = ?", (skill_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if row:
+        d = dict(row)
+        d["is_premium"] = bool(d.get("is_premium", 0))
+        d["enabled"] = bool(d.get("enabled", 1))
+        return d
+    return None
+
+
+def upsert_skill(s: dict) -> dict:
+    """Insert or update a skill."""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO skills (id, name, description, system_prompt, category, icon, temperature, max_tokens, output_schema, is_premium, enabled)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            name = excluded.name,
+            description = excluded.description,
+            system_prompt = excluded.system_prompt,
+            category = excluded.category,
+            icon = excluded.icon,
+            temperature = excluded.temperature,
+            max_tokens = excluded.max_tokens,
+            output_schema = excluded.output_schema,
+            is_premium = excluded.is_premium,
+            enabled = excluded.enabled
+    """, (
+        s["id"], s["name"], s.get("description", ""), s["system_prompt"], s["category"], s["icon"],
+        s.get("temperature"), s.get("max_tokens"), s.get("output_schema"),
+        1 if s.get("is_premium") else 0, 1 if s.get("enabled", True) else 0
+    ))
+    conn.commit()
+    conn.close()
+    return get_skill(s["id"])
+
+
+def delete_skill(skill_id: str):
+    """Delete a skill by ID."""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM skills WHERE id = ?", (skill_id,))
+    conn.commit()
+    conn.close()
+

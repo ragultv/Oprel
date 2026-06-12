@@ -81,6 +81,8 @@ setup(
         "starlette>=0.41.3",
         "chromadb>=0.5.0",
         "rank_bm25>=0.2.2",
+        "google-genai>=2.0.0",
+        "groq>=0.9.0",
     ],
     extras_require={
         "local": ["torch>=2.1.0"],

@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import {
   MessageSquarePlus,
   Box,
@@ -14,6 +14,7 @@ import {
   Download,
   Database,
   Image,
+  RefreshCw,
 } from "lucide-react"
 import { usePathname, useRouter } from "next/navigation"
 import { cn } from "@/services/utils"
@@ -47,6 +48,54 @@ function groupConversations(convs: Conversation[]) {
   return { today, yesterday, older }
 }
 
+function BackgroundTasksIndicator({ tasks }: { tasks: Array<{ id: string; label: string }> }) {
+  const [visible, setVisible] = useState(false);
+  const [activeTasks, setActiveTasks] = useState(tasks);
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const mountTimeRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (tasks.length > 0) {
+      if (timerRef.current) clearTimeout(timerRef.current);
+      setActiveTasks(tasks);
+      setVisible(true);
+      if (!mountTimeRef.current) {
+        mountTimeRef.current = Date.now();
+      }
+    } else {
+      // Delay hiding to prevent flicker
+      const elapsed = mountTimeRef.current ? Date.now() - mountTimeRef.current : 0;
+      const minDuration = 1000; // Keep it visible for at least 1 second
+      const delay = Math.max(0, minDuration - elapsed);
+
+      timerRef.current = setTimeout(() => {
+        setVisible(false);
+        mountTimeRef.current = null;
+      }, delay);
+    }
+
+    return () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+    };
+  }, [tasks]);
+
+  if (!visible) return null;
+
+  return (
+    <div className="px-3 py-2 rounded-xl bg-[#222] border border-border/80 text-[10px] text-muted-foreground flex items-center gap-2.5 mb-2 shadow-inner select-none animate-in fade-in slide-in-from-bottom-2 duration-200">
+      <RefreshCw size={11} className="animate-spin text-primary shrink-0" />
+      <div className="flex-1 min-w-0">
+        <span className="font-bold text-foreground block leading-tight">
+          Background Tasks ({activeTasks.length})
+        </span>
+        <span className="text-[9px] text-muted-foreground truncate block mt-0.5">
+          {activeTasks[activeTasks.length - 1]?.label || "Processing"}...
+        </span>
+      </div>
+    </div>
+  );
+}
+
 export function Sidebar() {
   const {
     conversations,
@@ -58,6 +107,7 @@ export function Sidebar() {
     setSettingsOpen,
     activeModelId,
     models,
+    backgroundTasks,
   } = useApp()
 
   const { getOngoingCount, setDialogOpen } = useDownloads()
@@ -283,6 +333,9 @@ export function Sidebar() {
             </div>
             <div className="w-2 h-2 rounded-full bg-green-500 pulse-dot shrink-0" />
           </div> */}
+
+          {/* Background Tasks */}
+          <BackgroundTasksIndicator tasks={backgroundTasks} />
 
           {/* User / Settings */}
           <div className="flex items-center gap-2 px-1">

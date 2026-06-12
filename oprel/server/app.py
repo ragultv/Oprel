@@ -32,6 +32,7 @@ from oprel.server.routes import (
     images,
     providers,
     system,
+    skills,
 )
 
 
@@ -186,6 +187,7 @@ app.include_router(ollama_compat.router)
 app.include_router(images.router)
 app.include_router(providers.router)
 app.include_router(system.router)
+app.include_router(skills.router)
 
 
 def run_server(host: str = "127.0.0.1", port: int = 11435):

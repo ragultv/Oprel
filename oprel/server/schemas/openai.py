@@ -22,6 +22,7 @@ class OpenAIChatRequest(BaseModel):
     conversation_id: str | None = None
     thinking: bool = False
     rag: bool = False
+    skill: dict | None = None
 
 
 class OpenAICompletionRequest(BaseModel):
