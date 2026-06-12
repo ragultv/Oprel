@@ -107,20 +107,10 @@ class HTTPClient(BaseClient):
         Raises:
             BackendError: If request fails
         """
-        url = f"{self.base_url}/v1/completions"
-
         model = kwargs.pop("model", None)
+        messages = kwargs.pop("messages", None)
+        include_reasoning_content = bool(kwargs.pop("include_reasoning_content", False))
 
-        payload = {
-            "prompt": prompt,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            "stream": stream,
-            **kwargs,
-        }
-        if model:
-            payload["model"] = model
-        
         # For vision models, use chat completions endpoint with proper image format
         if images:
             url = f"{self.base_url}/v1/chat/completions"
@@ -157,11 +147,36 @@ class HTTPClient(BaseClient):
             import logging
             logging.getLogger(__name__).info(f"Sending {len(images)} images via chat completions endpoint")
 
+        elif messages:
+            # Use chat completions endpoint with messages array
+            url = f"{self.base_url}/v1/chat/completions"
+            payload = {
+                "messages": messages,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+                "stream": stream,
+                **kwargs,
+            }
+            if model:
+                payload["model"] = model
+
+        else:
+            url = f"{self.base_url}/v1/completions"
+            payload = {
+                "prompt": prompt,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+                "stream": stream,
+                **kwargs,
+            }
+            if model:
+                payload["model"] = model
+
         try:
             if stream:
-                return self._stream_response(url, payload, timeout)
+                return self._stream_response(url, payload, timeout, include_reasoning_content=include_reasoning_content)
             else:
-                return self._complete_response(url, payload, timeout)
+                return self._complete_response(url, payload, timeout, include_reasoning_content=include_reasoning_content)
         except requests.Timeout as e:
             raise BackendError(
                 f"Request timed out after {timeout or self.read_timeout}s. "
@@ -181,7 +196,8 @@ class HTTPClient(BaseClient):
         self,
         url: str,
         payload: dict,
-        timeout: Optional[float] = None
+        timeout: Optional[float] = None,
+        include_reasoning_content: bool = False,
     ) -> str:
         """
         Non-streaming response with configurable timeout.
@@ -214,8 +230,12 @@ class HTTPClient(BaseClient):
             choice = data["choices"][0]
             if "text" in choice:
                 return choice["text"]
-            elif "message" in choice and "content" in choice["message"]:
-                return choice["message"]["content"]
+            elif "message" in choice:
+                message = choice["message"]
+                if message.get("content"):
+                    return message["content"]
+                if include_reasoning_content and message.get("reasoning_content"):
+                    return message["reasoning_content"]
         
         # Fallback
         return data.get("text", data.get("content", ""))
@@ -224,7 +244,8 @@ class HTTPClient(BaseClient):
         self,
         url: str,
         payload: dict,
-        timeout: Optional[float] = None
+        timeout: Optional[float] = None,
+        include_reasoning_content: bool = False,
     ) -> Iterator[str]:
         """
         Streaming response with UTF-8 safe buffering (M1.12).
@@ -255,6 +276,11 @@ class HTTPClient(BaseClient):
             stream=True,
             timeout=effective_timeout,
         )
+        if not response.ok:
+            import logging
+            logging.getLogger(__name__).error(
+                f"Backend {response.status_code} at {url}: {response.text[:500]}"
+            )
         response.raise_for_status()
 
         # UTF-8 buffer for incomplete multi-byte sequences (M1.12)
@@ -312,7 +338,7 @@ class HTTPClient(BaseClient):
                     
                     try:
                         data = json.loads(data_str)
-                        token = self._extract_token(data)
+                        token = self._extract_token(data, include_reasoning_content=include_reasoning_content)
                         if token:
                             yield token
                     except json.JSONDecodeError:
@@ -330,7 +356,7 @@ class HTTPClient(BaseClient):
                         if data_str and data_str != "[DONE]":
                             try:
                                 data = json.loads(data_str)
-                                token = self._extract_token(data)
+                                token = self._extract_token(data, include_reasoning_content=include_reasoning_content)
                                 if token:
                                     yield token
                             except json.JSONDecodeError:
@@ -338,7 +364,7 @@ class HTTPClient(BaseClient):
             except Exception:
                 pass
 
-    def _extract_token(self, data: dict) -> str:
+    def _extract_token(self, data: dict, include_reasoning_content: bool = False) -> str:
         """
         Extract token text from various API response formats.
         
@@ -355,6 +381,15 @@ class HTTPClient(BaseClient):
                 delta = choice["delta"]
                 if "content" in delta:
                     return delta["content"]
+                if include_reasoning_content and "reasoning_content" in delta:
+                    return delta["reasoning_content"]
+
+            if "message" in choice:
+                message = choice["message"]
+                if message.get("content"):
+                    return message["content"]
+                if include_reasoning_content and message.get("reasoning_content"):
+                    return message["reasoning_content"]
             
             # llama.cpp format
             if "text" in choice:

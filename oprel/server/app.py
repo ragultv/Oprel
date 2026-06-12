@@ -28,7 +28,9 @@ from oprel.server.routes import (
     conversations,
     users,
     openai_compat,
+    anthropic_compat,
     ollama_compat,
+    copilot_compat,
     images,
     providers,
     system,
@@ -157,6 +159,8 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    allow_private_network=True,
+    expose_headers=["x-request-id", "X-Conversation-ID"],
 )
 
 webui_dir = get_webui_dir()
@@ -183,6 +187,8 @@ app.include_router(conversations.router)
 app.include_router(users.router)
 app.include_router(openai_compat.router)
 app.include_router(ollama_compat.router)
+app.include_router(anthropic_compat.router)
+app.include_router(copilot_compat.router, prefix="/copilot")
 app.include_router(images.router)
 app.include_router(providers.router)
 app.include_router(system.router)

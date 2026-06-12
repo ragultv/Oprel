@@ -56,6 +56,29 @@ def detect_model_type(model_id: str) -> str:
         return "unknown"
 
 
+def build_system_prompt(system_prompt: str | None = None, thinking: bool = False) -> str:
+    """Compose the shared system prompt used by both prompt and message APIs."""
+    global_instruction = (
+        "Always format responses in clean, structured Markdown.\n"
+        "Use ## or ### headings to organize sections. "
+        "Use **bold** for key terms, `backticks` for inline code. "
+        "Wrap all code in fenced code blocks with language tags (```python, ```javascript, etc). "
+        "Use bullet points or numbered lists for multiple items. "
+        "Use tables for comparisons. Keep paragraphs short and focused.\n"
+        "Reply in English if the user uses English. "
+        "If the user communicates in any other language, reply in that same language if you know it."
+    )
+
+    effective_system_prompt = f"{global_instruction}\n\n{system_prompt}" if system_prompt else global_instruction
+
+    if thinking:
+        effective_system_prompt += THINKING_MODE_INSTRUCTION
+    else:
+        effective_system_prompt += FAST_MODE_SUPPRESSION
+
+    return effective_system_prompt
+
+
 def format_chat_prompt(
     model_id: str,
     user_message: str,
@@ -66,28 +89,7 @@ def format_chat_prompt(
     """
     Format a prompt with the correct chat template for the model.
     """
-    # Global general instructions for all models
-    GLOBAL_INSTRUCTION = (
-        "Always format responses in clean, structured Markdown.\n"
-        "Use ## or ### headings to organize sections. "
-        "Use **bold** for key terms, `backticks` for inline code. "
-        "Wrap all code in fenced code blocks with language tags (```python, ```javascript, etc). "
-        "Use bullet points or numbered lists for multiple items. "
-        "Use tables for comparisons. Keep paragraphs short and focused.\n"
-        "Reply in English if the user uses English. "
-        "If the user communicates in any other language, reply in that same language if you know it."
-    )
-    
-    if system_prompt:
-        system_prompt = f"{GLOBAL_INSTRUCTION}\n\n{system_prompt}"
-    else:
-        system_prompt = GLOBAL_INSTRUCTION
-
-    # Add mode-specific constraints
-    if thinking:
-        system_prompt += THINKING_MODE_INSTRUCTION
-    else:
-        system_prompt += FAST_MODE_SUPPRESSION
+    system_prompt = build_system_prompt(system_prompt, thinking=thinking)
 
     model_type = detect_model_type(model_id)
     

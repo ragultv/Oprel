@@ -152,8 +152,11 @@ def recommend_max_context(
     vram_for_kv = usable_vram - model_size_gb
     
     if vram_for_kv <= 0:
-        logger.warning("Model size exceeds VRAM - hybrid offloading needed")
-        return 512  # Minimum context
+        logger.warning(
+            "Model size exceeds VRAM - hybrid CPU/GPU offloading will be used. "
+            "KV cache will be allocated in system RAM; using 4096 context."
+        )
+        return 4096  # CPU RAM handles the KV cache in hybrid mode
     
     # Binary search for max context length
     context_options = [512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072]
@@ -175,7 +178,7 @@ def recommend_max_context(
             if idx > 0:
                 return context_options[idx - 1]
             else:
-                return 512
+                return 2048  # Floor: never go below 2048
     
     # All fit, return max
     return context_options[-1]
