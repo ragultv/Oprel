@@ -60,14 +60,3 @@ def validate_image_model_format(model_path: Path, model_name: str) -> tuple[bool
 
     return True, None
 
-
-def get_comfyui_workflow_type(model_format: ModelFormat, model_name: str) -> str:
-    """
-    Legacy helper retained for compatibility with older callers.
-
-    Returns:
-        "unsupported" for any non-GGUF layout.
-    """
-    if model_format == "gguf":
-        return "gguf"
-    return "unsupported"

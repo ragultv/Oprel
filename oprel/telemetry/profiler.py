@@ -103,19 +103,12 @@ class HardwareProfile:
         Get recommended backend based on hardware profile.
         
         Returns:
-            "vllm", "pytorch", or "llama.cpp"
+            "pytorch" or "llama.cpp"
         """
         if not self.has_gpu:
             return "llama.cpp"
         
-        # Future: Use vLLM for high-end GPUs (16GB+ VRAM)
-        if self.vram_total_gb and self.vram_total_gb >= 16:
-            # For Month 3: return "vllm"
-            # For now: use PyTorch
-            logger.debug("High-end GPU detected, recommending pytorch (vllm in Month 3)")
-            return "pytorch"
-        
-        # PyTorch for mid-range GPUs (6GB+ VRAM)
+        # PyTorch for mid-range and high-end GPUs (6GB+ VRAM)
         if self.vram_total_gb and self.vram_total_gb >= 6:
             return "pytorch"
         

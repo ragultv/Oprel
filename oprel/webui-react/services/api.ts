@@ -102,6 +102,25 @@ const API_BASE = (typeof window !== 'undefined' && window.location.port === '300
 : ''; 
 
 export const API = {
+  async getCanvas(conversationId: string): Promise<any> {
+    try {
+      const res = await fetch(`${API_BASE}/conversations/${conversationId}/canvas`);
+      if (!res.ok) return null;
+      return await res.json();
+    } catch {
+      return null;
+    }
+  },
+
+  async saveCanvas(conversationId: string, doc: { title: string; content: string; card_timestamp?: string }): Promise<void> {
+    try {
+      await fetch(`${API_BASE}/conversations/${conversationId}/canvas`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(doc)
+      });
+    } catch {}
+  },
   async fetchModels(): Promise<Model[]> {
     const res = await fetch(`${API_BASE}/v1/models`);
     if (!res.ok) throw new Error('Failed to fetch models');

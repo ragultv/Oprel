@@ -21,8 +21,9 @@ def encode_image_base64(image_path: str) -> str:
     Returns:
         Base64 encoded string
     """
-    with open(image_path, 'rb') as f:
-        return base64.b64encode(f.read()).decode('utf-8')
+    from oprel.utils.multimodal import preprocess_image_to_bytes
+    compressed_bytes = preprocess_image_to_bytes(image_path)
+    return base64.b64encode(compressed_bytes).decode('utf-8')
 
 
 def is_vision_model(model_id: str) -> bool:
@@ -134,7 +135,7 @@ def format_vision_prompt(
     # Format based on architecture
     # Since we use the OpenAI chat completions api (/v1/chat/completions) with an array of
     # text and image_url objects, we do NOT need to insert manual placeholders like [IMAGE] or <img>
-    # The server (llama.cpp or vLLM) will use the model's native chat template to insert them properly.
+    # The server (llama.cpp) will use the model's native chat template to insert them properly.
     prompt = text_prompt
     
     return {

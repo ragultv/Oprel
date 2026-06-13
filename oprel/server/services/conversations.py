@@ -31,3 +31,11 @@ def rename_conversation(conversation_id: str, title: str) -> dict[str, bool]:
 
 def analytics_summary(days: int = 7) -> dict:
     return db.get_inference_summary(days)
+
+
+def get_canvas(conversation_id: str) -> dict | None:
+    return db.get_canvas_document(conversation_id)
+
+
+def upsert_canvas(conversation_id: str, title: str, content: str, card_timestamp: str = None) -> dict:
+    return db.upsert_canvas_document(conversation_id, title, content, card_timestamp)

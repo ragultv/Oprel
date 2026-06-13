@@ -271,33 +271,12 @@ function ThinkingBlock({ content, renderers }: { content: string, renderers: any
 // Canvas card prefix used to store canvas-update messages
 const CANVAS_CARD_PREFIX = '__canvas__:'
 
-// ── Canvas localStorage persistence ──────────────────────────────────────────
-const canvasLsKey = (convId: string) => `oprel_canvas_${convId}`
-
-function saveCanvasToStorage(convId: string, doc: CanvasDocument, cardTimestamp: string) {
-  try {
-    localStorage.setItem(canvasLsKey(convId), JSON.stringify({
-      title: doc.title,
-      content: doc.content,
-      updatedAt: doc.updatedAt?.toISOString?.() ?? new Date().toISOString(),
-      cardTimestamp,
-    }))
-  } catch {}
-}
-
-interface StoredCanvas { title: string; content: string; updatedAt: string; cardTimestamp: string }
-
-function loadCanvasFromStorage(convId: string): StoredCanvas | null {
-  try {
-    const raw = localStorage.getItem(canvasLsKey(convId))
-    return raw ? JSON.parse(raw) : null
-  } catch { return null }
-}
 
 /** Returns true if a string looks like AI-generated canvas HTML (long, starts with an HTML tag) */
 function looksLikeCanvasHtml(content: string): boolean {
   const t = content.trim()
-  return t.length > 300 && /^<(h[123]|p|ul|ol|div|section)[ >]/i.test(t)
+  const innerText = t.replace(/^```html\s*/i, '').trim()
+  return innerText.length > 300 && /^<(h[123]|p|ul|ol|div|section)[ >]/i.test(innerText)
 }
 
 function MessageBubble({
@@ -676,39 +655,60 @@ export function ChatView({
   // abort controller for stop-generation
   const abortRef = useRef<AbortController | null>(null)
 
-  // ── Save canvas to localStorage whenever it changes ───────────────────────
+  // ── Save canvas to database whenever it changes ───────────────────────
   useEffect(() => {
     if (canvasMode && activeConversationId && canvasDoc.content) {
-      saveCanvasToStorage(activeConversationId, canvasDoc, canvasCardTimestamp)
+      API.saveCanvas(activeConversationId, { 
+        title: canvasDoc.title, 
+        content: canvasDoc.content, 
+        card_timestamp: canvasCardTimestamp 
+      })
     }
   }, [canvasDoc, canvasMode, activeConversationId, canvasCardTimestamp])
 
   // ── Restore canvas when the active conversation changes ───────────────────
   useEffect(() => {
-    if (!activeConversationId) return
-    const saved = loadCanvasFromStorage(activeConversationId)
-    if (saved && saved.content) {
-      setCanvasDoc({
-        id: `canvas-${activeConversationId}`,
-        title: saved.title,
-        content: saved.content,
-        createdAt: new Date(saved.updatedAt),
-        updatedAt: new Date(saved.updatedAt),
-      })
-      setCanvasCardTimestamp(saved.cardTimestamp || new Date().toISOString())
-      setCanvasMode(true)
-    } else {
-      // Different conversation — reset canvas state
+    if (!activeConversationId) {
       setCanvasMode(false)
-      setCanvasCardTimestamp('')
-      setCanvasDoc({
-        id: `canvas-${Date.now()}`,
-        title: 'Canvas',
-        content: '',
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      })
+      return
     }
+
+    // Reset immediately to avoid showing old canvas while fetching
+    setCanvasMode(false)
+    setCanvasCardTimestamp('')
+    setCanvasDoc({
+      id: `canvas-${Date.now()}`,
+      title: 'Canvas',
+      content: '',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })
+
+    let isMounted = true
+
+    async function loadCanvas() {
+      if (activeConversationId.startsWith('temp-')) {
+        // No need to fetch for new unsaved conversations
+        return
+      }
+      
+      const saved = await API.getCanvas(activeConversationId)
+      if (isMounted && saved && saved.content) {
+        setCanvasDoc({
+          id: `canvas-${activeConversationId}`,
+          title: saved.title,
+          content: saved.content,
+          createdAt: new Date(saved.updated_at),
+          updatedAt: new Date(saved.updated_at),
+        })
+        setCanvasCardTimestamp(saved.card_timestamp || new Date().toISOString())
+        setCanvasMode(true)
+      }
+    }
+    
+    loadCanvas()
+
+    return () => { isMounted = false }
   }, [activeConversationId])
   // Multi-file attachments (text/code/pdf etc.)
   const [attachments, setAttachments] = useState<Array<{
@@ -989,6 +989,12 @@ export function ChatView({
     setIsGenerating(true);
     setShowTyping(true);
 
+    // Capture canvas mode state at send-time — NEVER read canvasMode from
+    // closure inside setTimeout/async callbacks, since the user can close
+    // the canvas panel at any point during generation.
+    const wasCanvasMode = canvasMode;
+    const wasCanvasCreation = isCanvasCreation;
+
     let currentResponse = '';
     let effectiveConvId = finalConvId;
     const isFirstMessage = !activeConvRef.current?.messages?.length;
@@ -1022,7 +1028,7 @@ export function ChatView({
             if (abort.signal.aborted) return;
             setShowTyping(false);
             currentResponse += token;
-            if (canvasMode) {
+            if (wasCanvasMode) {
               // Stream canvas content live during generation
               const sepIdx = currentResponse.indexOf('<!--CHAT-->');
               if (sepIdx === -1) {
@@ -1030,12 +1036,21 @@ export function ChatView({
                 setCanvasStreamingContent(currentResponse);
                 setCanvasDoc(prev => ({ ...prev, content: currentResponse, updatedAt: new Date() }));
                 setStreamingMessage(null);
+                // Keep canvas panel open while streaming
+                setCanvasMode(true);
               } else {
                 const canvasPart = currentResponse.slice(0, sepIdx).trim();
                 const chatPart = currentResponse.slice(sepIdx + '<!--CHAT-->'.length).trim();
                 setCanvasDoc(prev => ({ ...prev, content: canvasPart, updatedAt: new Date() }));
                 setCanvasStreamingContent('');
-                setStreamingMessage(chatPart || 'Canvas updated ✓');
+                // During canvas CREATION: don't stream the chat summary — wait for the
+                // completion block to replace it with the canvas card cleanly.
+                // During canvas UPDATE: stream the summary text normally.
+                if (!wasCanvasCreation) {
+                  setStreamingMessage(chatPart || 'Canvas updated ✓');
+                } else {
+                  setStreamingMessage(null);
+                }
               }
             } else {
               setStreamingMessage(currentResponse);
@@ -1071,18 +1086,27 @@ export function ChatView({
             if (abort.signal.aborted) return;
             setShowTyping(false);
             currentResponse += token;
-            if (canvasMode) {
+            if (wasCanvasMode) {
               const sepIdx = currentResponse.indexOf('<!--CHAT-->');
               if (sepIdx === -1) {
                 setCanvasStreamingContent(currentResponse);
                 setCanvasDoc(prev => ({ ...prev, content: currentResponse, updatedAt: new Date() }));
                 setStreamingMessage(null);
+                // Keep canvas panel open while streaming
+                setCanvasMode(true);
               } else {
                 const canvasPart = currentResponse.slice(0, sepIdx).trim();
                 const chatPart = currentResponse.slice(sepIdx + '<!--CHAT-->'.length).trim();
                 setCanvasDoc(prev => ({ ...prev, content: canvasPart, updatedAt: new Date() }));
                 setCanvasStreamingContent('');
-                setStreamingMessage(chatPart || 'Canvas updated ✓');
+                // During canvas CREATION: don't stream the chat summary — wait for the
+                // completion block to replace it with the canvas card cleanly.
+                // During canvas UPDATE: stream the summary text normally.
+                if (!wasCanvasCreation) {
+                  setStreamingMessage(chatPart || 'Canvas updated ✓');
+                } else {
+                  setStreamingMessage(null);
+                }
               }
             } else {
               setStreamingMessage(currentResponse);
@@ -1103,7 +1127,7 @@ export function ChatView({
 
       if (currentResponse.trim()) {
         let chatContent = currentResponse;
-        if (canvasMode) {
+        if (wasCanvasMode) {
           const sepIdx = currentResponse.indexOf('<!--CHAT-->');
           const canvasTitle = currentInput.trim().slice(0, 60) || 'Canvas';
           const htmlPart = sepIdx !== -1
@@ -1121,7 +1145,7 @@ export function ChatView({
           }));
           setCanvasStreamingContent('');
 
-          if (isCanvasCreation) {
+          if (wasCanvasCreation) {
             // First creation → show blue canvas card + store card timestamp
             const ts = new Date().toISOString()
             setCanvasCardTimestamp(ts)
@@ -1140,11 +1164,28 @@ export function ChatView({
         });
 
         if (effectiveConvId && !effectiveConvId.startsWith('temp-')) {
+          // Save canvas to DB immediately so it's available on page refresh
+          if (wasCanvasMode) {
+            const sepIdx = currentResponse.indexOf('<!--CHAT-->');
+            const htmlPart = sepIdx !== -1
+              ? currentResponse.slice(0, sepIdx).trim()
+              : currentResponse.trim();
+            const canvasTitle = currentInput.trim().slice(0, 60) || 'Canvas';
+            // Extract timestamp from chatContent (which has the card token with embedded ts)
+            const tsFromCard = chatContent.startsWith(CANVAS_CARD_PREFIX) && chatContent.includes('||')
+              ? chatContent.split('||')[1]
+              : null;
+            const finalTs = tsFromCard || canvasCardTimestamp || new Date().toISOString();
+            try {
+              await API.saveCanvas(effectiveConvId, { title: canvasTitle, content: htmlPart, card_timestamp: finalTs });
+            } catch {}
+          }
+
           setTimeout(async () => {
             try {
-              if (!canvasMode) {
-                // Only refresh from server in normal mode — in canvas mode the server
-                // has the raw HTML + canvas instructions which would pollute the chat display.
+              // NEVER refresh from server after canvas generation — the server stores raw HTML
+              // which would overwrite the clean card token we've put into local state.
+              if (!wasCanvasMode) {
                 const data = await API.getConversation(effectiveConvId);
                 const msgs = Array.isArray(data) ? data : (data as any).history || [];
                 if (msgs.length > 0) {
@@ -1442,8 +1483,12 @@ export function ChatView({
           ) : (
             <>
               {(() => {
-                let hasShownCanvasCard = false;
-                return activeConv?.messages.map((msg) => {
+                const filteredMessages = activeConv?.messages.filter(m => m.role !== 'system') || [];
+                const lastCanvasMsgIdx = filteredMessages.findLastIndex(m => 
+                  m.role === 'assistant' && looksLikeCanvasHtml(typeof m.content === 'string' ? m.content : '')
+                );
+                
+                return filteredMessages.map((msg, idx) => {
                   // Fallback regex strip just in case server history wasn't fully cleaned
                   if (msg.role === 'user' && typeof msg.content === 'string') {
                     msg = { ...msg, content: msg.content.replace(/\n\nIMPORTANT [\u2014-] Canvas mode( is)? active\.?[\s\S]*$/, '').trim() };
@@ -1451,19 +1496,27 @@ export function ChatView({
 
                   // If an assistant message contains raw canvas HTML (loaded from server after refresh),
                   // replace it with the stored canvas card so the chat stays clean.
+                  // Note: we do NOT gate this on canvasMode — canvasMode might still be loading (async)
+                  // so we use the presence of canvas HTML itself as the signal.
                   const rawContent = typeof msg.content === 'string' ? msg.content : ''
                   const isServerHtmlCanvas = msg.role === 'assistant'
                     && looksLikeCanvasHtml(rawContent)
                     && !!activeConversationId
-                    && !!loadCanvasFromStorage(activeConversationId)
 
                   let displayMsg = msg;
                   if (isServerHtmlCanvas) {
-                    if (!hasShownCanvasCard) {
-                      hasShownCanvasCard = true;
+                    if (idx === lastCanvasMsgIdx) {
+                      // Use loaded canvas title if available, fallback to extracting <h1> from HTML
+                      const effectiveTitle = (canvasDoc.content && canvasDoc.title !== 'Canvas')
+                        ? canvasDoc.title
+                        : (() => {
+                            const m = rawContent.match(/<h1[^>]*>([^<]+)<\/h1>/i);
+                            return m ? m[1].trim().slice(0, 60) : 'Canvas';
+                          })();
+                      const effectiveTs = canvasCardTimestamp || msg.timestamp?.toISOString() || new Date().toISOString();
                       displayMsg = {
                         ...msg,
-                        content: `${CANVAS_CARD_PREFIX}${canvasDoc.title}||${canvasCardTimestamp || new Date().toISOString()}`,
+                        content: `${CANVAS_CARD_PREFIX}${effectiveTitle}||${effectiveTs}`,
                       };
                     } else {
                       // It's a subsequent update in the history — show the chat summary, not another card

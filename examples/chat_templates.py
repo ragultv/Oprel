@@ -141,101 +141,80 @@ def vision_chat_ocr():
 
 def image_gen_simple():
     """Generate a single image"""
-    from oprel.runtime.backends.comfyui import ComfyUIImageGenerator
-    from oprel.runtime.binaries.comfyui_process import ComfyUIBackend
+    from oprel import generate_image
+    import base64
     
-    # Start ComfyUI backend
-    backend = ComfyUIBackend()
-    backend.start()
+    print("Generating image...")
+    # Generate image using stable-diffusion.cpp backend
+    response = generate_image(
+        model="sd-1.5",
+        prompt="a beautiful sunset over mountains",
+        size="512x512",
+        steps=20
+    )
     
-    try:
-        # Create generator
-        generator = ComfyUIImageGenerator(backend.get_client())
-        
-        # Generate image
-        image_bytes = generator.generate_txt2img(
-            prompt="a beautiful sunset over mountains",
-            width=512,
-            height=512,
-            steps=20,
-            checkpoint="sd-1.5.safetensors"
-        )
-        
-        # Save image
-        with open("sunset.png", "wb") as f:
-            f.write(image_bytes)
-        
-        print("✓ Image saved to sunset.png")
-        
-    finally:
-        backend.stop()
+    # Extract the base64 part and save
+    img_data = response.data[0]["url"].split(",", 1)[1]
+    image_bytes = base64.b64decode(img_data)
+    
+    with open("sunset.png", "wb") as f:
+        f.write(image_bytes)
+    
+    print("✓ Image saved to sunset.png")
 
 
 def image_gen_batch():
     """Generate multiple images with different prompts"""
-    from oprel.runtime.backends.comfyui import ComfyUIImageGenerator
-    from oprel.runtime.binaries.comfyui_process import ComfyUIBackend
+    from oprel import generate_image
+    import base64
     
-    backend = ComfyUIBackend()
-    backend.start()
+    prompts = [
+        "a futuristic city",
+        "a medieval castle",
+        "a tropical beach"
+    ]
     
-    try:
-        generator = ComfyUIImageGenerator(backend.get_client())
+    for i, prompt in enumerate(prompts):
+        print(f"Generating image {i+1}/{len(prompts)}: {prompt}")
         
-        prompts = [
-            "a futuristic city",
-            "a medieval castle",
-            "a tropical beach"
-        ]
+        response = generate_image(
+            model="sd-1.5",  # Using a standard lightweight GGUF model
+            prompt=prompt,
+            size="512x512",
+            steps=15
+        )
         
-        for i, prompt in enumerate(prompts):
-            print(f"Generating image {i+1}/{len(prompts)}: {prompt}")
-            
-            image_bytes = generator.generate_txt2img(
-                prompt=prompt,
-                width=512,
-                height=512,
-                steps=15,
-                checkpoint="sdxl-turbo.safetensors"
-            )
-            
-            with open(f"image_{i+1}.png", "wb") as f:
-                f.write(image_bytes)
+        img_data = response.data[0]["url"].split(",", 1)[1]
+        image_bytes = base64.b64decode(img_data)
         
-        print("✓ All images generated")
-        
-    finally:
-        backend.stop()
+        with open(f"image_{i+1}.png", "wb") as f:
+            f.write(image_bytes)
+    
+    print("✓ All images generated")
 
 
 def image_gen_with_negative_prompt():
     """Control what NOT to include in images"""
-    from oprel.runtime.backends.comfyui import ComfyUIImageGenerator
-    from oprel.runtime.binaries.comfyui_process import ComfyUIBackend
+    from oprel import generate_image
+    import base64
     
-    backend = ComfyUIBackend()
-    backend.start()
+    print("Generating image with negative prompt...")
+    response = generate_image(
+        model="sd-1.5",
+        prompt="a portrait of a woman, professional photography, high quality",
+        negative_prompt="blurry, low quality, distorted, ugly, deformed",
+        size="512x512",
+        steps=25,
+        cfg_scale=7.5
+    )
     
-    try:
-        generator = ComfyUIImageGenerator(backend.get_client())
-        
-        image_bytes = generator.generate_txt2img(
-            prompt="a portrait of a woman, professional photography, high quality",
-            negative_prompt="blurry, low quality, distorted, ugly, deformed",
-            width=512,
-            height=768,  # Portrait aspect ratio
-            steps=25,
-            cfg_scale=7.5,
-            checkpoint="sd-1.5.safetensors"
-        )
-        
-        with open("portrait.png", "wb") as f:
-            f.write(image_bytes)
-        
-        print("✓ Portrait generated")
-        
-    finally:
-        backend.stop()
+    img_data = response.data[0]["url"].split(",", 1)[1]
+    image_bytes = base64.b64decode(img_data)
+    
+    with open("portrait.png", "wb") as f:
+        f.write(image_bytes)
+    
+    print("✓ Portrait generated")
 
 
 # ============================================================================
@@ -244,10 +223,9 @@ def image_gen_with_negative_prompt():
 
 def vision_to_image_workflow():
     """Describe an image, then generate a similar one"""
-    from oprel import Model
+    from oprel import Model, generate_image
     from oprel.runtime.backends.vision import format_vision_prompt
-    from oprel.runtime.backends.comfyui import ComfyUIImageGenerator
-    from oprel.runtime.binaries.comfyui_process import ComfyUIBackend
+    import base64
     
     # Step 1: Analyze source image
     vision_model = Model("qwen3-vl-8b", use_server=False)
@@ -263,42 +241,32 @@ def vision_to_image_workflow():
     print(f"Image description: {description}")
     
     # Step 2: Generate similar image
-    backend = ComfyUIBackend()
-    backend.start()
+    print("Generating similar image...")
+    response = generate_image(
+        model="sd-1.5",
+        prompt=f"Create an image with this description: {description}",
+        size="512x512",
+        steps=20
+    )
     
-    try:
-        generator = ComfyUIImageGenerator(backend.get_client())
-        
-        image_bytes = generator.generate_txt2img(
-            prompt=f"Create an image with this description: {description}",
-            width=512,
-            height=512,
-            steps=20,
-            checkpoint="sdxl-turbo.safetensors"
-        )
-        
-        with open("similar_image.png", "wb") as f:
-            f.write(image_bytes)
-        
-        print("✓ Similar image generated")
-        
-    finally:
-        backend.stop()
+    img_data = response.data[0]["url"].split(",", 1)[1]
+    image_bytes = base64.b64decode(img_data)
+    
+    with open("similar_image.png", "wb") as f:
+        f.write(image_bytes)
+    
+    print("✓ Similar image generated")
 
 
 def chat_with_image_generation():
     """Interactive chat that generates images"""
-    from oprel import Model
-    from oprel.runtime.backends.comfyui import ComfyUIImageGenerator
-    from oprel.runtime.binaries.comfyui_process import ComfyUIBackend
+    from oprel import Model, generate_image
+    import base64
+    import time
     
     # Setup
     chat_model = Model("qwen2.5-7b", use_server=True)
     chat_model.load()
-    
-    backend = ComfyUIBackend()
-    backend.start()
-    generator = ComfyUIImageGenerator(backend.get_client())
     
     try:
         conversation_id = "image_gen_chat"
@@ -311,25 +279,26 @@ def chat_with_image_generation():
             # Check if user wants to generate an image
             if "generate" in user_input.lower() or "create" in user_input.lower():
                 # Ask AI to extract the prompt
-                response = chat_model.generate(
+                response_text = chat_model.generate(
                     f"Extract the image generation prompt from: {user_input}. "
                     f"Return ONLY the prompt, nothing else.",
                     conversation_id=conversation_id
                 )
                 
-                print(f"Generating image: {response}")
+                print(f"Generating image: {response_text}")
                 
                 # Generate the image
-                image_bytes = generator.generate_txt2img(
-                    prompt=response,
-                    width=512,
-                    height=512,
-                    steps=15,
-                    checkpoint="sdxl-turbo.safetensors"
+                response = generate_image(
+                    model="sd-1.5",
+                    prompt=response_text,
+                    size="512x512",
+                    steps=15
                 )
                 
+                img_data = response.data[0]["url"].split(",", 1)[1]
+                image_bytes = base64.b64decode(img_data)
+                
                 # Save with timestamp
-                import time
                 filename = f"generated_{int(time.time())}.png"
                 with open(filename, "wb") as f:
                     f.write(image_bytes)
@@ -337,14 +306,14 @@ def chat_with_image_generation():
                 print(f"✓ Image saved to {filename}")
             else:
                 # Regular chat
-                response = chat_model.generate(
+                response_text = chat_model.generate(
                     user_input,
                     conversation_id=conversation_id
                 )
-                print(f"AI: {response}")
+                print(f"AI: {response_text}")
     
     finally:
-        backend.stop()
+        pass
 
 
 # ============================================================================
