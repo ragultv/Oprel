@@ -140,7 +140,7 @@ def ensure_binary(
     Automatically selects CUDA version if GPU is available.
 
     Args:
-        backend: Backend name ("llama.cpp", "vllm", etc.)
+        backend: Backend name (e.g., "llama.cpp", "stable-diffusion.cpp")
         version: Binary version (e.g., "b7822" or "latest")
         binary_dir: Directory to store binaries
         force_download: Re-download even if exists
@@ -201,11 +201,11 @@ def ensure_binary(
     # stable-diffusion.cpp both using an oprel-branded executable name.
     backend_dir_name = backend.replace(".", "_").replace("-", "_")
 
-    # Use different directory for CUDA vs CPU binaries to avoid conflicts.
+    # Use different directory for CUDA vs CPU and version to avoid conflicts.
     if gpu_type == "cuda":
-        actual_binary_dir = binary_dir / backend_dir_name / "cuda"
+        actual_binary_dir = binary_dir / backend_dir_name / version / "cuda"
     else:
-        actual_binary_dir = binary_dir / backend_dir_name / "cpu"
+        actual_binary_dir = binary_dir / backend_dir_name / version / "cpu"
     
     binary_path = actual_binary_dir / binary_name
     

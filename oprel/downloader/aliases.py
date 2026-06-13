@@ -13,6 +13,7 @@ logger = get_logger(__name__)
 
 OFFICIAL_REPOS = {
        "text-generation": {
+
         # --- QWEN 3 FAMILY (SOTA 2026) ---
         "qwen3-235b": "Qwen/Qwen3-235B-GGUF",     # Flagship Dense
         "qwen3-32b": "Qwen/Qwen3-32B-GGUF",       # Flagship Dense
@@ -51,6 +52,9 @@ OFFICIAL_REPOS = {
         "mistral-3-8b" : "mistralai/Ministral-3-8B-Instruct-2512-GGUF",
         "mistral-3-14b" : "mistralai/Ministral-3-14B-Instruct-2512-GGUF",
         "devstral-2-24b": "unsloth/Devstral-Small-2-24B-Instruct-2512-GGUF",
+        
+        # --- Oprel ---
+        "oprel-2b": "ragul2607/Oprel-2b-GUFF",
 
         # --- GPT & OTHERS ---
         "gpt-oss-20b": "unsloth/gpt-oss-20b-GGUF",
@@ -81,6 +85,7 @@ OFFICIAL_REPOS = {
         "deepseek-r1-7b": "unsloth/DeepSeek-R1-Distill-Qwen-7B-GGUF",
         "deepseek-r1-1.5b": "unsloth/DeepSeek-R1-Distill-Qwen-1.5B-GGUF",
         "qwen3-reasoning-7b": "Qwen/Qwen3-7B-Reasoning-GGUF",
+        "oprel-2b": "ragul2607/Oprel-2b-GUFF"
     },
 
     "Text + Vision": {
@@ -191,12 +196,6 @@ CATEGORY_INFO = {
         "description": "Image generation from text prompts (GGUF only)",
         "backend": "stable-diffusion.cpp",
     },
-    # "text-to-video": {
-    #     "name": "Text-to-Video",
-    #     "icon": "🎥",
-    #     "description": "Video generation from text prompts (Safetensors)",
-    #     "backend": "comfyui",
-    # },
 }
 
 def resolve_model_id(model_id: str) -> str:
@@ -318,12 +317,6 @@ def get_model_backend(alias: str) -> str:
     if not category:
         return "llama.cpp"
     return get_category_info(category).get("backend", "llama.cpp")
-
-
-def is_comfyui_model(alias: str) -> bool:
-    """Check whether an alias still points to a legacy ComfyUI workflow."""
-    return get_model_backend(alias) == "comfyui"
-
 
 def search_aliases(query: str, category: Optional[str] = None) -> List[str]:
     """

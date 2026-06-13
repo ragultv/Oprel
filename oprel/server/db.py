@@ -61,6 +61,18 @@ def init_db():
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    # Create canvas_documents table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS canvas_documents (
+            conversation_id TEXT PRIMARY KEY,
+            title TEXT,
+            content TEXT,
+            card_timestamp TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+        )
+    """)
     # Create download_logs table for persistent download history
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS download_logs (
@@ -150,6 +162,12 @@ def init_db():
             INSERT INTO skills (id, name, description, system_prompt, category, icon, temperature, max_tokens, output_schema, is_premium, enabled)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, default_skills)
+    # ── Migrations: add missing columns to existing tables ───────────────────
+    # This handles databases created before schema additions
+    try:
+        cursor.execute("ALTER TABLE canvas_documents ADD COLUMN card_timestamp TEXT")
+    except Exception:
+        pass  # column already exists
 
     conn.commit()
     conn.close()
@@ -171,6 +189,7 @@ def create_conversation(model_id: str, title: str = "New Chat", conversation_id:
 def delete_conversation(conversation_id: str):
     conn = get_db()
     cursor = conn.cursor()
+    cursor.execute("DELETE FROM canvas_documents WHERE conversation_id = ?", (conversation_id,))
     cursor.execute("DELETE FROM messages WHERE conversation_id = ?", (conversation_id,))
     cursor.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
     conn.commit()
@@ -187,6 +206,7 @@ def rename_conversation(conversation_id: str, new_title: str):
 def reset_conversation(conversation_id: str):
     conn = get_db()
     cursor = conn.cursor()
+    cursor.execute("DELETE FROM canvas_documents WHERE conversation_id = ?", (conversation_id,))
     cursor.execute("DELETE FROM messages WHERE conversation_id = ?", (conversation_id,))
     now = datetime.now().isoformat()
     cursor.execute("UPDATE conversations SET updated_at = ? WHERE id = ?", (now, conversation_id))
@@ -340,6 +360,37 @@ def set_user_settings(settings: dict):
     conn.commit()
     conn.close()
     return settings
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Canvas CRUD
+# ──────────────────────────────────────────────────────────────────────────────
+
+def get_canvas_document(conversation_id: str) -> Optional[dict]:
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM canvas_documents WHERE conversation_id = ?", (conversation_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if row:
+        return dict(row)
+    return None
+
+def upsert_canvas_document(conversation_id: str, title: str, content: str, card_timestamp: str = None) -> dict:
+    conn = get_db()
+    cursor = conn.cursor()
+    now = datetime.now().isoformat()
+    cursor.execute("""
+        INSERT INTO canvas_documents (conversation_id, title, content, card_timestamp, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(conversation_id) DO UPDATE SET
+            title = excluded.title,
+            content = excluded.content,
+            card_timestamp = excluded.card_timestamp,
+            updated_at = excluded.updated_at
+    """, (conversation_id, title, content, card_timestamp, now, now))
+    conn.commit()
+    conn.close()
+    return get_canvas_document(conversation_id)
 
 # Initialize DB when module is loaded
 init_db()

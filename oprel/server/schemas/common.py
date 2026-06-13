@@ -92,3 +92,18 @@ class IngestRequest(BaseModel):
     text: str | None = None
     file_path: str | None = None
     metadata: dict[str, Any] | None = None
+
+
+class CanvasDocumentRequest(BaseModel):
+    title: str
+    content: str
+    card_timestamp: str | None = None
+
+
+class CanvasDocumentResponse(BaseModel):
+    conversation_id: str
+    title: str
+    content: str
+    card_timestamp: str | None = None
+    created_at: str
+    updated_at: str

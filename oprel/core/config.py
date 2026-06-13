@@ -129,7 +129,7 @@ class Config(BaseModel):
     auto_install_binaries: bool = Field(
         default=True, description="Automatically download backend binaries"
     )
-    binary_version: str = Field(default="b7822", description="llama.cpp binary version to use")
+    binary_version: str = Field(default="b9616", description="llama.cpp binary version to use")
     image_binary_version: str = Field(
         default="latest",
         description="stable-diffusion.cpp binary version to use for image generation",

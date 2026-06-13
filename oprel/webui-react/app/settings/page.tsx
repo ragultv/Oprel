@@ -826,7 +826,7 @@ export default function SettingsPage() {
                 <div>
                   <h1 className="text-xl font-bold text-foreground">AI Providers</h1>
                   <p className="text-sm text-muted-foreground mt-0.5">
-                    Connect external providers — models appear in the model selector
+                    Connect external providers - models appear in the model selector
                   </p>
                 </div>
                 <button
