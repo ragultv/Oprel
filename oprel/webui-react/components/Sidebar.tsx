@@ -136,7 +136,8 @@ export function Sidebar() {
     setActiveConversationId(conversationId)
 
     if (canUpdateChatUrlInPlace) {
-      window.history.pushState(null, "", `/chat?conversationId=${conversationId}`)
+      const basePath = window.location.pathname.startsWith('/gui') ? '/gui' : ''
+      window.history.pushState(null, "", `${basePath}/chat?conversationId=${conversationId}`)
       return
     }
 
@@ -148,7 +149,8 @@ export function Sidebar() {
     setActiveConversationId(newId)
 
     if (canUpdateChatUrlInPlace) {
-      window.history.pushState(null, "", `/chat?conversationId=${newId}`)
+      const basePath = window.location.pathname.startsWith('/gui') ? '/gui' : ''
+      window.history.pushState(null, "", `${basePath}/chat?conversationId=${newId}`)
       return
     }
 

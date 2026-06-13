@@ -120,7 +120,7 @@ export const SkillPicker: React.FC<SkillPickerProps> = ({
     <div
       ref={containerRef}
       className={cn(
-        "absolute bottom-full left-0 w-full mb-3 h-[360px] min-h-[360px] bg-[#1a1a1a]/95 backdrop-blur-md border border-border rounded-xl shadow-2xl flex flex-col overflow-hidden z-50 animate-in fade-in slide-in-from-bottom-2 duration-200",
+        "absolute bottom-full left-0 w-[480px] max-w-full mb-3 h-[360px] min-h-[360px] bg-[#1a1a1a]/95 backdrop-blur-md border border-border rounded-xl shadow-2xl flex flex-col overflow-hidden z-50 animate-in fade-in slide-in-from-bottom-2 duration-200",
         className
       )}
     >

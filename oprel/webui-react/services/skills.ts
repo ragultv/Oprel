@@ -257,9 +257,9 @@ export function filterSkills(query: string, skillsList: Skill[] = ALL_SKILLS): S
 
   return skillsList.filter(skill => {
     if (skill.enabled === false) return false;
-    const name = skill.name.toLowerCase();
-    const cmd = skill.command.toLowerCase();
-    const desc = skill.description.toLowerCase();
+    const name = (skill.name || "").toLowerCase();
+    const cmd = (skill.command || skill.id || "").toLowerCase();
+    const desc = (skill.description || "").toLowerCase();
 
     // 1. Exact match on command/name
     if (cmd.startsWith(cleanQuery) || name.startsWith(cleanQuery)) return true;
