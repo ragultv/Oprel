@@ -349,7 +349,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         id: s.id,
         name: s.name,
         description: s.description || "",
-        command: s.command,
+        command: s.command || s.id,
         icon: s.icon,
         category: s.category,
         systemPrompt: s.system_prompt,

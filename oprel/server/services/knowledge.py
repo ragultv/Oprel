@@ -109,6 +109,22 @@ async def chat_extract_file(filename: str, file_obj: BinaryIO, model_id: str | N
         # Try to use tiktoken for accurate token counting and truncation when available
         estimated_tokens = None
         suggested_text = text
+        chars_per_token = 4
+
+        # Determine context limit (tokens) from model_id hints, fallback 4096
+        ctx_limit = 4096
+        if model_id:
+            mid = model_id.lower()
+            if '8192' in mid or '8k' in mid:
+                ctx_limit = 8192
+            elif '16384' in mid or '16k' in mid or '16kb' in mid:
+                ctx_limit = 16384
+
+        reply_reserve = reply_reserve or 1024
+        available_tokens = max(0, ctx_limit - reply_reserve)
+        available_chars = available_tokens * chars_per_token
+        needs_truncation = chars > available_chars
+
         try:
             import tiktoken
 
@@ -120,20 +136,11 @@ async def chat_extract_file(filename: str, file_obj: BinaryIO, model_id: str | N
 
             token_ids = enc.encode(text)
             estimated_tokens = len(token_ids)
+            
+            # Recalculate needs_truncation using actual token count if tiktoken succeeded
+            needs_truncation = estimated_tokens > available_tokens
 
-            # Determine context limit (tokens) from model_id hints, fallback 4096
-            ctx_limit = 4096
-            if model_id:
-                mid = model_id.lower()
-                if '8192' in mid or '8k' in mid:
-                    ctx_limit = 8192
-                elif '16384' in mid or '16k' in mid or '16kb' in mid:
-                    ctx_limit = 16384
-
-            reply_reserve = reply_reserve or 1024
-            available_tokens = max(0, ctx_limit - reply_reserve)
-
-            if estimated_tokens > available_tokens and available_tokens > 50:
+            if needs_truncation and available_tokens > 50:
                 # Truncate tokens: keep prefix+suffix split to preserve context
                 keep = available_tokens
                 half = keep // 2
@@ -148,19 +155,7 @@ async def chat_extract_file(filename: str, file_obj: BinaryIO, model_id: str | N
 
         except Exception:
             # Fallback heuristic: 4 chars per token
-            chars_per_token = 4
             estimated_tokens = max(1, chars // chars_per_token)
-            ctx_limit = 4096
-            if model_id:
-                mid = model_id.lower()
-                if "8192" in mid or "8k" in mid:
-                    ctx_limit = 8192
-                elif "16384" in mid or "16k" in mid or "16kb" in mid:
-                    ctx_limit = 16384
-            reply_reserve = reply_reserve or 1024
-            available_tokens = max(0, ctx_limit - reply_reserve)
-            available_chars = available_tokens * chars_per_token
-            needs_truncation = chars > available_chars
             if needs_truncation and available_chars > 200:
                 first_part = text[: max(0, available_chars // 2 - 4)]
                 last_part = text[-max(0, available_chars // 2 - 4) :]
