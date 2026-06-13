@@ -12,7 +12,7 @@ from oprel.core.config import Config
 class BaseBackend(ABC):
     """
     Abstract interface for model backends.
-    All backends (llama.cpp, vLLM, ExLlama) must implement this.
+    All backends (e.g., llama.cpp) must implement this.
     """
 
     def __init__(

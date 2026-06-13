@@ -23,7 +23,14 @@ import {
   Sunset,
   Moon,
   Search,
+  Plus,
+  HardDrive,
+  MoreHorizontal,
+  ChevronRight,
+  Film,
+  Layout,
 } from "lucide-react"
+import { useRouter } from "next/navigation"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import remarkBreaks from "remark-breaks"
@@ -39,6 +46,7 @@ import { ArtifactCard, ArtifactPanel, type Artifact } from "@/components/Artifac
 import { SkillPicker } from "@/components/SkillPicker"
 import { SkillChip } from "@/components/SkillChip"
 import { Skill, recordSkillUsage, ALL_SKILLS } from "@/services/skills"
+import { CanvasPanel, type CanvasDocument } from "@/components/CanvasPanel"
 
 function TypingIndicator() {
   return (
@@ -260,14 +268,27 @@ function ThinkingBlock({ content, renderers }: { content: string, renderers: any
   );
 }
 
+// Canvas card prefix used to store canvas-update messages
+const CANVAS_CARD_PREFIX = '__canvas__:'
+
+
+/** Returns true if a string looks like AI-generated canvas HTML (long, starts with an HTML tag) */
+function looksLikeCanvasHtml(content: string): boolean {
+  const t = content.trim()
+  const innerText = t.replace(/^```html\s*/i, '').trim()
+  return innerText.length > 300 && /^<(h[123]|p|ul|ol|div|section)[ >]/i.test(innerText)
+}
+
 function MessageBubble({
   message,
   isStreaming = false,
   onOpenArtifact,
+  onOpenCanvas,
 }: {
   message: ChatMessage
   isStreaming?: boolean
   onOpenArtifact?: (artifact: Artifact) => void
+  onOpenCanvas?: () => void
 }) {
   const { skills } = useApp()
   const isUser = message.role === "user"
@@ -372,6 +393,32 @@ function MessageBubble({
     const rawText = getContentText(message.content);
     const images = renderImages(message.content);
 
+    // Canvas card — render a clickable blue card (like Gemini)
+    if (rawText.startsWith(CANVAS_CARD_PREFIX)) {
+      const parts = rawText.slice(CANVAS_CARD_PREFIX.length).split('||')
+      const title = parts[0] || 'Canvas'
+      const date = parts[1] ? new Date(parts[1]) : new Date()
+      const dateStr = date.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) +
+        ', ' + date.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
+      return (
+        <div>
+          {images}
+          <button
+            onClick={() => onOpenCanvas?.()}
+            className="flex items-center gap-3 px-4 py-3.5 rounded-2xl bg-[#1e3a5f] hover:bg-[#1e4a7a] border border-[#2563eb]/30 hover:border-[#2563eb]/60 transition-all text-left w-full max-w-[320px] group shadow-lg shadow-blue-950/20 mt-1"
+          >
+            <div className="w-9 h-9 rounded-xl bg-[#2563eb]/20 border border-[#2563eb]/30 flex items-center justify-center shrink-0">
+              <Layout size={16} className="text-[#60a5fa]" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="text-[13px] font-semibold text-white truncate">{title}</div>
+              <div className="text-[11px] text-[#93c5fd] mt-0.5">{dateStr}</div>
+            </div>
+          </button>
+        </div>
+      )
+    }
+
     if (!rawText) return images;
 
     // Apply streaming-safe or full cleanup
@@ -408,10 +455,16 @@ function MessageBubble({
         )}
       </div>
     );
-  }, [message.content, renderers, isStreaming]);
+  }, [message.content, renderers, isStreaming, onOpenCanvas]);
 
   if (isUser) {
-    const { text, files } = parseUserContent(message.content);
+    const rawText = getContentText(message.content)
+    // Strip canvas system suffix from user messages (canvas instructions are internal)
+    const CANVAS_SUFFIX_MARKER = /\n\nIMPORTANT [\u2014-] Canvas mode( is)? active\.?[\s\S]*$/
+    const cleanedUserContent = typeof message.content === 'string'
+      ? message.content.replace(CANVAS_SUFFIX_MARKER, '').trim()
+      : message.content
+    const { text, files } = parseUserContent(cleanedUserContent);
     const imgs = renderImages(message.content);
     const [copied, setCopied] = useState(false);
 
@@ -574,10 +627,12 @@ export function ChatView({
     skills
   } = useApp()
 
+  const router = useRouter()
   const [input, setInput] = useState("")
   const [activeSkill, setActiveSkill] = useState<Skill | null>(null)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState("")
+  const [toolsMenuOpen, setToolsMenuOpen] = useState(false)
   const [thinking, setThinking] = useState(false)
   const [modelDropdown, setModelDropdown] = useState(false)
   const [showTyping, setShowTyping] = useState(false)
@@ -586,8 +641,75 @@ export function ChatView({
   const [selectedImageName, setSelectedImageName] = useState<string | null>(null)
   const [activeArtifact, setActiveArtifact] = useState<Artifact | null>(null)
   const panelRef = useRef<HTMLDivElement>(null)
+  // Canvas state
+  const [canvasMode, setCanvasMode] = useState(false)
+  const [canvasStreamingContent, setCanvasStreamingContent] = useState("")
+  const [canvasCardTimestamp, setCanvasCardTimestamp] = useState('')  // ISO string; set on first canvas creation
+  const [canvasDoc, setCanvasDoc] = useState<CanvasDocument>({
+    id: `canvas-${Date.now()}`,
+    title: "Canvas",
+    content: "",
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  })
   // abort controller for stop-generation
   const abortRef = useRef<AbortController | null>(null)
+
+  // ── Save canvas to database whenever it changes ───────────────────────
+  useEffect(() => {
+    if (canvasMode && activeConversationId && canvasDoc.content) {
+      API.saveCanvas(activeConversationId, { 
+        title: canvasDoc.title, 
+        content: canvasDoc.content, 
+        card_timestamp: canvasCardTimestamp 
+      })
+    }
+  }, [canvasDoc, canvasMode, activeConversationId, canvasCardTimestamp])
+
+  // ── Restore canvas when the active conversation changes ───────────────────
+  useEffect(() => {
+    if (!activeConversationId) {
+      setCanvasMode(false)
+      return
+    }
+
+    // Reset immediately to avoid showing old canvas while fetching
+    setCanvasMode(false)
+    setCanvasCardTimestamp('')
+    setCanvasDoc({
+      id: `canvas-${Date.now()}`,
+      title: 'Canvas',
+      content: '',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })
+
+    let isMounted = true
+
+    async function loadCanvas() {
+      if (activeConversationId.startsWith('temp-')) {
+        // No need to fetch for new unsaved conversations
+        return
+      }
+      
+      const saved = await API.getCanvas(activeConversationId)
+      if (isMounted && saved && saved.content) {
+        setCanvasDoc({
+          id: `canvas-${activeConversationId}`,
+          title: saved.title,
+          content: saved.content,
+          createdAt: new Date(saved.updated_at),
+          updatedAt: new Date(saved.updated_at),
+        })
+        setCanvasCardTimestamp(saved.card_timestamp || new Date().toISOString())
+        setCanvasMode(true)
+      }
+    }
+    
+    loadCanvas()
+
+    return () => { isMounted = false }
+  }, [activeConversationId])
   // Multi-file attachments (text/code/pdf etc.)
   const [attachments, setAttachments] = useState<Array<{
     name: string;
@@ -834,10 +956,29 @@ export function ChatView({
 
     const currentConv = activeConvRef.current;
     const history = (currentConv?.messages || []).map(m => ({ role: m.role, content: m.content }));
+
+    // ── Canvas mode prompt: two distinct modes ────────────────────────────────
+    // CREATION (empty canvas): generate from scratch, full HTML
+    // UPDATE   (canvas has content): surgical edit — keep what the user didn't ask to change,
+    //          wrap new/changed text in <ins> tags for visual diff highlighting
+    const isCanvasCreation = canvasMode && !canvasDoc.content.trim()
+
+    const canvasSystemSuffix = canvasMode
+      ? isCanvasCreation
+        // ── First-time creation ──
+        ? `\n\nIMPORTANT — Canvas mode is active. Create a well-structured document in clean HTML.\nRules:\n1. Use <h1> for the main title, <h2>/<h3> for sub-headings, <p> for paragraphs, <b> for bold, <i> for italic, <ul><li> for bullets, <ol><li> for numbered lists.\n2. Do NOT use markdown. Return ONLY HTML.\n3. After the HTML, add exactly: <!--CHAT-->\n4. Then write 2–3 warm, friendly sentences describing what you created.`
+        // ── Subsequent update ──
+        : `\n\nIMPORTANT — Canvas mode active. You must UPDATE the existing canvas document surgically.\n\nCURRENT CANVAS HTML:\n${canvasDoc.content}\n\nUser request: "${(typeof userContent === 'string' ? userContent : textWithFiles).trim()}"\n\nStrict rules:\n1. Return the COMPLETE updated HTML. Include ALL unchanged content as-is.\n2. Wrap ONLY the text you added or changed in <ins> tags — nothing else.\n3. Do NOT remove, rewrite, or restructure anything the user did not ask to change.\n4. After the HTML add exactly: <!--CHAT-->\n5. Then write 2–3 natural sentences explaining only what you added or changed (e.g. 'I added a new section on X. I also expanded the Y paragraph.').`
+      : '';
+
+    const canvasUserContent = canvasMode
+      ? (typeof userContent === 'string' ? userContent : textWithFiles) + canvasSystemSuffix
+      : userContent;
+
     const contextMessages = [
       ...(settings.systemPrompt ? [{ role: 'system', content: settings.systemPrompt }] : []),
       ...history,
-      { role: 'user', content: userContent },
+      { role: 'user', content: canvasUserContent },
     ];
 
     addMessage(finalConvId, userMsg);
@@ -847,6 +988,12 @@ export function ChatView({
     setAttachments([]);
     setIsGenerating(true);
     setShowTyping(true);
+
+    // Capture canvas mode state at send-time — NEVER read canvasMode from
+    // closure inside setTimeout/async callbacks, since the user can close
+    // the canvas panel at any point during generation.
+    const wasCanvasMode = canvasMode;
+    const wasCanvasCreation = isCanvasCreation;
 
     let currentResponse = '';
     let effectiveConvId = finalConvId;
@@ -881,12 +1028,39 @@ export function ChatView({
             if (abort.signal.aborted) return;
             setShowTyping(false);
             currentResponse += token;
-            setStreamingMessage(currentResponse);
+            if (wasCanvasMode) {
+              // Stream canvas content live during generation
+              const sepIdx = currentResponse.indexOf('<!--CHAT-->');
+              if (sepIdx === -1) {
+                // All content goes to canvas while streaming
+                setCanvasStreamingContent(currentResponse);
+                setCanvasDoc(prev => ({ ...prev, content: currentResponse, updatedAt: new Date() }));
+                setStreamingMessage(null);
+                // Keep canvas panel open while streaming
+                setCanvasMode(true);
+              } else {
+                const canvasPart = currentResponse.slice(0, sepIdx).trim();
+                const chatPart = currentResponse.slice(sepIdx + '<!--CHAT-->'.length).trim();
+                setCanvasDoc(prev => ({ ...prev, content: canvasPart, updatedAt: new Date() }));
+                setCanvasStreamingContent('');
+                // During canvas CREATION: don't stream the chat summary — wait for the
+                // completion block to replace it with the canvas card cleanly.
+                // During canvas UPDATE: stream the summary text normally.
+                if (!wasCanvasCreation) {
+                  setStreamingMessage(chatPart || 'Canvas updated ✓');
+                } else {
+                  setStreamingMessage(null);
+                }
+              }
+            } else {
+              setStreamingMessage(currentResponse);
+            }
           },
           (newId) => {
             if (finalConvId.startsWith('temp-')) {
               linkConversation(finalConvId, newId);
-              window.history.replaceState(null, "", `/chat?conversationId=${newId}`);
+              const basePath = window.location.pathname.startsWith('/gui') ? '/gui' : '';
+              window.history.replaceState(null, "", `${basePath}/chat?conversationId=${newId}`);
               effectiveConvId = newId;
               refreshConversations();
             }
@@ -912,12 +1086,37 @@ export function ChatView({
             if (abort.signal.aborted) return;
             setShowTyping(false);
             currentResponse += token;
-            setStreamingMessage(currentResponse);
+            if (wasCanvasMode) {
+              const sepIdx = currentResponse.indexOf('<!--CHAT-->');
+              if (sepIdx === -1) {
+                setCanvasStreamingContent(currentResponse);
+                setCanvasDoc(prev => ({ ...prev, content: currentResponse, updatedAt: new Date() }));
+                setStreamingMessage(null);
+                // Keep canvas panel open while streaming
+                setCanvasMode(true);
+              } else {
+                const canvasPart = currentResponse.slice(0, sepIdx).trim();
+                const chatPart = currentResponse.slice(sepIdx + '<!--CHAT-->'.length).trim();
+                setCanvasDoc(prev => ({ ...prev, content: canvasPart, updatedAt: new Date() }));
+                setCanvasStreamingContent('');
+                // During canvas CREATION: don't stream the chat summary — wait for the
+                // completion block to replace it with the canvas card cleanly.
+                // During canvas UPDATE: stream the summary text normally.
+                if (!wasCanvasCreation) {
+                  setStreamingMessage(chatPart || 'Canvas updated ✓');
+                } else {
+                  setStreamingMessage(null);
+                }
+              }
+            } else {
+              setStreamingMessage(currentResponse);
+            }
           },
           (newId) => {
             if (finalConvId.startsWith('temp-')) {
               linkConversation(finalConvId, newId);
-              window.history.replaceState(null, "", `/chat?conversationId=${newId}`);
+              const basePath = window.location.pathname.startsWith('/gui') ? '/gui' : '';
+              window.history.replaceState(null, "", `${basePath}/chat?conversationId=${newId}`);
               effectiveConvId = newId;
               refreshConversations();
             }
@@ -927,26 +1126,80 @@ export function ChatView({
       }
 
       if (currentResponse.trim()) {
+        let chatContent = currentResponse;
+        if (wasCanvasMode) {
+          const sepIdx = currentResponse.indexOf('<!--CHAT-->');
+          const canvasTitle = currentInput.trim().slice(0, 60) || 'Canvas';
+          const htmlPart = sepIdx !== -1
+            ? currentResponse.slice(0, sepIdx).trim()
+            : currentResponse.trim();
+          const chatPart = sepIdx !== -1
+            ? currentResponse.slice(sepIdx + '<!--CHAT-->'.length).trim()
+            : '';
+
+          setCanvasDoc(prev => ({
+            ...prev,
+            content: htmlPart,
+            title: prev.title === 'Canvas' ? canvasTitle : prev.title,
+            updatedAt: new Date(),
+          }));
+          setCanvasStreamingContent('');
+
+          if (wasCanvasCreation) {
+            // First creation → show blue canvas card + store card timestamp
+            const ts = new Date().toISOString()
+            setCanvasCardTimestamp(ts)
+            chatContent = `${CANVAS_CARD_PREFIX}${canvasTitle}||${ts}`;
+          } else {
+            // Subsequent update → show natural language summary from the AI
+            chatContent = chatPart || 'Canvas updated ✓';
+          }
+        }
+
         addMessage(effectiveConvId, {
           id: `a-${Date.now()}`,
           role: 'assistant',
-          content: currentResponse,
+          content: chatContent,
           timestamp: new Date(),
         });
 
         if (effectiveConvId && !effectiveConvId.startsWith('temp-')) {
+          // Save canvas to DB immediately so it's available on page refresh
+          if (wasCanvasMode) {
+            const sepIdx = currentResponse.indexOf('<!--CHAT-->');
+            const htmlPart = sepIdx !== -1
+              ? currentResponse.slice(0, sepIdx).trim()
+              : currentResponse.trim();
+            const canvasTitle = currentInput.trim().slice(0, 60) || 'Canvas';
+            // Extract timestamp from chatContent (which has the card token with embedded ts)
+            const tsFromCard = chatContent.startsWith(CANVAS_CARD_PREFIX) && chatContent.includes('||')
+              ? chatContent.split('||')[1]
+              : null;
+            const finalTs = tsFromCard || canvasCardTimestamp || new Date().toISOString();
+            try {
+              await API.saveCanvas(effectiveConvId, { title: canvasTitle, content: htmlPart, card_timestamp: finalTs });
+            } catch {}
+          }
+
           setTimeout(async () => {
             try {
-              const data = await API.getConversation(effectiveConvId);
-              const msgs = Array.isArray(data) ? data : (data as any).history || [];
-              if (msgs.length > 0) {
-                const normalized: ChatMessage[] = msgs.map((m: any, i: number) => ({
-                  id: `${effectiveConvId}-${i}`,
-                  role: m.role,
-                  content: m.content,
-                  timestamp: new Date(),
-                }));
-                setConversationMessages(effectiveConvId, normalized);
+              // NEVER refresh from server after canvas generation — the server stores raw HTML
+              // which would overwrite the clean card token we've put into local state.
+              if (!wasCanvasMode) {
+                const data = await API.getConversation(effectiveConvId);
+                const msgs = Array.isArray(data) ? data : (data as any).history || [];
+                if (msgs.length > 0) {
+                  const CANVAS_SUFFIX_RE = /\n\nIMPORTANT [\u2014-] Canvas mode( is)? active\.?[\s\S]*$/;
+                  const normalized: ChatMessage[] = msgs.map((m: any, i: number) => ({
+                    id: `${effectiveConvId}-${i}`,
+                    role: m.role,
+                    content: typeof m.content === 'string'
+                      ? m.content.replace(CANVAS_SUFFIX_RE, '').trim()
+                      : m.content,
+                    timestamp: new Date(),
+                  }));
+                  setConversationMessages(effectiveConvId, normalized);
+                }
               }
             } catch {
               // keep local message if refresh fails
@@ -1054,8 +1307,11 @@ export function ChatView({
 
   return (
     <div className="flex h-full bg-background overflow-hidden">
-      {/* Left: full chat column */}
-      <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
+      {/* Left: chat column — narrows when canvas is open */}
+      <div className={cn(
+        "flex flex-col overflow-hidden transition-all duration-300 ease-in-out",
+        canvasMode ? "w-[360px] shrink-0" : "flex-1 min-w-0"
+      )}>
       {/* Header */}
       <header className="h-14 border-b border-border flex items-center justify-between px-5 shrink-0 bg-background/95 backdrop-blur-sm sticky top-0 z-20">
         <div className="flex items-center gap-3">
@@ -1226,17 +1482,68 @@ export function ChatView({
             </div>
           ) : (
             <>
-              {activeConv?.messages.map((msg) => (
-                <MessageBubble
-                  key={msg.id}
-                  message={msg}
-                  onOpenArtifact={setActiveArtifact}
-                />
-              ))}
+              {(() => {
+                const filteredMessages = activeConv?.messages.filter(m => m.role !== 'system') || [];
+                const lastCanvasMsgIdx = filteredMessages.findLastIndex(m => 
+                  m.role === 'assistant' && looksLikeCanvasHtml(typeof m.content === 'string' ? m.content : '')
+                );
+                
+                return filteredMessages.map((msg, idx) => {
+                  // Fallback regex strip just in case server history wasn't fully cleaned
+                  if (msg.role === 'user' && typeof msg.content === 'string') {
+                    msg = { ...msg, content: msg.content.replace(/\n\nIMPORTANT [\u2014-] Canvas mode( is)? active\.?[\s\S]*$/, '').trim() };
+                  }
+
+                  // If an assistant message contains raw canvas HTML (loaded from server after refresh),
+                  // replace it with the stored canvas card so the chat stays clean.
+                  // Note: we do NOT gate this on canvasMode — canvasMode might still be loading (async)
+                  // so we use the presence of canvas HTML itself as the signal.
+                  const rawContent = typeof msg.content === 'string' ? msg.content : ''
+                  const isServerHtmlCanvas = msg.role === 'assistant'
+                    && looksLikeCanvasHtml(rawContent)
+                    && !!activeConversationId
+
+                  let displayMsg = msg;
+                  if (isServerHtmlCanvas) {
+                    if (idx === lastCanvasMsgIdx) {
+                      // Use loaded canvas title if available, fallback to extracting <h1> from HTML
+                      const effectiveTitle = (canvasDoc.content && canvasDoc.title !== 'Canvas')
+                        ? canvasDoc.title
+                        : (() => {
+                            const m = rawContent.match(/<h1[^>]*>([^<]+)<\/h1>/i);
+                            return m ? m[1].trim().slice(0, 60) : 'Canvas';
+                          })();
+                      const effectiveTs = canvasCardTimestamp || msg.timestamp?.toISOString() || new Date().toISOString();
+                      displayMsg = {
+                        ...msg,
+                        content: `${CANVAS_CARD_PREFIX}${effectiveTitle}||${effectiveTs}`,
+                      };
+                    } else {
+                      // It's a subsequent update in the history — show the chat summary, not another card
+                      const sepIdx = rawContent.indexOf('<!--CHAT-->');
+                      const chatPart = sepIdx !== -1 ? rawContent.slice(sepIdx + '<!--CHAT-->'.length).trim() : 'Canvas updated ✓';
+                      displayMsg = {
+                        ...msg,
+                        content: chatPart,
+                      };
+                    }
+                  }
+
+                  return (
+                    <MessageBubble
+                      key={msg.id}
+                      message={displayMsg}
+                      onOpenArtifact={setActiveArtifact}
+                      onOpenCanvas={() => setCanvasMode(true)}
+                    />
+                  )
+                });
+              })()}
               {streamingMessage && (
                 <MessageBubble
                   isStreaming={true}
                   onOpenArtifact={setActiveArtifact}
+                  onOpenCanvas={() => setCanvasMode(true)}
                   message={{
                     id: 'streaming',
                     role: 'assistant',
@@ -1318,15 +1625,34 @@ export function ChatView({
               />
             )}
 
-            <div className="flex flex-wrap items-start gap-2 px-4 pt-3.5 pb-1 min-h-[52px]">
-              {activeSkill && (
-                <div className="flex items-center h-[26px]">
+            {(activeSkill || canvasMode) && (
+              <div className="px-4 pt-3.5 flex items-center gap-2 flex-wrap">
+                {activeSkill && (
                   <SkillChip
                     skill={activeSkill}
                     onRemove={() => setActiveSkill(null)}
                   />
-                </div>
-              )}
+                )}
+                {canvasMode && (
+                  <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-primary/10 border border-primary/25 text-[11px] font-semibold text-primary animate-in fade-in duration-200">
+                    <Layout size={11} />
+                    <span>Canvas</span>
+                    <button
+                      onClick={() => setCanvasMode(false)}
+                      className="ml-0.5 text-primary/60 hover:text-primary transition-colors"
+                      title="Exit canvas mode"
+                    >
+                      <X size={10} />
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className={cn(
+              "flex items-start gap-2 px-4 pb-1 min-h-[52px]",
+              (activeSkill || canvasMode) ? "pt-2" : "pt-3.5"
+            )}>
               <textarea
                 ref={textareaRef}
                 value={input}
@@ -1349,16 +1675,87 @@ export function ChatView({
 
             <div className="flex items-center justify-between px-3 pb-3 pt-1">
               <div className="flex items-center gap-2">
-                <button
-                  onClick={() => fileInputRef.current?.click()}
-                  className={cn(
-                    "p-1.5 text-muted-foreground hover:text-foreground hover:bg-secondary rounded-lg transition-all",
-                    (selectedImage || attachments.length > 0) && "text-primary bg-primary/10"
+                <div className="relative">
+                  <button
+                    onClick={() => setToolsMenuOpen(!toolsMenuOpen)}
+                    className={cn(
+                      "p-1.5 text-muted-foreground hover:text-foreground hover:bg-secondary rounded-lg transition-all",
+                      (selectedImage || attachments.length > 0 || toolsMenuOpen) && "text-foreground bg-secondary"
+                    )}
+                    title="Add tools & uploads"
+                  >
+                    <Plus size={16} />
+                  </button>
+
+                  {toolsMenuOpen && (
+                    <>
+                      <div className="fixed inset-0 z-40" onClick={() => setToolsMenuOpen(false)} />
+                      <div className="absolute bottom-full left-0 mb-2.5 w-56 bg-[#1a1a1a]/95 backdrop-blur-md border border-border/80 rounded-2xl shadow-2xl p-1.5 z-50 animate-in fade-in slide-in-from-bottom-2 duration-200 flex flex-col gap-0.5">
+                        <button
+                          onClick={() => {
+                            setToolsMenuOpen(false);
+                            fileInputRef.current?.click();
+                          }}
+                          className="w-full text-left px-3 py-2 rounded-xl text-xs transition-all flex items-center gap-2.5 text-foreground/80 hover:bg-secondary hover:text-foreground cursor-pointer font-medium"
+                        >
+                          <Paperclip size={14} className="shrink-0 opacity-80" />
+                          <span className="flex-1">Upload files</span>
+                        </button>
+                        <div className="h-px bg-border/40 my-1 mx-1.5" />
+
+                        <button
+                          onClick={() => {
+                            setToolsMenuOpen(false);
+                            router.push('/images');
+                          }}
+                          className="w-full text-left px-3 py-2 rounded-xl text-xs transition-all flex items-center gap-2.5 text-foreground/80 hover:bg-secondary hover:text-foreground cursor-pointer font-medium"
+                        >
+                          <ImageIcon size={14} className="shrink-0 opacity-80" />
+                          <span className="flex-1">Create image</span>
+                        </button>
+
+                        <button
+                          onClick={() => {
+                            setToolsMenuOpen(false);
+                            if (!canvasMode) {
+                              setCanvasMode(true);
+                              setCanvasDoc({
+                                id: `canvas-${Date.now()}`,
+                                title: "Canvas",
+                                content: "",
+                                createdAt: new Date(),
+                                updatedAt: new Date(),
+                              });
+                            } else {
+                              setCanvasMode(false);
+                            }
+                          }}
+                          className={cn(
+                            "w-full text-left px-3 py-2 rounded-xl text-xs transition-all flex items-center gap-2.5 cursor-pointer font-medium",
+                            canvasMode
+                              ? "bg-primary/15 text-primary"
+                              : "text-foreground/80 hover:bg-secondary hover:text-foreground"
+                          )}
+                        >
+                          <Layout size={14} className="shrink-0 opacity-80" />
+                          <span className="flex-1">{canvasMode ? "Close Canvas" : "Canvas"}</span>
+                          {canvasMode && <span className="text-[9px] font-bold text-primary bg-primary/10 px-1.5 py-0.5 rounded-full border border-primary/20">ON</span>}
+                        </button>
+                        <button
+                          onClick={() => {
+                            setToolsMenuOpen(false);
+                            toast({ title: "More Tools", description: "More interactive tools coming soon!" });
+                          }}
+                          className="w-full text-left px-3 py-2 rounded-xl text-xs transition-all flex items-center gap-2.5 text-foreground/80 hover:bg-secondary hover:text-foreground cursor-pointer font-medium"
+                        >
+                          <MoreHorizontal size={14} className="shrink-0 opacity-80" />
+                          <span className="flex-1">More tools</span>
+                          <ChevronRight size={12} className="opacity-40" />
+                        </button>
+                      </div>
+                    </>
                   )}
-                  title="Attach file (image for vision models, or any text/code/PDF file)"
-                >
-                  <Paperclip size={15} />
-                </button>
+                </div>
                 <div className="h-4 w-px bg-border mx-1" />
 
                 {/* Mode toggle */}
@@ -1429,8 +1826,22 @@ export function ChatView({
       {/* END left column */}
       </div>
 
-      {/* Right: Artifact Panel */}
-      {activeArtifact && (
+      {/* Right: Canvas Panel — fills all remaining space, rounded design */}
+      {canvasMode && (
+        <div className="flex-1 min-w-0 p-3 flex flex-col overflow-hidden animate-in slide-in-from-right-4 duration-300">
+          <div className="flex-1 rounded-2xl border border-border/50 overflow-hidden shadow-2xl flex flex-col bg-[#141414]">
+            <CanvasPanel
+              document={canvasDoc}
+              onClose={() => setCanvasMode(false)}
+              onChange={(partial) => setCanvasDoc(prev => ({ ...prev, ...partial } as CanvasDocument))}
+              isStreaming={isGenerating}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Right: Artifact Panel (only when canvas is not active) */}
+      {!canvasMode && activeArtifact && (
         <div
           ref={panelRef}
           style={{ width: 480 }}

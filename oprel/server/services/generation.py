@@ -101,6 +101,9 @@ def _resolve_model_id(model_id: str) -> str:
 
 
 def _extract_prompt_and_images(prompt: Any, images: list[str] | None) -> tuple[str, list[str] | None, str | list[Any]]:
+    import base64
+    from oprel.utils.multimodal import preprocess_image_to_bytes
+
     if isinstance(prompt, list):
         text_parts: list[str] = []
         if images is None:
@@ -114,10 +117,28 @@ def _extract_prompt_and_images(prompt: Any, images: list[str] | None) -> tuple[s
                     if url.startswith("data:image"):
                         try:
                             _, b64 = url.split(",", 1)
+                            # Preprocess base64 image (decode -> resize/compress -> re-encode)
+                            img_bytes = base64.b64decode(b64)
+                            compressed_bytes = preprocess_image_to_bytes(img_bytes)
+                            preprocessed_b64 = base64.b64encode(compressed_bytes).decode('utf-8')
+                            images.append(preprocessed_b64)
+                        except Exception as e:
+                            logger.error(f"Failed to preprocess base64 image: {e}")
                             images.append(b64)
-                        except Exception:
-                            pass
         return " ".join(text_parts), images, prompt
+
+    if images:
+        preprocessed_images = []
+        for b64 in images:
+            try:
+                img_bytes = base64.b64decode(b64)
+                compressed_bytes = preprocess_image_to_bytes(img_bytes)
+                preprocessed_b64 = base64.b64encode(compressed_bytes).decode('utf-8')
+                preprocessed_images.append(preprocessed_b64)
+            except Exception as e:
+                logger.error(f"Failed to preprocess direct base64 image: {e}")
+                preprocessed_images.append(b64)
+        images = preprocessed_images
 
     return str(prompt), images, prompt
 

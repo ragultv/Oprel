@@ -59,8 +59,60 @@ BINARY_REGISTRY = {
                 "gpu_type": "cpu",
             },
         },
+        "b9616": {  # llama.cpp build 9616 (latest as of June 2026)
+            "Darwin-arm64": {
+                "url": "https://github.com/ggml-org/llama.cpp/releases/download/b9616/llama-b9616-bin-macos-arm64.tar.gz",
+                "archive_type": "tar.gz",
+                "binary_name": "llama-server",
+                "gpu_type": "metal",
+            },
+            "Darwin-x86_64": {
+                "url": "https://github.com/ggml-org/llama.cpp/releases/download/b9616/llama-b9616-bin-macos-x64.tar.gz",
+                "archive_type": "tar.gz",
+                "binary_name": "llama-server",
+                "gpu_type": "cpu",
+            },
+            "Linux-x86_64": {
+                "url": "https://github.com/ggml-org/llama.cpp/releases/download/b9616/llama-b9616-bin-ubuntu-x64.tar.gz",
+                "archive_type": "tar.gz",
+                "binary_name": "llama-server",
+                "gpu_type": "cpu",
+            },
+            "Linux-x86_64-vulkan": {
+                "url": "https://github.com/ggml-org/llama.cpp/releases/download/b9616/llama-b9616-bin-ubuntu-vulkan-x64.tar.gz",
+                "archive_type": "tar.gz",
+                "binary_name": "llama-server",
+                "gpu_type": "vulkan",
+            },
+            "Windows-AMD64": {
+                "url": "https://github.com/ggml-org/llama.cpp/releases/download/b9616/llama-b9616-bin-win-cpu-x64.zip",
+                "archive_type": "zip",
+                "binary_name": "llama-server.exe",
+                "gpu_type": "cpu",
+            },
+            "Windows-AMD64-cuda": {
+                # CUDA 12.4 binary for Windows x64
+                "url": "https://github.com/ggml-org/llama.cpp/releases/download/b9616/llama-b9616-bin-win-cuda-12.4-x64.zip",
+                "dll_url": "https://github.com/ggml-org/llama.cpp/releases/download/b9616/cudart-llama-bin-win-cuda-12.4-x64.zip",
+                "archive_type": "zip",
+                "binary_name": "llama-server.exe",
+                "gpu_type": "cuda",
+            },
+            "Windows-AMD64-vulkan": {
+                "url": "https://github.com/ggml-org/llama.cpp/releases/download/b9616/llama-b9616-bin-win-vulkan-x64.zip",
+                "archive_type": "zip",
+                "binary_name": "llama-server.exe",
+                "gpu_type": "vulkan",
+            },
+            "Windows-ARM64": {
+                "url": "https://github.com/ggml-org/llama.cpp/releases/download/b9616/llama-b9616-bin-win-cpu-arm64.zip",
+                "archive_type": "zip",
+                "binary_name": "llama-server.exe",
+                "gpu_type": "cpu",
+            },
+        },
         # Alias to most recent stable version
-        "latest": "b7822",
+        "latest": "b9616",
     },
     "stable-diffusion.cpp": {
         "master-647-72e512a": {
@@ -110,9 +162,6 @@ BINARY_REGISTRY = {
         },
         "latest": "master-647-72e512a",
     },
-    # Future backends
-    # "vllm": {...},
-    # "exllama": {...},
 }
 
 

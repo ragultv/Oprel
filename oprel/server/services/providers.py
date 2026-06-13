@@ -609,7 +609,7 @@ async def provider_chat_proxy(provider_id: str, body: Any) -> GenerateResult | S
         else:
             full_response = await _call_openai(api_key, base_url, body, prepared_messages)
 
-        if full_response.strip():
+        if full_response and full_response.strip():
             db.add_message(effective_conv_id, "assistant", full_response)
             db.add_inference_log(
                 model_id=body.model,
@@ -620,7 +620,7 @@ async def provider_chat_proxy(provider_id: str, body: Any) -> GenerateResult | S
             )
 
         return GenerateResult(
-            text=full_response,
+            text=full_response or "",
             model_id=body.model,
             conversation_id=effective_conv_id,
             message_count=len(prepared_messages) + 1,

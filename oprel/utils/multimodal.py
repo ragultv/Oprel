@@ -7,10 +7,85 @@ from pathlib import Path
 from typing import Optional, List, Union
 import base64
 from io import BytesIO
+import time
+from PIL import Image
 
 from oprel.utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+def preprocess_image_to_bytes(
+    image_input: Union[str, bytes, Path, Image.Image],
+    max_dim: int = 1024,
+    quality: int = 80
+) -> bytes:
+    """
+    Preprocessor: Resize and Compress an image.
+    Takes an image (file path, raw bytes, Path object, or PIL Image) and:
+    1. Resizes it maintaining aspect ratio if any dimension exceeds max_dim.
+    2. Compresses it to JPEG format with specified quality.
+    
+    Returns:
+        bytes: Compressed JPEG image bytes.
+    """
+    start_time = time.perf_counter()
+    img = None
+    
+    try:
+        if isinstance(image_input, Image.Image):
+            img = image_input
+        elif isinstance(image_input, (str, Path)):
+            img = Image.open(image_input)
+        elif isinstance(image_input, bytes):
+            img = Image.open(BytesIO(image_input))
+        else:
+            raise ValueError(f"Unsupported image input type: {type(image_input)}")
+            
+        # Convert RGBA / P modes to RGB for JPEG compatibility
+        if img.mode in ("RGBA", "LA", "P"):
+            # Create a white background
+            background = Image.new("RGB", img.size, (255, 255, 255))
+            background.paste(img, mask=img.split()[-1] if img.mode == "RGBA" else None)
+            img = background
+        elif img.mode != "RGB":
+            img = img.convert("RGB")
+            
+        # Resize if any dimension exceeds max_dim
+        width, height = img.size
+        if width > max_dim or height > max_dim:
+            if width > height:
+                new_width = max_dim
+                new_height = int(height * (max_dim / width))
+            else:
+                new_height = max_dim
+                new_width = int(width * (max_dim / height))
+            
+            try:
+                resample_filter = Image.Resampling.BILINEAR
+            except AttributeError:
+                resample_filter = Image.BILINEAR
+                
+            img = img.resize((new_width, new_height), resample_filter)
+            
+        # Compress and save to JPEG bytes
+        out_io = BytesIO()
+        img.save(out_io, format="JPEG", quality=quality)
+        compressed_bytes = out_io.getvalue()
+        
+        elapsed_ms = (time.perf_counter() - start_time) * 1000
+        logger.info(f"Image preprocessed (resized to {img.size[0]}x{img.size[1]}, compressed to JPEG) in {elapsed_ms:.1f}ms")
+        
+        return compressed_bytes
+    except Exception as exc:
+        logger.error(f"Image preprocessing failed: {exc}", exc_info=True)
+        # Fallback to original bytes/file if possible
+        if isinstance(image_input, bytes):
+            return image_input
+        elif isinstance(image_input, (str, Path)):
+            with open(image_input, "rb") as f:
+                return f.read()
+        raise ValueError(f"Failed to preprocess image: {exc}") from exc
 
 
 def encode_image_to_base64(image_path: str) -> str:
@@ -29,25 +104,13 @@ def encode_image_to_base64(image_path: str) -> str:
     if not image_file.exists():
         raise FileNotFoundError(f"Image not found: {image_path}")
     
-    # Read and encode image
-    with open(image_file, 'rb') as f:
-        image_data = f.read()
+    # Preprocess image to compressed JPEG bytes
+    compressed_bytes = preprocess_image_to_bytes(image_file)
     
-    encoded = base64.b64encode(image_data).decode('utf-8')
+    encoded = base64.b64encode(compressed_bytes).decode('utf-8')
     
-    # Detect MIME type from extension
-    ext = image_file.suffix.lower()
-    mime_types = {
-        '.jpg': 'image/jpeg',
-        '.jpeg': 'image/jpeg',
-        '.png': 'image/png',
-        '.webp': 'image/webp',
-        '.gif': 'image/gif',
-    }
-    mime = mime_types.get(ext, 'image/jpeg')
-    
-    # Return data URL format
-    return f"data:{mime};base64,{encoded}"
+    # Since we preprocessed it to JPEG, the mime type is always image/jpeg
+    return f"data:image/jpeg;base64,{encoded}"
 
 
 def save_generated_image(
