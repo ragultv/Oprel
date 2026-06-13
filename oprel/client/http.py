@@ -82,7 +82,7 @@ class HTTPClient(BaseClient):
     def generate(
         self,
         prompt: str,
-        max_tokens: int = 512,
+        max_tokens: int = 8192,
         temperature: float = 0.7,
         stream: bool = False,
         timeout: Optional[float] = None,
@@ -109,6 +109,8 @@ class HTTPClient(BaseClient):
         """
         url = f"{self.base_url}/v1/completions"
 
+        model = kwargs.pop("model", None)
+
         payload = {
             "prompt": prompt,
             "max_tokens": max_tokens,
@@ -116,6 +118,8 @@ class HTTPClient(BaseClient):
             "stream": stream,
             **kwargs,
         }
+        if model:
+            payload["model"] = model
         
         # For vision models, use chat completions endpoint with proper image format
         if images:
@@ -136,6 +140,7 @@ class HTTPClient(BaseClient):
                 })
             
             payload = {
+                "model": model,
                 "messages": [
                     {
                         "role": "user",

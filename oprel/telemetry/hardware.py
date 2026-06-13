@@ -12,6 +12,7 @@ Key Features:
 """
 
 import platform
+import sys
 import subprocess
 import threading
 import time
@@ -742,3 +743,29 @@ def calculate_gpu_layers_from_info(
     gpu_type = gpu_info.get("gpu_type", "cuda")
     
     return calculate_gpu_layers(vram_gb, model_size_gb, gpu_type=gpu_type)
+
+
+def get_system_info() -> Dict[str, Any]:
+    """
+    Get detailed system information for CLI display.
+    
+    Returns:
+        Dict with OS, Python, CPU, RAM, and GPU details.
+    """
+    base_info = get_hardware_info()
+    
+    cpu_brand = platform.processor() 
+    if not cpu_brand:
+        cpu_brand = base_info.get('arch', 'Unknown CPU')
+        
+    return {
+        'os': base_info['os'],
+        'os_release': platform.release(),
+        'python_version': sys.version.split()[0],
+        'cpu_brand': cpu_brand,
+        'cpu_cores': base_info.get('cpu_count', 0),
+        'ram_total_gb': base_info.get('ram_total_gb', 0.0),
+        'gpu_count': 1 if 'gpu_name' in base_info else 0,
+        'gpu_name': base_info.get('gpu_name'),
+        'vram_total_gb': base_info.get('vram_total_gb', 0.0),
+    }

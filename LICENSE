@@ -1,17 +1,38 @@
-MIT License
+NON-PUBLICATION PERMISSIVE LICENSE (NP-1.0)
 
 Copyright (c) 2026 Ragul
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+of this software and associated documentation files (the "Software"), to use,
+copy, and modify the Software for any private, academic, research, or internal
+purpose.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+Conditions:
+- Attribution: Redistributions of source code (modified or unmodified) must
+	retain the above copyright notice, this list of conditions, and the
+	following disclaimer.
+- Non-Publication: The licensee may NOT publish, distribute publicly, sell,
+	or otherwise release as a product, service, or commercial offering any
+	software, application, service, binary, or derivative work that includes,
+	embeds, incorporates, or is substantially derived from the Software. This
+	includes, but is not limited to, publishing to public package registries,
+	distributing compiled binaries for public use, offering SaaS products that
+	include the Software, or bundling the Software into a product intended for
+	public distribution.
 
+Definitions:
+- "Publish" or "Publicly distribute" means making the Software or a
+	derivative available to any persons or entities beyond the licensee's
+	internal organization, private collaborators, or a limited group of named
+	recipients under non-public agreement.
+
+Termination:
+This license is automatically terminated if the licensee violates the
+Non-Publication condition above. Upon termination the licensee must cease any
+use of the Software that is inconsistent with the terms and, if requested by
+the copyright holder, destroy or return all copies of the Software.
+
+No Warranty:
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -19,3 +40,12 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+Notes:
+- This license grants broad rights to use and modify the code for private and
+	non-public purposes while explicitly prohibiting public distribution or
+	commercial productization of works that incorporate the Software. It is not
+	an OSI-approved "open source" license as that term is commonly defined,
+	because it restricts redistribution. If you need a fully open-source license
+	(permitting public redistribution), consider using MIT, Apache-2.0, or
+	another standard license instead.

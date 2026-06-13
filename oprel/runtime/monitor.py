@@ -24,13 +24,13 @@ class ProcessMonitor:
     def __init__(
         self,
         process: subprocess.Popen,
-        max_memory_mb: int = 8192,
+        max_memory_mb: int,
         check_interval: float = 1.0,
     ):
         """
         Args:
             process: The subprocess to monitor
-            max_memory_mb: Maximum memory in MB before killing
+            max_memory_mb: Maximum memory in MB before killing (should be auto-calculated)
             check_interval: How often to check (seconds)
         """
         self.process = process

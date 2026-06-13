@@ -168,47 +168,167 @@ class DownloadProgressCallback:
         self.pbar.close()
 
 
-def _find_cached_model_for_repo(model_id: str, cache_dir: Path) -> Optional[Path]:
+def _find_cached_model_for_repo(model_id: str, cache_dir: Path, quantization: Optional[str] = None) -> Optional[Path]:
     """
-    Find any cached GGUF file for the given model repository.
-    
-    This checks if we already have ANY quantization of the model downloaded,
-    to avoid downloading duplicates.
-    
+    Find a cached GGUF file for the given model repository.
+
+    If quantization is specified, only returns a match if the quantization matches.
+    For split GGUFs, verifies ALL shards are present.
+
     Args:
         model_id: HuggingFace model repository ID
         cache_dir: Cache directory to search
-        
+        quantization: Specific quantization to look for (e.g., "Q4_K_M", "F16")
+
     Returns:
-        Path to cached model if found, None otherwise
+        Path to cached model (shard 1) if fully complete, None otherwise
     """
-    # Extract repo name from model_id (e.g., "Qwen/Qwen2.5-1.5B-Instruct-GGUF" -> "Qwen2.5-1.5B-Instruct")
+    from oprel.downloader.metadata import load_model_metadata
+    
+    # First, try to find models using metadata (preferred method)
+    metadata_dir = cache_dir / ".metadata"
+    if metadata_dir.exists():
+        for metadata_file in metadata_dir.glob("*.json"):
+            try:
+                filename = metadata_file.name.replace(".json", "")
+                metadata = load_model_metadata(cache_dir, filename)
+                
+                if metadata and metadata.get("repo_id") == model_id:
+                    # Found a model with matching repo_id
+                    gguf_file = None
+                    
+                    # Try to find the actual file
+                    for candidate in cache_dir.rglob(filename):
+                        if candidate.is_file() and candidate.stat().st_size > 0:
+                            gguf_file = candidate
+                            break
+                    
+                    if not gguf_file:
+                        continue
+                    
+                    # Skip mmproj and vision files
+                    filename_lower = gguf_file.name.lower()
+                    if 'mmproj' in filename_lower or filename_lower.startswith('vision-') or filename_lower.startswith('clip-'):
+                        continue
+                    
+                    # If quantization is specified, check if it matches
+                    if quantization:
+                        quant_lower = quantization.lower()
+                        # Check metadata first, then filename
+                        metadata_quant = metadata.get("quantization", "").lower()
+                        if metadata_quant and metadata_quant != quant_lower:
+                            continue
+                        elif not metadata_quant and quant_lower not in filename_lower:
+                            continue
+                    
+                    # Validate split GGUF shards
+                    if not _validate_split_gguf_shards(gguf_file):
+                        continue
+                    
+                    logger.info(f"✓ Found cached model via metadata: {gguf_file.name} ({gguf_file.stat().st_size / (1024**3):.1f} GB)")
+                    return gguf_file
+                    
+            except Exception as e:
+                logger.debug(f"Error reading metadata {metadata_file}: {e}")
+                continue
+    
+    # Fallback: Use the old filename-based matching for backward compatibility
     repo_parts = model_id.split('/')
     if len(repo_parts) >= 2:
-        # Get the repo name without the organization
         repo_name = repo_parts[-1].replace('-GGUF', '').replace('-gguf', '')
     else:
         repo_name = model_id
-    
-    # Search for any .gguf file matching this model in cache
+
     for gguf_file in cache_dir.rglob("*.gguf"):
-        # Skip mmproj/vision encoder files - these are NOT main models
         filename_lower = gguf_file.name.lower()
         if 'mmproj' in filename_lower or filename_lower.startswith('vision-') or filename_lower.startswith('clip-'):
             continue
-            
-        # Check if filename contains the model name
+
         repo_name_lower = repo_name.lower()
-        
-        # Match if the filename contains significant parts of the model name
-        # e.g., "qwen2.5-1.5b-instruct-q5_k_m.gguf" matches "Qwen2.5-1.5B-Instruct"
-        if repo_name_lower.replace('-', '').replace('.', '') in filename_lower.replace('-', '').replace('.', ''):
-            # Verify it's a valid file
-            if gguf_file.exists() and gguf_file.stat().st_size > 0:
-                logger.info(f"✓ Found cached model: {gguf_file.name} ({gguf_file.stat().st_size / (1024**3):.1f} GB)")
-                return gguf_file
-    
+        if repo_name_lower.replace('-', '').replace('.', '') in filename_lower.replace('-', '').replace('.',  ''):
+            if not (gguf_file.exists() and gguf_file.stat().st_size > 0):
+                continue
+
+            # If quantization is specified, check if it matches
+            if quantization:
+                quant_lower = quantization.lower()
+                # Check if the quantization is in the filename
+                if quant_lower not in filename_lower:
+                    continue  # Skip this file, quantization doesn't match
+
+            # Validate split GGUF shards
+            if not _validate_split_gguf_shards(gguf_file):
+                continue
+
+            logger.info(f"✓ Found cached model via filename matching: {gguf_file.name} ({gguf_file.stat().st_size / (1024**3):.1f} GB)")
+            return gguf_file
+
     return None
+
+
+def _validate_split_gguf_shards(gguf_file: Path) -> bool:
+    """
+    Validate that all shards of a split GGUF are present.
+    
+    Args:
+        gguf_file: Path to the GGUF file (should be shard 1)
+        
+    Returns:
+        True if all shards are present, False otherwise
+    """
+    import re as _re
+    
+    shard_match = _re.search(r'-0*(\d+)-of-0*(\d+)\.gguf', gguf_file.name, _re.IGNORECASE)
+    if shard_match:
+        this_shard = int(shard_match.group(1))
+        total_shards = int(shard_match.group(2))
+        if this_shard != 1:
+            return False
+        if total_shards > 1:
+            model_dir = gguf_file.parent
+            for shard_n in range(2, total_shards + 1):
+                expected_shard_name = _re.sub(
+                    r'-0*(\d+)-of-0*(\d+)\.gguf',
+                    lambda m: f"-{shard_n:05d}-of-{total_shards:05d}.gguf",
+                    gguf_file.name,
+                    flags=_re.IGNORECASE
+                )
+                expected_path = model_dir / expected_shard_name
+                if not expected_path.exists() or expected_path.stat().st_size == 0:
+                    logger.warning(
+                        f"Split GGUF is incomplete: shard {shard_n} missing "
+                        f"({expected_shard_name}). Will re-download."
+                    )
+                    return False
+    
+    return True
+
+
+
+
+def _is_vision_model(model_id: str) -> bool:
+    """
+    Check if a model is a vision/multimodal model that needs mmproj.
+    
+    Args:
+        model_id: Model repository ID or alias
+        
+    Returns:
+        True if the model needs a vision projector
+    """
+    from oprel.downloader.aliases import get_model_category, REPO_TO_ALIAS
+    
+    # 1. Check if it's an alias or repo in our official categories
+    alias = REPO_TO_ALIAS.get(model_id, model_id)
+    category = get_model_category(alias)
+    
+    if category in ["Text + Vision", "OCR"]:
+        return True
+        
+    # 2. Fuzzy matching for external models
+    id_lower = model_id.lower()
+    vision_keywords = ["vl", "vision", "llava", "clip", "ocr", "multimodal", "mllm"]
+    return any(kw in id_lower for kw in vision_keywords)
 
 
 def _ensure_mmproj_downloaded(model_id: str, model_path: Path, cache_dir: Path, force_download: bool = False) -> Optional[Path]:
@@ -320,14 +440,15 @@ def download_model(
     """
     cache_dir = cache_dir or get_cache_path()
     
-    # Check if we already have ANY quantization of this model cached
+    # Check if we already have THIS SPECIFIC quantization cached
     if not force_download:
-        cached_model = _find_cached_model_for_repo(model_id, cache_dir)
+        cached_model = _find_cached_model_for_repo(model_id, cache_dir, quantization)
         if cached_model:
-            logger.info(f"Using existing cached model instead of downloading {quantization}")
+            logger.info(f"Using existing cached model: {quantization}")
+
             
-            # Check for mmproj if it's likely a vision model
-            if "vl" in model_id.lower() or "vision" in model_id.lower() or "llava" in model_id.lower() or "clip" in model_id.lower():
+            # Check for mmproj if it's a vision/OCR model
+            if _is_vision_model(model_id):
                  _ensure_mmproj_downloaded(model_id, cached_model, cache_dir, force_download)
                  
             return cached_model
@@ -453,8 +574,8 @@ def _download_model_attempt(
     if not force_download:
         cached_path = _check_cache_validity(model_id, filename, cache_dir)
         if cached_path:
-            # Check for mmproj if it's likely a vision model
-            if "vl" in model_id.lower() or "vision" in model_id.lower() or "llava" in model_id.lower() or "clip" in model_id.lower():
+            # Check for mmproj if it's a vision/OCR model
+            if _is_vision_model(model_id):
                 _ensure_mmproj_downloaded(model_id, cached_path, cache_dir, force_download)
             return cached_path
     
@@ -483,8 +604,12 @@ def _download_model_attempt(
     logger.info(f"✓ Successfully downloaded {filename} ({file_size_mb:.1f} MB)")
     logger.info(f"Model path: {model_path}")
 
-    # Check for mmproj if it's likely a vision model
-    if "vl" in model_id.lower() or "vision" in model_id.lower() or "llava" in model_id.lower() or "clip" in model_id.lower():
+    # Save metadata for the downloaded model
+    from oprel.downloader.metadata import save_model_metadata
+    save_model_metadata(cache_dir, model_id, quantization, downloaded_file)
+
+    # Check for mmproj if it's a vision/OCR model
+    if _is_vision_model(model_id):
         _ensure_mmproj_downloaded(model_id, downloaded_file, cache_dir, force_download)
     
     return downloaded_file
@@ -517,3 +642,194 @@ def list_available_quantizations(model_id: str) -> list[str]:
     except Exception as e:
         logger.warning(f"Could not list quantizations for {model_id}: {e}")
         return []
+
+
+
+def download_model_with_progress(
+    model_id: str,
+    quantization: str = "Q4_K_M",
+    cache_dir: Optional[Path] = None,
+    force_download: bool = False,
+    progress_callback: Optional[Callable[[int, int], None]] = None,
+) -> Path:
+    """
+    Download a model with real-time progress callbacks.
+    
+    Args:
+        model_id: Repository ID
+        quantization: Quantization level
+        cache_dir: Custom cache directory
+        force_download: Skip cache
+        progress_callback: Callback function(downloaded_bytes, total_bytes)
+        
+    Returns:
+        Path to downloaded model
+    """
+    from huggingface_hub import hf_hub_download, HfApi
+    from huggingface_hub.utils import HfHubHTTPError
+    import threading
+    
+    cache_dir = cache_dir or get_cache_path()
+    
+    # Check cache first for this specific quantization
+    if not force_download:
+        cached_model = _find_cached_model_for_repo(model_id, cache_dir, quantization)
+        if cached_model:
+            logger.info(f"Using cached model: {cached_model}")
+            if progress_callback:
+                size = cached_model.stat().st_size
+                progress_callback(size, size)
+            return cached_model
+    
+    # Find the file to download
+    from huggingface_hub import list_repo_files
+    files = list_repo_files(model_id)
+    matching_files = [f for f in files if f.endswith(".gguf") and quantization.lower() in f.lower()]
+    
+    if not matching_files:
+        # Fallback logic
+        available = [f for f in files if f.endswith(".gguf")]
+        if not available:
+            raise ModelNotFoundError(f"No GGUF files found for {model_id}")
+        filename = available[0]
+        logger.warning(f"Quantization {quantization} not found, using {filename}")
+    else:
+        filename = matching_files[0]
+    
+    logger.info(f"Downloading {filename} from {model_id}")
+    
+    # Get file size from HuggingFace API
+    try:
+        api = HfApi()
+        file_info = api.model_info(model_id, files_metadata=True)
+        file_size = 0
+        for sibling in file_info.siblings:
+            if sibling.rfilename == filename:
+                file_size = sibling.size or 0
+                break
+        
+        logger.info(f"File size: {file_size / (1024**3):.2f} GB")
+    except Exception as e:
+        logger.warning(f"Could not get file size: {e}")
+        file_size = 0
+    
+    # Prime progress with known total size so UI can show totals immediately
+    if progress_callback and file_size > 0:
+        progress_callback(0, file_size)
+
+    # Start download in background and monitor progress
+    download_complete = threading.Event()
+    download_error = None
+    downloaded_path = None
+    
+    def download_thread():
+        nonlocal download_error, downloaded_path
+        try:
+            # Disable HF progress bars
+            import os
+            os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+            
+            downloaded_path = hf_hub_download(
+                repo_id=model_id,
+                filename=filename,
+                cache_dir=str(cache_dir),
+                resume_download=True,
+                force_download=force_download,
+            )
+            download_complete.set()
+        except Exception as e:
+            download_error = e
+            download_complete.set()
+    
+    # Start download thread
+    dl_thread = threading.Thread(target=download_thread, daemon=True)
+    dl_thread.start()
+    
+    # Monitor progress by checking file size
+    if progress_callback and file_size > 0:
+        # HuggingFace downloads to: cache_dir/models--org--name/blobs/<hash>
+        # Then creates a symlink in: cache_dir/models--org--name/snapshots/<commit>/<filename>
+        
+        # Wait a bit for download to start
+        time.sleep(1)
+        
+        # Track the actual downloading file
+        monitored_file = None
+        last_size = 0
+        
+        while not download_complete.is_set():
+            try:
+                # If we haven't found the file yet, search for it
+                if not monitored_file or not monitored_file.exists():
+                    cache_name = "models--" + model_id.replace("/", "--")
+                    model_cache_dir = cache_dir / cache_name / "blobs"
+                    
+                    if model_cache_dir.exists():
+                        # Find files that are actively being written to
+                        blob_files = [f for f in model_cache_dir.glob("*") if f.is_file()]
+                        
+                        # Find the file that matches our expected size range
+                        # (should be growing and less than or equal to file_size)
+                        for blob_file in blob_files:
+                            try:
+                                current_size = blob_file.stat().st_size
+                                # Only consider files that are smaller than expected size
+                                # and larger than 1MB (to avoid temp files)
+                                if current_size > 1024 * 1024 and current_size <= file_size:
+                                    # Check if file is growing
+                                    time.sleep(0.1)
+                                    new_size = blob_file.stat().st_size
+                                    if new_size > current_size or current_size == file_size:
+                                        monitored_file = blob_file
+                                        last_size = current_size
+                                        break
+                            except Exception:
+                                continue
+                
+                # Report progress for the monitored file
+                if monitored_file and monitored_file.exists():
+                    try:
+                        current_size = monitored_file.stat().st_size
+                        
+                        # Only report if size changed or we're at 100%
+                        if current_size != last_size or current_size == file_size:
+                            # Ensure we don't report more than 100%
+                            reported_size = min(current_size, file_size)
+                            progress_callback(reported_size, file_size)
+                            last_size = current_size
+                            
+                            # If we've reached the expected size, we're done
+                            if current_size >= file_size:
+                                break
+                    except Exception as e:
+                        logger.debug(f"Error reading file size: {e}")
+                
+                # Check every 500ms
+                time.sleep(0.5)
+            except Exception as e:
+                logger.debug(f"Error monitoring progress: {e}")
+                time.sleep(0.5)
+    
+    # Wait for download to complete
+    download_complete.wait()
+    
+    if download_error:
+        raise ModelNotFoundError(f"Failed to download {model_id}: {download_error}") from download_error
+    
+    if not downloaded_path:
+        raise ModelNotFoundError(f"Download completed but path not found")
+    
+    # Final progress update
+    if progress_callback and file_size > 0:
+        progress_callback(file_size, file_size)
+    
+    # Save metadata for the downloaded model
+    from oprel.downloader.metadata import save_model_metadata
+    save_model_metadata(cache_dir, model_id, quantization, Path(downloaded_path))
+    
+    # Check for mmproj if it's a vision/OCR model
+    if _is_vision_model(model_id):
+        _ensure_mmproj_downloaded(model_id, Path(downloaded_path), cache_dir, force_download)
+    
+    logger.info(f"✓ Downloaded {filename}")
+    return Path(downloaded_path)

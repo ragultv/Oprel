@@ -10,6 +10,17 @@ from oprel.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
+# Map KV cache types to bytes per element
+# FP16 = 2, Q8_0 = 1, Q4_0 = 0.5 (approximate)
+KV_CACHE_BYTES = {
+    "f32": 4.0,
+    "f16": 2.0,
+    "q8_0": 1.0,
+    "q5_1": 0.65,
+    "q5_0": 0.625,
+    "q4_1": 0.55,
+    "q4_0": 0.5,
+}
 
 @dataclass
 class KVCacheEstimate:
@@ -28,7 +39,7 @@ def estimate_kv_cache_size(
     num_layers: int,
     num_kv_heads: Optional[int] = None,
     num_attention_heads: Optional[int] = None,
-    dtype_bytes: int = 2  # FP16 = 2, FP32 = 4
+    kv_cache_type: str = "f16"
 ) -> KVCacheEstimate:
     """
     Estimate KV cache VRAM usage for transformer model.
@@ -46,11 +57,13 @@ def estimate_kv_cache_size(
         num_layers: Number of transformer layers
         num_kv_heads: KV heads for GQA (if None, assumes standard MHA)
         num_attention_heads: Total attention heads (for GQA calculation)
-        dtype_bytes: 2 for FP16, 4 for FP32
+        kv_cache_type: "f16", "q8_0", "q4_0", etc.
         
     Returns:
         KVCacheEstimate with size in bytes and GB
     """
+    dtype_bytes = KV_CACHE_BYTES.get(kv_cache_type.lower(), 2)
+    
     # Use GQA formula if num_kv_heads provided
     if num_kv_heads is not None and num_attention_heads is not None:
         # GQA: fewer KV heads than attention heads
@@ -88,7 +101,8 @@ def estimate_kv_cache_size(
 def estimate_kv_cache_from_metadata(
     gguf_metadata,
     batch_size: int = 1,
-    context_length: Optional[int] = None
+    context_length: Optional[int] = None,
+    kv_cache_type: str = "f16"
 ) -> KVCacheEstimate:
     """
     Convenience function: Estimate KV cache from GGUF metadata.
@@ -107,7 +121,7 @@ def estimate_kv_cache_from_metadata(
         num_layers=gguf_metadata.num_layers,
         num_kv_heads=gguf_metadata.num_kv_heads,
         num_attention_heads=gguf_metadata.num_attention_heads,
-        dtype_bytes=2  # Assume FP16 for KV cache
+        kv_cache_type=kv_cache_type
     )
 
 
@@ -118,6 +132,7 @@ def recommend_max_context(
     num_layers: int,
     num_kv_heads: Optional[int] = None,
     num_attention_heads: Optional[int] = None,
+    kv_cache_type: str = "f16",
     safety_margin: float = 0.15
 ) -> int:
     """
@@ -150,7 +165,8 @@ def recommend_max_context(
             hidden_dim=hidden_dim,
             num_layers=num_layers,
             num_kv_heads=num_kv_heads,
-            num_attention_heads=num_attention_heads
+            num_attention_heads=num_attention_heads,
+            kv_cache_type=kv_cache_type
         )
         
         if est.size_gb > vram_for_kv:

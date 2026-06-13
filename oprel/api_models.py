@@ -117,6 +117,29 @@ class GenerateResponse:
         }
 
 
+class ImageResponse:
+    """Response from image generation endpoint"""
+
+    def __init__(
+        self,
+        created: int,
+        data: List[Dict[str, Any]],
+    ):
+        self.created = created
+        self.data = data
+
+    def __getitem__(self, key: str):
+        """Allow dict-like access"""
+        return getattr(self, key)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary"""
+        return {
+            "created": self.created,
+            "data": self.data,
+        }
+
+
 class ModelInfo:
     """Model information response"""
     

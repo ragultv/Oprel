@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "oprel"
-version = "0.3.1"
-description = "Run LLMs locally with one line of Python. Ollama alternative with server mode, conversation memory, and 50+ model aliases. The SQLite of AI."
+version = "0.6.1"
+description = "Oprel is a high-performance Python library for running large language models locally. It provides a production-ready runtime with advanced memory management, hybrid offloading, and full multimodal support."
 readme = "README.md"
 requires-python = ">=3.9"
 license = {text = "MIT"}
 authors = [
-    {name = "Oprel Team and Skyroot Solutions", email = "info@skyrootsolutions.com"}
+    {name = "Oprel Team", email = "tragulragul@gmail.com"}
 ]
 keywords = [
     # Core functionality
@@ -97,6 +97,12 @@ dependencies = [
     "aiofiles>=24.1.0",
     "python-multipart>=0.0.20",
     "starlette>=0.41.3",
+    "chromadb>=0.5.0",
+    "rank_bm25>=0.2.2",
+    "pypdf>=5.1.0",
+    "python-docx>=1.1.2",
+    "google-genai>=2.0.0",
+    "groq>=0.9.0",
 ]
 
 [project.optional-dependencies]
@@ -140,7 +146,7 @@ all = [
 
 [project.urls]
 Homepage = "https://github.com/ragultv/oprel-SDK"
-Documentation = "https://github.com/ragultv/oprel-SDK#readme"
+Documentation = "https://oprel.skyrootsolutions.com"
 Repository = "https://github.com/ragultv/oprel-SDK"
 Issues = "https://github.com/ragultv/oprel-SDK/issues"
 
@@ -151,8 +157,11 @@ oprel = "oprel.cli.main:main"
 where = ["."]
 include = ["oprel*"]
 
+[tool.setuptools]
+include-package-data = true
+
 [tool.setuptools.package-data]
-oprel = ["py.typed"]
+oprel = ["py.typed", "webui-react/out/**/*"]
 
 [tool.black]
 line-length = 100

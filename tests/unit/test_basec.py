@@ -22,7 +22,8 @@ class TestConfig:
         """Test default configuration values"""
         config = Config()
         
-        assert config.default_max_memory_mb == 8192
+        # default_max_memory_mb should be dynamically calculated (minimum 8GB)
+        assert config.default_max_memory_mb >= 8192
         assert config.use_unix_socket is True
         assert config.log_level == "INFO"
         assert config.binary_version == "b3901"

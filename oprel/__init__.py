@@ -23,15 +23,18 @@ from oprel.client_api import (
     AsyncClient,
     chat,
     generate,
+    generate_image,
     list,
     show,
     create,
     pull,
     delete,
+    embed,  # NEW: Embedding support
 )
 from oprel.api_models import (
     ChatResponse,
     GenerateResponse,
+    ImageResponse,
     ListResponse,
     ShowResponse,
     ModelInfo,
@@ -47,14 +50,17 @@ __all__ = [
     "AsyncClient",
     "chat",
     "generate",
+    "generate_image",
     "list",
     "show",
     "create",
     "pull",
     "delete",
+    "embed",  # NEW: Embedding support
     # Response models
     "ChatResponse",
     "GenerateResponse",
+    "ImageResponse",
     "ListResponse",
     "ShowResponse",
     "ModelInfo",

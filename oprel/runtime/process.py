@@ -299,6 +299,7 @@ class ModelProcess:
             backend=self.backend_name,
             version=self.config.binary_version,
             binary_dir=self.config.binary_dir,
+            config=self.config,
         )
 
         # Select backend implementation

@@ -125,8 +125,33 @@ print(response.response)
 
 print("\n")
 
-# Example 8: Create custom model variant
-print("Example 8: Create Custom Model")
+# Example 8: Embeddings
+print("Example 8: Embeddings")
+print("-" * 50)
+
+from oprel import embed
+
+# Single text embedding
+embedding = embed("Hello world", model="nomic-embed-text")
+print(f"Single embedding dimensions: {len(embedding)}")
+print(f"First 5 values: {embedding[:5]}")
+
+# Batch embeddings
+batch_embeddings = embed(
+    ["Hello", "World", "Test"],
+    model="nomic-embed-text"
+)
+print(f"\nBatch embeddings count: {len(batch_embeddings)}")
+print(f"Each embedding dimensions: {len(batch_embeddings[0])}")
+
+# Using client method
+embedding = client.embed("Machine learning", model="nomic-embed-text")
+print(f"\nClient method dimensions: {len(embedding)}")
+
+print("\n")
+
+# Example 9: Create custom model variant
+print("Example 9: Create Custom Model")
 print("-" * 50)
 
 result = client.create(

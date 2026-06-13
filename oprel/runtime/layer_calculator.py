@@ -33,6 +33,7 @@ def calculate_optimal_gpu_layers(
     hidden_dim: int = 4096,
     num_kv_heads: Optional[int] = None,
     num_attention_heads: Optional[int] = None,
+    kv_cache_type: str = "f16",
     safety_margin: float = 0.15
 ) -> LayerCalculation:
     """
@@ -63,7 +64,8 @@ def calculate_optimal_gpu_layers(
         hidden_dim=hidden_dim,
         num_layers=total_layers,
         num_kv_heads=num_kv_heads,
-        num_attention_heads=num_attention_heads
+        num_attention_heads=num_attention_heads,
+        kv_cache_type=kv_cache_type
     )
     
     # Check if full model + KV cache fits
@@ -134,7 +136,9 @@ def calculate_from_metadata(
     gguf_metadata,
     available_vram_gb: float,
     context_length: Optional[int] = None,
-    batch_size: int = 1
+    batch_size: int = 1,
+    kv_cache_type: str = "auto",
+    is_vision: bool = False
 ) -> LayerCalculation:
     """
     Convenience: Calculate GPU layers from GGUF metadata.
@@ -147,6 +151,22 @@ def calculate_from_metadata(
     """
     ctx_len = context_length or gguf_metadata.context_length
     
+    # Auto-resolve KV cache type if requested
+    if kv_cache_type == "auto":
+        if is_vision:
+            # Vision models need F16 for stability
+            resolved_type = "f16"
+        else:
+            model_quant = (gguf_metadata.quantization or "").upper()
+            if any(q in model_quant for q in ["Q2", "Q3", "Q4"]):
+                resolved_type = "q4_0"
+            elif any(q in model_quant for q in ["Q5", "Q6", "Q8"]):
+                resolved_type = "q8_0"
+            else:
+                resolved_type = "f16"
+    else:
+        resolved_type = kv_cache_type
+
     return calculate_optimal_gpu_layers(
         model_size_gb=gguf_metadata.file_size_bytes / (1024 ** 3),
         total_layers=gguf_metadata.num_layers,
@@ -155,5 +175,6 @@ def calculate_from_metadata(
         batch_size=batch_size,
         hidden_dim=gguf_metadata.embedding_dim,
         num_kv_heads=gguf_metadata.num_kv_heads,
-        num_attention_heads=gguf_metadata.num_attention_heads
+        num_attention_heads=gguf_metadata.num_attention_heads,
+        kv_cache_type=resolved_type
     )

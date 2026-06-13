@@ -26,7 +26,7 @@ def detect_model_type(model_id: str) -> ModelType:
         # Direct category match
         if category in ["text-generation", "coding", "reasoning"]:
             return "text-generation"
-        elif category == "vision":
+        elif category in {"vision", "Text + Vision"}:
             return "vision"
         elif category == "text-to-image":
             return "text-to-image"
@@ -65,11 +65,11 @@ def is_supported_model_type(model_type: ModelType) -> bool:
     Currently supported:
     - text-generation (llama.cpp backend)
     - vision (llama.cpp with multimodal support)
+    - text-to-image (stable-diffusion.cpp backend)
+    - embeddings (llama.cpp with pooling mode)
     
     Not yet supported:
-    - text-to-image (requires diffusers/stable-diffusion backend)
-    - text-to-video (requires video diffusion backend)
-    - embeddings (requires sentence-transformers)
+    - text-to-video (requires a video diffusion backend)
     
     Args:
         model_type: Model type to check
@@ -77,7 +77,7 @@ def is_supported_model_type(model_type: ModelType) -> bool:
     Returns:
         True if supported, False otherwise
     """
-    supported_types = {"text-generation", "vision"}
+    supported_types = {"text-generation", "vision", "text-to-image", "embeddings"}
     return model_type in supported_types
 
 
@@ -93,13 +93,13 @@ def get_unsupported_message(model_type: ModelType) -> str:
     """
     messages = {
         "text-to-image": (
-            "Image generation models are not yet supported in this version.\n"
+            "Image generation models are supported through the stable-diffusion.cpp backend.\n"
             "\n"
-            "Image generation models (FLUX, SANA, SDXL) require a Stable Diffusion\n"
-            "backend with PyTorch and diffusers, which is planned for a future release.\n"
+            "Use `oprel gen-image <model> \"your prompt\"` to generate images, or\n"
+            "`oprel setup image` to download the backend binary for this machine.\n"
             "\n"
-            "For now, please use text-generation models for chat and coding tasks.\n"
-            "See: oprel list-models --category text-generation"
+            "Browse available aliases with:\n"
+            "See: oprel list-models --category text-to-image"
         ),
         "text-to-video": (
             "Video generation models are not yet supported in this version.\n"
@@ -111,13 +111,12 @@ def get_unsupported_message(model_type: ModelType) -> str:
             "See: oprel list-models --category text-generation"
         ),
         "embeddings": (
-            "Embedding models are not yet fully supported in this version.\n"
+            "Embedding models are supported in this version.\n"
             "\n"
-            "Embedding models require sentence-transformers integration.\n"
-            "This feature is planned for a future release.\n"
+            "Use `oprel embed <model> \"text\"` to generate vectors.\n"
             "\n"
-            "For now, please use text-generation models.\n"
-            "See: oprel list-models --category text-generation"
+            "Browse available aliases with:\n"
+            "See: oprel list-models --category embeddings"
         ),
     }
     

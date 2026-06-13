@@ -10,6 +10,27 @@ from typing import Optional
 from pydantic import BaseModel, Field
 
 
+def _get_default_memory_limit() -> int:
+    """
+    Calculate a reasonable default memory limit based on available system RAM.
+    
+    Returns 80% of total system RAM in MB, with a minimum of 8192MB (8GB).
+    This matches the approach used in the quantization recommender.
+    """
+    try:
+        import psutil
+        ram_total_gb = psutil.virtual_memory().total / (1024 ** 3)
+        # Use 80% of total RAM (leave 20% for OS and other apps)
+        # This is slightly more conservative than the 70% used for quantization selection,
+        # but provides a safety margin for the monitor
+        limit_mb = int(ram_total_gb * 0.8 * 1024)
+        # Ensure minimum of 8GB
+        return max(limit_mb, 8192)
+    except Exception:
+        # Fallback to 8GB if psutil fails
+        return 8192
+
+
 class Config(BaseModel):
     """
     Global configuration for Oprel SDK.
@@ -23,7 +44,8 @@ class Config(BaseModel):
 
     # Memory limits
     default_max_memory_mb: int = Field(
-        default=8192, description="Default max memory per model in MB"
+        default_factory=_get_default_memory_limit,
+        description="Default max memory per model in MB (auto-calculated from system RAM)"
     )
 
     # Performance
@@ -32,13 +54,13 @@ class Config(BaseModel):
     )
     n_threads: Optional[int] = Field(default=None, description="CPU threads (None for auto-detect)")
     n_gpu_layers: int = Field(default=-1, description="GPU layers to offload (-1 for auto)")
-    ctx_size: int = Field(default=4096, description="Context size in tokens")
+    ctx_size: int = Field(default=8192, description="Context size in tokens")
     batch_size: int = Field(default=512, description="Batch size for processing")
     
     # Memory Optimization (key differentiator from Ollama)
     kv_cache_type: str = Field(
-        default="f16", 
-        description="KV cache precision: f16 (default), q8_0 (50% savings), q4_0 (75% savings)"
+        default="auto", 
+        description="KV cache precision: auto (match model), f16, q8_0, q4_0"
     )
     flash_attention: bool = Field(
         default=True, 
@@ -108,6 +130,18 @@ class Config(BaseModel):
         default=True, description="Automatically download backend binaries"
     )
     binary_version: str = Field(default="b7822", description="llama.cpp binary version to use")
+    image_binary_version: str = Field(
+        default="latest",
+        description="stable-diffusion.cpp binary version to use for image generation",
+    )
+    
+    # SSL/TLS settings (for binary downloads)
+    ssl_verify: bool = Field(
+        default=True, description="Verify SSL certificates when downloading binaries (disable for corporate proxies)"
+    )
+    ssl_cert_file: Optional[Path] = Field(
+        default=None, description="Path to custom CA certificate bundle (for corporate proxies)"
+    )
 
     class Config:
         arbitrary_types_allowed = True

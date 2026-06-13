@@ -9,7 +9,7 @@ from openai import OpenAI
 
 # Configure client to use local Oprel server
 client = OpenAI(
-    base_url="http://localhost:11434/v1",
+    base_url="http://localhost:11435/v1",
     api_key="not-needed"  # Oprel doesn't require authentication
 )
 

@@ -79,7 +79,7 @@ def text_chat_conversation():
 def vision_chat_single_image():
     """Ask questions about an image"""
     from oprel import Model
-    from oprel.models.vision import format_vision_prompt
+    from oprel.runtime.backends.vision import format_vision_prompt
     
     # Load vision model
     model = Model("qwen3-vl-8b", use_server=False)
@@ -100,7 +100,7 @@ def vision_chat_single_image():
 def vision_chat_multiple_images():
     """Compare multiple images"""
     from oprel import Model
-    from oprel.models.vision import format_vision_prompt, get_vision_model_config
+    from oprel.runtime.backends.vision import format_vision_prompt, get_vision_model_config
     
     model = Model("llava-v1.6-34b", use_server=False)
     model.load()
@@ -120,7 +120,7 @@ def vision_chat_multiple_images():
 def vision_chat_ocr():
     """Extract text from images (OCR)"""
     from oprel import Model
-    from oprel.models.vision import format_vision_prompt
+    from oprel.runtime.backends.vision import format_vision_prompt
     
     model = Model("qwen3-vl-8b", use_server=False)
     model.load()
@@ -142,7 +142,7 @@ def vision_chat_ocr():
 def image_gen_simple():
     """Generate a single image"""
     from oprel.runtime.backends.comfyui import ComfyUIImageGenerator
-    from oprel.runtime.backends.comfyui_process import ComfyUIBackend
+    from oprel.runtime.binaries.comfyui_process import ComfyUIBackend
     
     # Start ComfyUI backend
     backend = ComfyUIBackend()
@@ -174,7 +174,7 @@ def image_gen_simple():
 def image_gen_batch():
     """Generate multiple images with different prompts"""
     from oprel.runtime.backends.comfyui import ComfyUIImageGenerator
-    from oprel.runtime.backends.comfyui_process import ComfyUIBackend
+    from oprel.runtime.binaries.comfyui_process import ComfyUIBackend
     
     backend = ComfyUIBackend()
     backend.start()
@@ -211,7 +211,7 @@ def image_gen_batch():
 def image_gen_with_negative_prompt():
     """Control what NOT to include in images"""
     from oprel.runtime.backends.comfyui import ComfyUIImageGenerator
-    from oprel.runtime.backends.comfyui_process import ComfyUIBackend
+    from oprel.runtime.binaries.comfyui_process import ComfyUIBackend
     
     backend = ComfyUIBackend()
     backend.start()
@@ -245,9 +245,9 @@ def image_gen_with_negative_prompt():
 def vision_to_image_workflow():
     """Describe an image, then generate a similar one"""
     from oprel import Model
-    from oprel.models.vision import format_vision_prompt
+    from oprel.runtime.backends.vision import format_vision_prompt
     from oprel.runtime.backends.comfyui import ComfyUIImageGenerator
-    from oprel.runtime.backends.comfyui_process import ComfyUIBackend
+    from oprel.runtime.binaries.comfyui_process import ComfyUIBackend
     
     # Step 1: Analyze source image
     vision_model = Model("qwen3-vl-8b", use_server=False)
@@ -290,7 +290,7 @@ def chat_with_image_generation():
     """Interactive chat that generates images"""
     from oprel import Model
     from oprel.runtime.backends.comfyui import ComfyUIImageGenerator
-    from oprel.runtime.backends.comfyui_process import ComfyUIBackend
+    from oprel.runtime.binaries.comfyui_process import ComfyUIBackend
     
     # Setup
     chat_model = Model("qwen2.5-7b", use_server=True)

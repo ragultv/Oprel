@@ -9,6 +9,6 @@ Production-ready FastAPI server with:
 - Conversation history
 """
 
-from oprel.server.daemon import run_server, app
+from oprel.server.app import run_server, app
 
 __all__ = ["run_server", "app"]

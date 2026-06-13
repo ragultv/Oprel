@@ -7,6 +7,7 @@ allowing easy migration and familiar syntax.
 
 import time
 import uuid
+import base64
 from typing import Dict, List, Any, Optional, Iterator, Union
 from pathlib import Path
 
@@ -14,10 +15,12 @@ import requests
 
 from oprel.core.model import Model
 from oprel.core.config import Config
-from oprel.downloader.cache import list_cached_models
+from oprel.downloader.cache import list_cached_models as _list_cached_models
+from oprel.runtime.image_generation import ImageGenerationParams, generate_image_file
 from oprel.api_models import (
     ChatResponse,
     GenerateResponse,
+    ImageResponse,
     ListResponse,
     ShowResponse,
     ModelInfo,
@@ -42,14 +45,14 @@ class Client:
     
     def __init__(
         self,
-        host: str = "http://localhost:11434",
+        host: str = "http://localhost:11435",
         timeout: float = 300.0,
     ):
         """
         Initialize Oprel client
         
         Args:
-            host: Server URL (default: http://localhost:11434)
+            host: Server URL (default: http://localhost:11435)
             timeout: Request timeout in seconds (default: 300)
         """
         self.host = host.rstrip("/")
@@ -106,7 +109,7 @@ class Client:
         
         # Parse options
         opts = options or {}
-        max_tokens = opts.get('num_predict', 512)
+        max_tokens = opts.get('num_predict', 8192)
         temperature = opts.get('temperature', 0.7)
         
         if stream:
@@ -219,7 +222,7 @@ class Client:
         oprel_model.load()
         
         opts = options or {}
-        max_tokens = opts.get('num_predict', 512)
+        max_tokens = opts.get('num_predict', 8192)
         temperature = opts.get('temperature', 0.7)
         
         if stream:
@@ -247,6 +250,72 @@ class Client:
             total_duration=total_duration,
             eval_count=len(response_text.split()),
         )
+
+    def generate_image(
+        self,
+        model: str,
+        prompt: str,
+        size: str = "1024x1024",
+        response_format: str = "url",
+        negative_prompt: Optional[str] = None,
+        steps: Optional[int] = None,
+        cfg_scale: Optional[float] = None,
+        seed: Optional[int] = None,
+        sampler: Optional[str] = None,
+    ) -> ImageResponse:
+        """Generate an image via the Ollama-compatible image endpoint."""
+        payload: Dict[str, Any] = {
+            "model": model,
+            "prompt": prompt,
+            "size": size,
+            "response_format": response_format,
+        }
+        if negative_prompt:
+            payload["negative_prompt"] = negative_prompt
+        if steps is not None:
+            payload["steps"] = steps
+        if cfg_scale is not None:
+            payload["cfg_scale"] = cfg_scale
+        if seed is not None:
+            payload["seed"] = seed
+        if sampler:
+            payload["sampler"] = sampler
+
+        if self._server_is_running():
+            res = requests.post(
+                f"{self.host}/api/images/generate",
+                json=payload,
+                timeout=self.timeout,
+            )
+            res.raise_for_status()
+            return ImageResponse(**res.json())
+
+        output_path = generate_image_file(
+            ImageGenerationParams(
+                model=model,
+                prompt=prompt,
+                negative_prompt=negative_prompt or "",
+                width=int(size.split("x", 1)[0]),
+                height=int(size.split("x", 1)[1]),
+                steps=steps or 20,
+                cfg_scale=cfg_scale if cfg_scale is not None else 7.0,
+                seed=seed if seed is not None else -1,
+                sampler=sampler,
+            ),
+            config=self._config,
+        )
+
+        image_b64 = base64.b64encode(Path(output_path).read_bytes()).decode("utf-8")
+        data_key = "b64_json" if response_format == "b64_json" else "url"
+        image_data = {data_key: image_b64 if data_key == "b64_json" else f"data:image/png;base64,{image_b64}"}
+        return ImageResponse(created=int(time.time()), data=[{**image_data, "revised_prompt": prompt}])
+
+    def _server_is_running(self) -> bool:
+        try:
+            response = requests.get(f"{self.host}/health", timeout=2)
+            return response.status_code == 200
+        except requests.RequestException:
+            return False
     
     def _generate_stream(
         self,
@@ -320,7 +389,7 @@ class Client:
             pass
         
         # Fallback to cache
-        cached = list_cached_models()
+        cached = _list_cached_models()
         model_infos = []
         
         for m in cached:
@@ -349,7 +418,7 @@ class Client:
             print(info.details)
         """
         # Get model info from cache
-        cached = list_cached_models()
+        cached = _list_cached_models()
         
         for m in cached:
             if model in m['name']:
@@ -461,6 +530,82 @@ class Client:
             return {'status': 'success', 'message': f'Deleted {model}'}
         else:
             return {'status': 'error', 'message': f'Model {model} not found'}
+    
+    def embed(
+        self,
+        texts: Union[str, List[str]],
+        model: str = "nomic-embed-text",
+        normalize: bool = True,
+        **options
+    ) -> Union[List[float], List[List[float]]]:
+        """
+        Generate embeddings for text(s).
+
+        Mirrors the text-model lifecycle exactly:
+        - If the oprel daemon is already running  → use it (model stays loaded in server cache)
+        - If no daemon is running                → auto-start one, embed, stop it when done
+
+        Args:
+            texts:     Single string or list of strings to embed
+            model:     Embedding model alias or full ID (default: nomic-embed-text)
+            normalize: L2-normalize the returned vectors (default: True)
+
+        Returns:
+            Single embedding vector (list[float]) for a string input, or
+            list of embedding vectors for a list input.
+        """
+        is_single = isinstance(texts, str)
+        text_list = [texts] if is_single else [t for t in texts]
+
+        # ── Step 1: ensure the daemon is running and the embedding model is loaded ──
+        # Model(use_server=True) will auto-start the daemon if it isn't already running,
+        # and _server_started_by_us tracks whether WE started it so we can stop it later.
+        embed_model = Model(model, use_server=True)
+        embed_model.load()  # POST /load → daemon loads the embedding model alongside any LLM
+
+        server_url = embed_model.server_url  # e.g. http://127.0.0.1:11435
+
+        # ── Step 2: send all texts to the daemon's /embedding endpoint in one call ──
+        try:
+            resp = requests.post(
+                f"{server_url}/embedding",
+                json={"input": text_list, "model": model},
+                timeout=1200,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            # Daemon returns {"embedding": [...]} for single or {"embeddings": [[...],...]} for batch
+            if is_single:
+                vectors = [data.get("embedding", data.get("embeddings", [[]])[0])]
+            else:
+                vectors = data.get("embeddings", [data.get("embedding")])
+
+        except requests.RequestException as exc:
+            raise RuntimeError(f"Failed to generate embedding via server: {exc}") from exc
+
+        finally:
+            # ── Step 3: lifecycle — stop daemon only if we started it ──
+            # If the server was already running before this call, leave it alive
+            # so loaded LLMs are not disturbed (same behaviour as text generation).
+            if embed_model._server_started_by_us:
+                embed_model._server_unload()  # unload embedding model from daemon
+                # Gracefully shut down the server we started
+                try:
+                    requests.post(f"{server_url}/shutdown", timeout=5)
+                except Exception:
+                    pass
+
+        # ── Step 4: optional L2 normalisation ──
+        if normalize:
+            import math
+            result = []
+            for vec in vectors:
+                magnitude = math.sqrt(sum(x * x for x in vec))
+                result.append([x / magnitude for x in vec] if magnitude > 0 else vec)
+            vectors = result
+
+        return vectors[0] if is_single else vectors
 
 
 # Async client placeholder (can be implemented later with aiohttp)
@@ -479,6 +624,10 @@ class AsyncClient(Client):
     async def generate(self, *args, **kwargs):
         """Async generate (currently uses sync)"""
         return super().generate(*args, **kwargs)
+
+    async def generate_image(self, *args, **kwargs):
+        """Async image generation (currently uses sync)"""
+        return super().generate_image(*args, **kwargs)
 
 
 # Module-level convenience functions
@@ -535,6 +684,26 @@ def generate(
     return _get_client().generate(model, prompt, stream, **kwargs)
 
 
+def generate_image(
+    model: str,
+    prompt: str,
+    **kwargs
+) -> ImageResponse:
+    """
+    Module-level image generation function
+
+    Example:
+        from oprel import generate_image
+
+        response = generate_image(
+            model='sd-1.5',
+            prompt='a cozy cabin in the snow'
+        )
+        print(response.data[0])
+    """
+    return _get_client().generate_image(model, prompt, **kwargs)
+
+
 def list() -> ListResponse:
     """
     Module-level list function
@@ -567,3 +736,23 @@ def pull(model: str, **kwargs) -> Dict[str, Any]:
 def delete(model: str) -> Dict[str, str]:
     """Module-level delete function"""
     return _get_client().delete(model)
+
+
+def embed(
+    texts: Union[str, List[str]],
+    model: str = "nomic-embed-text",
+    **kwargs
+) -> Union[List[float], List[List[float]]]:
+    """
+    Module-level embed function
+    
+    Example:
+        from oprel import embed
+        
+        # Single text
+        vector = embed("Hello world")
+        
+        # Batch
+        vectors = embed(["Hello", "World"], model="snowflake-arctic")
+    """
+    return _get_client().embed(texts, model, **kwargs)

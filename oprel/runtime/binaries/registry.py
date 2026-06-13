@@ -62,6 +62,54 @@ BINARY_REGISTRY = {
         # Alias to most recent stable version
         "latest": "b7822",
     },
+    "stable-diffusion.cpp": {
+        "master-647-72e512a": {
+            "Darwin-arm64": {
+                "url": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-647-72e512a/sd-master-72e512a-bin-Darwin-macOS-15.7.7-arm64.zip",
+                "archive_type": "zip",
+                "binary_name": "sd-cli",
+                "gpu_type": "metal",
+            },
+            "Linux-x86_64": {
+                "url": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-647-72e512a/sd-master-72e512a-bin-Linux-Ubuntu-24.04-x86_64.zip",
+                "archive_type": "zip",
+                "binary_name": "sd-cli",
+                "gpu_type": "cpu",
+            },
+            "Linux-x86_64-vulkan": {
+                "url": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-647-72e512a/sd-master-72e512a-bin-Linux-Ubuntu-24.04-x86_64-vulkan.zip",
+                "archive_type": "zip",
+                "binary_name": "sd-cli",
+                "gpu_type": "vulkan",
+            },
+            "Linux-x86_64-rocm": {
+                "url": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-647-72e512a/sd-master-72e512a-bin-Linux-Ubuntu-24.04-x86_64-rocm-7.2.1.zip",
+                "archive_type": "zip",
+                "binary_name": "sd-cli",
+                "gpu_type": "rocm",
+            },
+            "Windows-AMD64": {
+                "url": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-647-72e512a/sd-master-72e512a-bin-win-avx2-x64.zip",
+                "archive_type": "zip",
+                "binary_name": "sd-cli.exe",
+                "gpu_type": "cpu",
+            },
+            "Windows-AMD64-cuda": {
+                "url": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-647-72e512a/sd-master-72e512a-bin-win-cuda12-x64.zip",
+                "dll_url": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-647-72e512a/cudart-sd-bin-win-cu12-x64.zip",
+                "archive_type": "zip",
+                "binary_name": "sd-cli.exe",
+                "gpu_type": "cuda",
+            },
+            "Windows-AMD64-vulkan": {
+                "url": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-647-72e512a/sd-master-72e512a-bin-win-vulkan-x64.zip",
+                "archive_type": "zip",
+                "binary_name": "sd-cli.exe",
+                "gpu_type": "vulkan",
+            },
+        },
+        "latest": "master-647-72e512a",
+    },
     # Future backends
     # "vllm": {...},
     # "exllama": {...},
@@ -96,7 +144,14 @@ def get_binary_info(backend: str, version: str, platform_key: str) -> dict | Non
     return version_info.get(platform_key)
 
 
-def get_optimal_platform_key(backend: str, version: str, base_platform: str, has_cuda: bool) -> str:
+def get_optimal_platform_key(
+    backend: str,
+    version: str,
+    base_platform: str,
+    has_cuda: bool,
+    prefer_vulkan: bool = False,
+    prefer_rocm: bool = False,
+) -> str:
     """
     Get the optimal platform key based on available GPU.
     
@@ -119,6 +174,24 @@ def get_optimal_platform_key(backend: str, version: str, base_platform: str, has
         
         if version_info and cuda_key in version_info:
             return cuda_key
+
+    if prefer_rocm:
+        rocm_key = f"{base_platform}-rocm"
+        backend_info = BINARY_REGISTRY.get(backend, {})
+        version_info = backend_info.get(version)
+        if isinstance(version_info, str):
+            version_info = backend_info.get(version_info)
+        if version_info and rocm_key in version_info:
+            return rocm_key
+
+    if prefer_vulkan:
+        vulkan_key = f"{base_platform}-vulkan"
+        backend_info = BINARY_REGISTRY.get(backend, {})
+        version_info = backend_info.get(version)
+        if isinstance(version_info, str):
+            version_info = backend_info.get(version_info)
+        if version_info and vulkan_key in version_info:
+            return vulkan_key
     
     return base_platform
 

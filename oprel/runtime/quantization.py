@@ -1,7 +1,4 @@
-"""
-Quantization selector - Auto-select optimal quantization based on hardware.
-Beats Ollama by automatically choosing best quality that fits in VRAM.
-"""
+"""Quantization selector for llama.cpp GGUF models."""
 
 from typing import Optional, Dict, Tuple
 from dataclasses import dataclass
@@ -24,7 +21,8 @@ class QuantizationRecommendation:
 class QuantizationSelector:
     """
     Auto-select optimal quantization based on VRAM and model size.
-    Always chooses highest quality that fits in available VRAM.
+    Always chooses the highest-quality GGUF quantization that fits in
+    the available VRAM budget.
     """
     
     # Quantization quality ranking (best to worst)
@@ -76,7 +74,7 @@ class QuantizationSelector:
         Initialize quantization selector.
         
         Args:
-            backend: "llama.cpp", "pytorch", or "vllm"
+            backend: Only ``llama.cpp`` is supported.
         """
         self.backend = backend
     
@@ -114,11 +112,10 @@ class QuantizationSelector:
             f"{kv_cache_gb:.1f}GB for KV cache"
         )
         
-        # Find best quantization that fits
-        if self.backend == "pytorch":
-            return self._recommend_pytorch(model_size_gb, vram_for_weights, prefer_speed)
-        else:  # llama.cpp or vllm
-            return self._recommend_gguf(model_size_gb, vram_for_weights, prefer_speed)
+        if self.backend != "llama.cpp":
+            logger.warning("Unsupported backend '%s'; falling back to llama.cpp rules", self.backend)
+
+        return self._recommend_gguf(model_size_gb, vram_for_weights, prefer_speed)
     
     def _recommend_gguf(
         self,
@@ -126,7 +123,7 @@ class QuantizationSelector:
         available_vram_gb: float,
         prefer_speed: bool
     ) -> QuantizationRecommendation:
-        """Recommend GGUF quantization (llama.cpp/vllm)"""
+        """Recommend GGUF quantization for llama.cpp."""
         
         # Try quantizations from best to worst quality
         quants_by_quality = sorted(
@@ -184,43 +181,6 @@ class QuantizationSelector:
             quality_level="low",
             speed_estimate="fast"
         )
-    
-    def _recommend_pytorch(
-        self,
-        base_size_gb: float,
-        available_vram_gb: float,
-        prefer_speed: bool
-    ) -> QuantizationRecommendation:
-        """Recommend PyTorch quantization (FP16/INT8/INT4)"""
-        
-        # PyTorch quantization options
-        if available_vram_gb >= base_size_gb * 0.5:
-            # FP16 fits
-            return QuantizationRecommendation(
-                quantization="FP16",
-                reason="Enough VRAM for FP16 (best quality)",
-                expected_vram_gb=base_size_gb * 0.5,
-                quality_level="high",
-                speed_estimate="medium"
-            )
-        elif available_vram_gb >= base_size_gb * 0.25:
-            # INT8 fits (bitsandbytes)
-            return QuantizationRecommendation(
-                quantization="INT8",
-                reason="INT8 quantization (bitsandbytes)",
-                expected_vram_gb=base_size_gb * 0.25,
-                quality_level="high",
-                speed_estimate="medium"
-            )
-        else:
-            # INT4 needed (GPTQ/AWQ)
-            return QuantizationRecommendation(
-                quantization="INT4",
-                reason="INT4 quantization for VRAM constraints",
-                expected_vram_gb=base_size_gb * 0.125,
-                quality_level="medium",
-                speed_estimate="fast"
-            )
     
     def _estimate_kv_cache(self, model_size_gb: float, context_length: int) -> float:
         """

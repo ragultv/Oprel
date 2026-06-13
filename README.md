@@ -4,6 +4,7 @@
 
 [![PyPI version](https://badge.fury.io/py/oprel.svg)](https://pypi.org/project/oprel/)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
+[![GitHub](https://img.shields.io/badge/GitHub-OpenSource-blue.svg)](https://github.com/Skyroot-Solutions/Oprel)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 Oprel is a high-performance Python library for running large language models and multimodal AI locally. It provides a production-ready runtime with advanced memory management, hybrid offloading, and intelligent optimization.
@@ -27,6 +28,8 @@ Oprel is a high-performance Python library for running large language models and
   - **Zero-Latency**: Server mode keeps models cached for instant response
   - **Robust Error Handling**: Clear error messages, no silent failures
   
+- **Oprel Studio**: Premium Web UI for chat, model management, and real-time hardware monitoring with integrated RAG.
+
 - **Ollama Compatibility**: Drop-in replacement for Ollama API
 
 ## 📦 Installation
@@ -43,17 +46,20 @@ pip install oprel[server]
 
 ```bash
 # Chat with a model (auto-downloaded)
-oprel run qwencoder "Explain recursion in one sentence"
+oprel run gemma3-1b "Explain recursion in one sentence"
 
 # Interactive chat mode
-oprel run llama3.1
+oprel run gemma3-1b
 
 # Server mode for persistent caching
 oprel serve
-oprel run llama3.1 "Hello"  # Instant response!
+oprel run gemma3-1b "Hello"  # Instant response!
 
 # Vision models
 oprel vision qwen3-vl-7b "What's in this image?" --images photo.jpg
+
+# Start Oprel Studio (Web UI)
+oprel start
 ```
 
 ### Python API
@@ -62,9 +68,53 @@ oprel vision qwen3-vl-7b "What's in this image?" --images photo.jpg
 from oprel import Model
 
 # Auto-optimized loading
-model = Model("qwencoder") 
+model = Model("gemma3-1b") 
 print(model.generate("Write a binary search in Python"))
 ```
+
+## 🌐 Oprel Studio: The Ultimate Local AI Workspace
+
+**Oprel Studio** is a premium, browser-based command center for your local AI models. Designed for engineers and researchers, it provides a state-of-the-art interface that transforms raw inference into a productive workspace.
+
+It now also includes image generation, so you can stay inside the same workspace for chat, model management, document chat, and visual creation.
+
+### ✨ Immersive Chat Experience
+- **Fluid Streaming**: ultra-fast Server-Sent Events (SSE) for instant, typewriter-style responses.
+- **Thinking Process Visualization**: DeepSeek-R1 and other reasoning models show their internal "chain of thought" in a beautiful, expandable workspace.
+- **Rich Markdown & Code**: Full GFM support with syntax highlighting for 50+ languages.
+- **Artifacts Canvas**: Generate Mermaid diagrams or HTML/Tailwind previews and view them in a dedicated side-panel next to your chat.
+- **Multi-modal Support**: Drag and drop images for vision-capable models (Qwen-VL, Llama-3.2 Vision).
+
+### 🎨 Image Generation
+- **Built In**: Generate images from downloaded local GGUF image models directly inside Oprel Studio.
+- **Same Backend, Same Workflow**: The web UI and `oprel gen-image` share the same image-generation backend.
+- **Simple Controls**: Pick a model, prompt, size, steps, sampler, and negative prompt without leaving the app.
+
+### 🔌 Beyond Local: External Cloud Providers
+Manage your local models alongside industry-leading cloud APIs in one unified interface:
+- **Google Gemini**: Full support for 2.0 Flash/Pro with free-tier quota integration.
+- **NVIDIA NIM**: High-performance inference via NVIDIA's accelerated cloud.
+- **Groq**: Record-breaking inference speeds via LPU™ technology.
+- **OpenRouter**: Access 200+ models from a single API key.
+- **Custom OpenAI**: Connect any internal or third-party OpenAI-compatible server.
+
+### 🏛️ Visual Model Registry
+- **One-Click Deployment**: Pull, load, and switch between models without ever touching the terminal.
+- **Quantization Intelligence**: See available quants (Q4_K, Q8_0, etc.) and their memory footprint before loading.
+- **Smart Status**: Real-time indicators show which model is currently taking up VRAM/RAM.
+
+### 📊 Real-time Hardware Analytics
+Monitor your system's performance as the model generates:
+- **Tokens per Second (TPS)**: Live tracking of inference performance.
+- **VRAM & RAM**: Precise graphs showing memory consumption across CPU and GPU.
+- **CPU/GPU Utilization**: Monitor load to ensure your system is running optimally.
+
+### 🚀 Usage
+Start Oprel Studio and it will automatically open in your default browser:
+```bash
+oprel start
+```
+The interface is hosted at `http://localhost:11435/gui/`.
 
 ## 🎨 Image & Video Generation
 
@@ -74,16 +124,11 @@ print(model.generate("Write a binary search in Python"))
 
 ```bash
 # Specify model in command
-oprel gen-image sdxl-turbo "a cyberpunk city at night"
-
-# High quality with FLUX
-oprel gen-image flux-1-schnell "a majestic dragon" --width 1024 --height 1024 --steps 30
+oprel gen-image ideation "a cyberpunk city at night"
 
 # With negative prompt
-oprel gen-image sdxl-turbo "a cute cat" --negative "blurry, low quality"
+oprel gen-image ideation "a cute cat" --negative "blurry, low quality"
 
-# First time downloads model automatically
-oprel gen-image flux-1-dev "stunning landscape"  # Auto-downloads 23GB
 ```
 
 ### Download Models
@@ -93,17 +138,73 @@ oprel gen-image flux-1-dev "stunning landscape"  # Auto-downloads 23GB
 oprel list-models --category text-to-image
 
 # Pre-download model
-oprel pull flux-1-schnell
+oprel pull ideation
 
-# Pull video model
-oprel pull svd-xt
 ```
 
-**Available Models:**
-- `sdxl-turbo` - Fastest (1-4 steps, 7GB) ⚡
-- `flux-1-schnell` - Fast + quality (4 steps, 23GB)
-- `flux-1-dev` - Best quality (28 steps, 23GB) 
-- `sd-1.5` - Lightweight (4GB)
+## 🔍 Text Embeddings
+
+Generate embeddings for semantic search and RAG applications:
+
+### CLI Usage
+
+```bash
+# Single text embedding
+oprel embed nomic-embed-text "Hello world"
+
+# Process files (PDF, DOCX, TXT, JSON)
+oprel embed nomic-embed-text --files document.pdf report.docx notes.txt
+
+# Batch processing from file (one text per line)
+oprel embed nomic-embed-text --batch texts.txt --output embeddings.json
+
+# JSON output format
+oprel embed nomic-embed-text "Machine learning" --format json
+```
+
+### Python API
+
+```python
+from oprel import embed
+
+# Single embedding
+vector = embed("Hello world", model="nomic-embed-text")
+print(f"Dimensions: {len(vector)}")
+
+# Batch embeddings
+vectors = embed(
+    ["Document 1", "Document 2", "Document 3"],
+    model="nomic-embed-text"
+)
+
+# Semantic search
+import math
+
+def cosine_similarity(a, b):
+    dot = sum(x*y for x,y in zip(a,b))
+    mag_a = math.sqrt(sum(x*x for x in a))
+    mag_b = math.sqrt(sum(x*x for x in b))
+    return dot / (mag_a * mag_b)
+
+query = embed("machine learning topic")
+docs = embed(["AI concepts", "cooking recipes", "ML algorithms"])
+similarities = [cosine_similarity(query, doc) for doc in docs]
+best_match = similarities.index(max(similarities))
+print(f"Best match: Document {best_match}")
+```
+
+### Available Embedding Models
+
+- **nomic-embed-text**: General-purpose (768 dims)
+- **bge-m3**: Multilingual support (1024 dims)
+- **all-minilm-l6-v2**: Lightweight & fast (384 dims)
+- **snowflake-arctic**: Optimized for RAG (1024 dims)
+
+```bash
+# List all embedding models
+oprel list-models --category embeddings
+```
+
 
 ### Vision Models
 
@@ -114,6 +215,8 @@ oprel vision qwen3-vl-7b "What's in this image?" --images photo.jpg
 # Multi-image analysis
 oprel vision qwen3-vl-14b "Compare these images" --images img1.jpg img2.jpg img3.jpg
 ```
+
+
 ## 🛠️ Advanced Features
 
 ### Hybrid GPU/CPU Offloading
@@ -126,7 +229,7 @@ Run larger models on limited VRAM by intelligently splitting layers.
 ### Smart Quantization
 Auto-selects the best quantization that fits your hardware.
 ```bash
-oprel run llama3.1 --quantization auto  # Default
+oprel run gemma3-1b --quantization auto  # Default
 ```
 
 ### OpenAI & Ollama Compatible Server (Week 14 ✨)
@@ -135,7 +238,7 @@ oprel run llama3.1 --quantization auto  # Default
 
 Start the server:
 ```bash
-oprel serve --host 127.0.0.1 --port 11434
+oprel serve --host 127.0.0.1 --port 11435
 ```
 
 The server provides:
@@ -156,7 +259,7 @@ from openai import OpenAI
 
 # Point to local Oprel server
 client = OpenAI(
-    base_url="http://localhost:11434/v1",
+    base_url="http://localhost:11435/v1",
     api_key="not-needed"  # Oprel doesn't require API keys
 )
 
@@ -177,16 +280,24 @@ for chunk in response:
 cURL:
 ```bash
 # Chat completions (streaming)
-curl http://localhost:11434/v1/chat/completions \
+curl http://localhost:11435/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "qwen3-14b",
-    "messages": [{"role": "user", "content": "Hello!"}],
-    "stream": true
+    "model": "qwen2.5-0.5b",
+    "messages": [{"role": "user", "content": "Hello!"}]
   }'
 
-# List models
-curl http://localhost:11434/v1/models
+# Text Completions
+curl http://localhost:11435/v1/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen2.5-0.5b",
+    "prompt": "Once upon a time",
+    "max_tokens": 50
+  }'
+
+# List Models
+curl http://localhost:11435/v1/models
 ```
 
 #### Ollama API Examples
@@ -195,11 +306,10 @@ Python (using Ollama SDK):
 ```python
 import ollama
 
-# Works directly with Oprel server!
-client = ollama.Client(host='http://localhost:11434')
-
+# Works directly with Ollama SDK
+client = ollama.Client(host='http://localhost:11435')
 response = client.chat(
-    model='qwen3-14b',
+    model='llama3', 
     messages=[{'role': 'user', 'content': 'Why is the sky blue?'}],
     stream=True
 )
@@ -269,6 +379,11 @@ curl http://localhost:11434/health
 | **Image/Video Gen** | No | **ComfyUI Integration** |
 | **Crash Safety** | Frequent OOM | **Proactive Warnings** |
 | **Auto-Optimization** | Manual config | **Fully Automatic** |
+| **Oprel Studio** | No | **Premium Web UI** |
+| **RAG** | No | **Integrated** |
+| **Model Management** | Manual | **Automatic** |
+ 
+
 
 ## 🧩 Supported Models
 
@@ -287,17 +402,11 @@ curl http://localhost:11434/health
 - **MiniCPM-V**: Efficient mobile-ready VLM (2.6B)
 - **Moondream 2**: Lightweight vision (1.8B)
 
-### Image Generation (Safetensors - ComfyUI backend)
+### Image Generation (Guff - stable-diffusion.cpp backend)
 Requires ComfyUI running:
-- **FLUX.1-dev**: Best quality
-- **FLUX.1-schnell**: Fast generation
-- **SDXL Turbo**: Fastest (1-4 steps)
+- **Ideation**: Best quality
 
-### Video Generation (ComfyUI + AnimateDiff)
-Requires ComfyUI with video nodes:
-- AnimateDiff
-- Stable Video Diffusion (SVD)
-- Custom workflows
+
 
 View all available GGUF models:
 ```bash
@@ -306,17 +415,6 @@ oprel list-models --category vision
 oprel list-models --category coding
 oprel list-models --category reasoning
 ```
-
-## 📝 Documentation
-
-- [API Reference](docs/api_reference.md)
-- [ComfyUI Integration Guide](.agent/COMFYUI_INTEGRATION.md)
-- [Troubleshooting](docs/troubleshooting.md)
-
-## 🤝 Contributing
-
-Contributions are welcome! Please check our [roadmap](ROADMAP.md) for upcoming features.
-
 
 ## License
 

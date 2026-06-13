@@ -117,29 +117,32 @@ class ComfyUIClient:
         response.raise_for_status()
         return response.content
     
-    def wait_for_completion(self, prompt_id: str, timeout: int = 300) -> Dict:
+    def wait_for_completion(self, prompt_id: str, timeout: int = None) -> Dict:
         """
         Wait for workflow to complete.
         
         Args:
             prompt_id: Prompt ID to wait for
-            timeout: Maximum wait time in seconds
+            timeout: Maximum wait time in seconds (None = infinite)
             
         Returns:
             Execution history
         """
         start_time = time.time()
         
-        while time.time() - start_time < timeout:
+        while True:
             history = self.get_history(prompt_id)
             
             if history and "outputs" in history:
                 # Workflow completed
                 return history
             
+            # Check timeout only if set
+            if timeout is not None and (time.time() - start_time) > timeout:
+                raise TimeoutError(f"Workflow {prompt_id} did not complete within {timeout}s")
+            
             time.sleep(1)
-        
-        raise TimeoutError(f"Workflow {prompt_id} did not complete within {timeout}s")
+
 
 
 class ComfyUIImageGenerator:
@@ -153,6 +156,7 @@ class ComfyUIImageGenerator:
     def generate_txt2img(
         self,
         prompt: str,
+        checkpoint: str,  # REQUIRED: User must specify model
         negative_prompt: str = "",
         width: int = 512,
         height: int = 512,
@@ -161,14 +165,14 @@ class ComfyUIImageGenerator:
         sampler: str = "euler",
         scheduler: str = "normal",
         seed: int = -1,
-        checkpoint: Optional[str] = None,
-        timeout: int = 300
+        timeout: int = None  # No timeout by default - wait indefinitely
     ) -> bytes:
         """
         Generate image from text using ComfyUI.
         
         Args:
             prompt: Text prompt
+            checkpoint: Model checkpoint name (REQUIRED - must specify model)
             negative_prompt: Negative prompt
             width: Image width
             height: Image height
@@ -177,26 +181,47 @@ class ComfyUIImageGenerator:
             sampler: Sampler name
             scheduler: Scheduler name
             seed: Random seed (-1 for random)
-            checkpoint: Model checkpoint name
-            timeout: Maximum wait time in seconds
+            timeout: Maximum wait time in seconds (None = no limit)
             
         Returns:
             Image bytes (PNG)
+            
+        Raises:
+            ValueError: If checkpoint is not specified or not found
+            RuntimeError: If generation fails
         """
         if seed == -1:
             seed = int(time.time())
         
+        # Validate checkpoint is provided
+        if not checkpoint:
+            raise ValueError(
+                "Model checkpoint is required for image generation.\n"
+                "Please specify a model name, e.g.:\n"
+                "  generator.generate_txt2img(prompt='...', checkpoint='flux-1-schnell.safetensors')\n"
+                "  oprel gen-image flux-1-schnell 'your prompt'"
+            )
+        
         # Get available checkpoints
         checkpoints = self.client.get_models("checkpoints")
         if not checkpoints:
-            raise RuntimeError("No checkpoints available in ComfyUI")
+            raise RuntimeError(
+                "No checkpoints available in ComfyUI.\n"
+                "Please download models first:\n"
+                "  oprel setup image"
+            )
         
-        # Use specified checkpoint or first available
-        if checkpoint and checkpoint in checkpoints:
-            model_name = checkpoint
-        else:
-            model_name = checkpoints[0]
-            logger.info(f"Using checkpoint: {model_name}")
+        # Validate checkpoint exists
+        if checkpoint not in checkpoints:
+            available = '\n  - '.join(checkpoints[:5])  # Show first 5
+            raise ValueError(
+                f"Model '{checkpoint}' not found in ComfyUI.\n\n"
+                f"Available models:\n  - {available}\n\n"
+                f"Run 'oprel gen-image --help' to see model aliases."
+            )
+        
+        model_name = checkpoint
+        logger.info(f"Using model: {model_name}")
         
         # Detect model family
         is_turbo = "turbo" in model_name.lower()

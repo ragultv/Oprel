@@ -6,6 +6,27 @@ from oprel.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
+# --- Mode-specific instructions ---
+FAST_MODE_SUPPRESSION = (
+    "\n\n[MODE: FAST — STRICT]"
+    "\nRespond IMMEDIATELY and CONCISELY."
+    "\nDo NOT output <think> tags or any internal reasoning."
+    "\nDo NOT narrate your thought process."
+    "\nIf you feel the urge to think first, suppress it and answer directly."
+)
+
+THINKING_MODE_INSTRUCTION = (
+    "\n\n[MODE: DEEP THINKING — MANDATORY]"
+    "\nYou MUST reason step by step inside <think> and </think> before answering."
+    "\nFormat — follow EXACTLY:"
+    "\n<think>"
+    "\n(Explore the problem, consider edge cases, validate your approach)"
+    "\n</think>"
+    "\n"
+    "\n(Your final, clean, well-structured answer here)"
+    "\nCRITICAL: The </think> closing tag must appear before any final answer text."
+)
+
 
 def detect_model_type(model_id: str) -> str:
     """
@@ -40,19 +61,34 @@ def format_chat_prompt(
     user_message: str,
     system_prompt: str = None,
     conversation_history: list = None,
+    thinking: bool = False,
 ) -> str:
     """
     Format a prompt with the correct chat template for the model.
-    
-    Args:
-        model_id: Model identifier
-        user_message: User's message
-        system_prompt: Optional system instruction
-        conversation_history: Optional list of previous messages
-        
-    Returns:
-        Properly formatted prompt string
     """
+    # Global general instructions for all models
+    GLOBAL_INSTRUCTION = (
+        "Always format responses in clean, structured Markdown.\n"
+        "Use ## or ### headings to organize sections. "
+        "Use **bold** for key terms, `backticks` for inline code. "
+        "Wrap all code in fenced code blocks with language tags (```python, ```javascript, etc). "
+        "Use bullet points or numbered lists for multiple items. "
+        "Use tables for comparisons. Keep paragraphs short and focused.\n"
+        "Reply in English if the user uses English. "
+        "If the user communicates in any other language, reply in that same language if you know it."
+    )
+    
+    if system_prompt:
+        system_prompt = f"{GLOBAL_INSTRUCTION}\n\n{system_prompt}"
+    else:
+        system_prompt = GLOBAL_INSTRUCTION
+
+    # Add mode-specific constraints
+    if thinking:
+        system_prompt += THINKING_MODE_INSTRUCTION
+    else:
+        system_prompt += FAST_MODE_SUPPRESSION
+
     model_type = detect_model_type(model_id)
     
     if model_type == "qwen":
@@ -73,6 +109,22 @@ def format_chat_prompt(
         return user_message
 
 
+def _get_content_text(content) -> str:
+    """Extract text from multimodal content if necessary"""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        text_parts = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                text_parts.append(item.get("text", ""))
+            elif isinstance(item, dict) and item.get("type") == "image_url":
+                # Standard tag for vision models in many GGUF implementations
+                text_parts.append("[img-0]") 
+        return " ".join(text_parts)
+    return str(content)
+
+
 def format_qwen_prompt(
     user_message: str,
     system_prompt: str = None,
@@ -91,11 +143,12 @@ def format_qwen_prompt(
     if conversation_history:
         for msg in conversation_history:
             role = msg.get("role", "user")
-            content = msg.get("content", "")
+            content = _get_content_text(msg.get("content", ""))
             formatted += f"<|im_start|>{role}\n{content}<|im_end|>\n"
     
     # Add current user message
-    formatted += f"<|im_start|>user\n{user_message}<|im_end|>\n"
+    user_text = _get_content_text(user_message)
+    formatted += f"<|im_start|>user\n{user_text}<|im_end|>\n"
     formatted += "<|im_start|>assistant\n"
     
     return formatted
@@ -118,11 +171,12 @@ def format_llama3_prompt(
     if conversation_history:
         for msg in conversation_history:
             role = msg.get("role", "user")
-            content = msg.get("content", "")
+            content = _get_content_text(msg.get("content", ""))
             formatted += f"<|start_header_id|>{role}<|end_header_id|>\n\n{content}<|eot_id|>"
     
     # Add current message
-    formatted += f"<|start_header_id|>user<|end_header_id|>\n\n{user_message}<|eot_id|>"
+    user_text = _get_content_text(user_message)
+    formatted += f"<|start_header_id|>user<|end_header_id|>\n\n{user_text}<|eot_id|>"
     formatted += "<|start_header_id|>assistant<|end_header_id|>\n\n"
     
     return formatted
@@ -228,10 +282,11 @@ def format_phi_prompt(
     if conversation_history:
         for msg in conversation_history:
             role = msg.get("role", "user")
-            content = msg.get("content", "")
+            content = _get_content_text(msg.get("content", ""))
             formatted += f"<|{role}|>\n{content}<|end|>\n"
     
-    formatted += f"<|user|>\n{user_message}<|end|>\n"
+    user_text = _get_content_text(user_message)
+    formatted += f"<|user|>\n{user_text}<|end|>\n"
     formatted += "<|assistant|>\n"
     
     return formatted

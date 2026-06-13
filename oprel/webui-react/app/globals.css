@@ -1,0 +1,350 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  /* Brand Colors */
+  --brand-primary: #ee4647;
+  --brand-secondary: #2b2c2c;
+
+  /* Dark backgrounds */
+  --bg-dark: #0f0f0f;
+  --bg-sidebar: #171717;
+  --bg-panel: #1e1e1e;
+  --bg-canvas: #0a0a0a;
+  --bg-elevated: #242424;
+
+  /* Text */
+  --text-primary: #e5e5e5;
+  --text-secondary: #a3a3a3;
+  --text-muted: #525252;
+
+  /* Borders */
+  --border-subtle: rgba(255, 255, 255, 0.06);
+  --border-hover: rgba(255, 255, 255, 0.12);
+
+  /* Semantic tokens */
+  --background: #0f0f0f;
+  --foreground: #e5e5e5;
+  --card: #1e1e1e;
+  --card-foreground: #e5e5e5;
+  --popover: #1e1e1e;
+  --popover-foreground: #e5e5e5;
+  --primary: #ee4647;
+  --primary-foreground: #ffffff;
+  --secondary: #2b2c2c;
+  --secondary-foreground: #e5e5e5;
+  --muted: #2b2c2c;
+  --muted-foreground: #a3a3a3;
+  --accent: #2b2c2c;
+  --accent-foreground: #e5e5e5;
+  --destructive: #ef4444;
+  --destructive-foreground: #ffffff;
+  --border: rgba(255, 255, 255, 0.06);
+  --input: rgba(255, 255, 255, 0.06);
+  --ring: #ee4647;
+  --radius: 0.5rem;
+
+  /* Chart colors */
+  --chart-1: #ee4647;
+  --chart-2: #f59e0b;
+  --chart-3: #22c55e;
+  --chart-4: #a855f7;
+  --chart-5: #3b82f6;
+
+  /* Sidebar */
+  --sidebar: #171717;
+  --sidebar-foreground: #e5e5e5;
+  --sidebar-primary: #ee4647;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #2b2c2c;
+  --sidebar-accent-foreground: #e5e5e5;
+  --sidebar-border: rgba(255, 255, 255, 0.06);
+  --sidebar-ring: #ee4647;
+}
+
+@theme inline {
+  --font-sans: 'Inter', 'Inter Fallback';
+  --font-mono: 'JetBrains Mono', 'Geist Mono', monospace;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --radius-sm: calc(var(--radius) - 2px);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) + 4px);
+  --radius-xl: calc(var(--radius) + 8px);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html, body {
+    height: 100%;
+    overflow: hidden;
+  }
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #444; }
+
+/* Animations */
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-in-up {
+  animation: fadeInUp 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+.pulse-dot { animation: pulse-dot 2s ease-in-out infinite; }
+
+/* Typing indicator */
+@keyframes bounce-dot {
+  0%, 80%, 100% { transform: translateY(0); opacity: 0.4; }
+  40% { transform: translateY(-6px); opacity: 1; }
+}
+.typing-dot {
+  animation: bounce-dot 1.4s ease-in-out infinite;
+}
+.typing-dot:nth-child(2) { animation-delay: 0.15s; }
+.typing-dot:nth-child(3) { animation-delay: 0.3s; }
+
+/* Metric card sparkline area */
+.sparkline-area {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  opacity: 0.18;
+}
+
+/* Range input styling */
+input[type='range'] {
+  accent-color: var(--primary);
+}
+
+/* Focus ring override for inputs */
+input:focus, textarea:focus {
+  outline: none;
+}
+
+/* Textarea auto-resize helper */
+textarea {
+  field-sizing: content;
+}
+
+/* ─── Oprel Markdown Renderer ───────────────────────────────────────────── */
+.oprel-markdown {
+  color: var(--foreground);
+  line-height: 1.7;
+  font-size: 0.875rem;
+  max-width: 100%;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+
+/* Headings */
+.oprel-markdown h1, .oprel-markdown h2, .oprel-markdown h3,
+.oprel-markdown h4, .oprel-markdown h5, .oprel-markdown h6 {
+  color: var(--foreground);
+  font-weight: 600;
+  margin: 1.25rem 0 0.5rem 0;
+  line-height: 1.3;
+}
+.oprel-markdown h1:first-child, .oprel-markdown h2:first-child, .oprel-markdown h3:first-child,
+.oprel-response > :first-child, .oprel-markdown > :first-child, .oprel-markdown > :first-child > :first-child {
+  margin-top: 0 !important;
+}
+.oprel-markdown h1 { font-size: 1.375rem; }
+.oprel-markdown h2 { font-size: 1.15rem; }
+.oprel-markdown h3 { font-size: 1.05rem; }
+
+/* Paragraphs */
+.oprel-markdown p { margin: 0.65rem 0; }
+.oprel-markdown p:last-child  { margin-bottom: 0; }
+
+/* Lists */
+.oprel-markdown ul, .oprel-markdown ol {
+  margin: 0.65rem 0;
+  padding-left: 1.5rem;
+}
+.oprel-markdown ul { list-style-type: disc; }
+.oprel-markdown ol { list-style-type: decimal; }
+.oprel-markdown li { margin: 0.2rem 0; }
+.oprel-markdown ul ul { list-style-type: circle; margin: 0.2rem 0; }
+
+/* Strong / Emphasis */
+.oprel-markdown strong { color: rgba(255,255,255,0.9); font-weight: 600; }
+.oprel-markdown em    { font-style: italic; }
+
+/* Single-newline line breaks (from remark-breaks) — tight, not a full paragraph gap */
+.oprel-markdown br { display: block; margin: 0; content: ""; }
+
+/* Blockquote */
+.oprel-markdown blockquote {
+  margin: 0.75rem 0;
+  padding: 0 0 0 1rem;
+  border-left: 2px solid rgba(255,255,255,0.2);
+  color: var(--muted-foreground);
+}
+
+/* Horizontal rule */
+.oprel-markdown hr {
+  border: none;
+  height: 1px;
+  background: rgba(255,255,255,0.08);
+  margin: 1.5rem 0;
+}
+
+/* Tables */
+.oprel-markdown table { width: 100%; border-collapse: collapse; font-size: 0.8rem; margin: 0.75rem 0; }
+.oprel-markdown th, .oprel-markdown td { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid rgba(255,255,255,0.08); }
+.oprel-markdown th { font-weight: 600; color: var(--foreground); }
+.oprel-markdown td { color: var(--muted-foreground); }
+.oprel-markdown tr:last-child td { border-bottom: none; }
+
+/* ─── Completed code block (react-syntax-highlighter / vscDarkPlus) ───────── */
+.oprel-code-block {
+  width: 100%;
+  border-radius: 0.625rem;
+  background: #1e1e1e;
+  overflow: hidden;
+  margin: 0.75rem 0;
+}
+.oprel-code-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.4rem 1rem;
+  background: #1e1e1e;
+}
+.oprel-code-lang {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+  text-transform: lowercase;
+}
+.oprel-code-copy-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  background: transparent;
+  border: none;
+  border-radius: 0.25rem;
+  color: var(--muted-foreground);
+  font-size: 0.7rem;
+  font-family: inherit;
+  cursor: pointer;
+  padding: 0.2rem 0.4rem;
+  transition: color 0.15s;
+}
+.oprel-code-copy-btn:hover { color: var(--foreground); }
+.oprel-code-content { overflow-x: auto; background: #1e1e1e; }
+.oprel-code-content pre { margin: 0 !important; line-height: 1.6 !important; }
+.oprel-code-content code { font-family: var(--font-mono, monospace) !important; font-size: 13px !important; }
+
+/* scrollbar for code */
+.oprel-code-content::-webkit-scrollbar { height: 6px; }
+.oprel-code-content::-webkit-scrollbar-track { background: #1e1e1e; }
+.oprel-code-content::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.18); border-radius: 3px; }
+
+/* ─── Streaming code block (plain, no syntax highlighting) ────────────────── */
+.oprel-streaming-code-block {
+  width: 100%;
+  border-radius: 0.625rem;
+  background: #1e1e1e;
+  overflow: hidden;
+  margin: 0.75rem 0;
+}
+.oprel-streaming-code-header {
+  display: flex;
+  align-items: center;
+  padding: 0.4rem 1rem;
+  background: #1e1e1e;
+}
+.oprel-streaming-code-lang {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+  text-transform: lowercase;
+}
+.oprel-streaming-code-pre {
+  margin: 0;
+  padding: 1rem;
+  overflow-x: auto;
+  font-family: var(--font-mono, monospace);
+  font-size: 13px;
+  line-height: 1.6;
+  color: #d4d4d4;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.oprel-streaming-code-pre code {
+  font-family: inherit;
+  color: inherit;
+  background: none;
+  padding: 0;
+}
+
+/* ─── Inline code ──────────────────────────────────────────────────────────── */
+.oprel-inline-code {
+  background: rgba(255,255,255,0.1);
+  padding: 0.1rem 0.35rem;
+  border-radius: 4px;
+  font-family: var(--font-mono, monospace);
+  font-size: 0.85em;
+  color: var(--foreground);
+}
+
+/* ─── Links ────────────────────────────────────────────────────────────────── */
+.oprel-markdown a {
+  color: var(--foreground);
+  text-decoration: underline;
+  text-decoration-color: rgba(255,255,255,0.3);
+  text-underline-offset: 2px;
+  transition: text-decoration-color 0.15s;
+}
+.oprel-markdown a:hover { text-decoration-color: var(--foreground); }
+

@@ -1,87 +1,29 @@
-"""
-Main user-facing Model API
-"""
+"""Main user-facing model API."""
 
+import threading
 import subprocess
 import sys
 import time
-from pathlib import Path
-from typing import Optional, Dict, Any, Iterator
-import threading
+from typing import Any, Iterator, Optional
 
 import requests
 
-from oprel.core.config import Config
-from oprel.core.exceptions import OprelError, ModelNotFoundError
-from oprel.downloader.hub import download_model
-from oprel.runtime.process import ModelProcess
-from oprel.runtime.monitor import ProcessMonitor
-from oprel.client.base import BaseClient
-from oprel.client.socket import UnixSocketClient
 from oprel.client.http import HTTPClient
-from oprel.telemetry.recommender import recommend_quantization
+from oprel.client.socket import UnixSocketClient
+from oprel.core.config import Config
+from oprel.core.exceptions import OprelError
 from oprel.downloader.aliases import resolve_model_id
+from oprel.downloader.hub import download_model
+from oprel.runtime.monitor import ProcessMonitor
+from oprel.runtime.process import ModelProcess
+from oprel.telemetry.recommender import recommend_quantization
 from oprel.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
 # Default server configuration
-DEFAULT_SERVER_URL = "http://127.0.0.1:11434"
+DEFAULT_SERVER_URL = "http://127.0.0.1:11435"
 SERVER_STARTUP_TIMEOUT = 30  # seconds
-
-
-class _PyTorchClientWrapper(BaseClient):
-    """
-    Lightweight wrapper to make PyTorch backend compatible with Client API.
-    
-    PyTorch backend runs in-process, so this wrapper adapts its direct API
-    to match the HTTP client interface used by other backends.
-    """
-    
-    def __init__(self, pytorch_backend):
-        """
-        Initialize wrapper around PyTorch backend.
-        
-        Args:
-            pytorch_backend: PyTorchBackend instance
-        """
-        self.backend = pytorch_backend
-    
-    def generate(
-        self,
-        prompt: str,
-        max_tokens: int = 512,
-        temperature: float = 0.7,
-        stream: bool = False,
-        **kwargs
-    ) -> str | Iterator[str]:
-        """
-        Generate text using PyTorch backend.
-        
-        Args:
-            prompt: Input text
-            max_tokens: Maximum tokens to generate
-            temperature: Sampling temperature
-            stream: Whether to stream (not yet implemented for PyTorch)
-            **kwargs: Additional parameters
-            
-        Returns:
-            Generated text
-        """
-        if stream:
-            logger.warning("Streaming not yet implemented for PyTorch backend")
-            # Fall back to non-streaming
-        
-        return self.backend.generate(
-            prompt=prompt,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            **kwargs
-        )
-    
-    def health_check(self) -> bool:
-        """Check if backend is loaded."""
-        return self.backend.model is not None
 
 
 def _extract_model_size_from_name(model_id: str) -> int:
@@ -127,7 +69,7 @@ class Model:
         model_id: str,
         quantization: Optional[str] = None,
         max_memory_mb: Optional[int] = None,
-        backend: str = "auto",  # M1.26: Changed default to "auto"
+        backend: str = "llama.cpp",
         config: Optional[Config] = None,
         use_server: bool = True,
         server_url: str = DEFAULT_SERVER_URL,
@@ -140,11 +82,7 @@ class Model:
             model_id: HuggingFace model ID (e.g., "TheBloke/Llama-2-7B-GGUF")
             quantization: Quantization level (Q4_K_M, Q5_K_M, Q8_0) or None for auto
             max_memory_mb: Maximum memory limit in MB (None for auto)
-            backend: Backend engine ("auto", "llama.cpp", "pytorch", "vllm")
-                    - "auto" (default): Automatically selects best backend for your hardware
-                    - "llama.cpp": CPU-only, low VRAM GPUs, hybrid GPU/CPU
-                    - "pytorch": Mid-range GPUs (6-16GB VRAM), 20-30% faster than llama.cpp
-                    - "vllm": High-end GPUs (16GB+ VRAM), for Month 3
+            backend: Backend engine. Only ``llama.cpp`` is supported.
             config: Custom configuration object
             use_server: Whether to use persistent server mode (default=True)
             server_url: URL of the oprel daemon server (default="http://127.0.0.1:11434")
@@ -155,21 +93,19 @@ class Model:
         self.use_server = use_server
         self.server_url = server_url.rstrip("/")
         
-        # M1.26: Auto-select backend if "auto"
-        if backend == "auto":
-            from oprel.runtime.backends.selector import select_backend
-            # We'll select the backend later when we know the model size
-            self.backend_name = None  # Will be set in load()
-            self._auto_backend = True
-        else:
-            self.backend_name = backend
-            self._auto_backend = False
+        if backend != "llama.cpp":
+            raise ValueError(
+                f"Unsupported backend '{backend}'. "
+                "This build only supports the llama.cpp backend."
+            )
+
+        self.backend_name = "llama.cpp"
 
         # Initialize runtime state early to prevent __del__ errors
         self._process: Optional[ModelProcess] = None
         self._monitor: Optional[ProcessMonitor] = None
-        self._client: Optional[BaseClient] = None
-        self._pytorch_backend = None  # For in-process PyTorch backend
+        self._client: Optional[HTTPClient | UnixSocketClient] = None
+        self._model_path = None
         self._lock = threading.Lock()
         self._loaded = False
         self._server_started_by_us = False
@@ -179,46 +115,32 @@ class Model:
         
         # Auto-detect quantization if not specified
         if quantization is None:
-            quantization = recommend_quantization(model_size_b=model_size_b, allow_low_quality=allow_low_quality)
-            logger.info(f"Auto-selected quantization: {quantization}")
+            # First, check for locally available quantizations
+            from oprel.utils.model_info import get_local_quantizations
+            local_quants = get_local_quantizations(self.model_id, self.config.cache_dir)
+            
+            if local_quants:
+                # Use the first local quantization (prefer higher quality)
+                # Sort by quality: Q8_0 > Q6_K > Q5_K_M > Q4_K_M > Q3_K_M > Q2_K
+                quality_order = ["Q8_0", "Q6_K", "Q5_K_M", "Q4_K_M", "Q3_K_M", "Q2_K"]
+                for quant in quality_order:
+                    if quant in local_quants:
+                        quantization = quant
+                        logger.info(f"Using locally available quantization: {quantization}")
+                        break
+                
+                # Fallback to first local quant if none match quality order
+                if quantization is None:
+                    quantization = local_quants[0]
+                    logger.info(f"Using locally available quantization: {quantization}")
+            else:
+                # No local quantizations, recommend one
+                quantization = recommend_quantization(model_size_b=model_size_b, allow_low_quality=allow_low_quality)
+                logger.info(f"No local quantizations found, auto-selected: {quantization}")
 
         self.quantization = quantization
         self.max_memory_mb = max_memory_mb or self.config.default_max_memory_mb
         
-        # M1.26: Auto-select backend if "auto" (do it NOW, not in load())
-        if self._auto_backend:
-            from oprel.runtime.backends.selector import select_backend
-            
-            # Estimate model size from quantization
-            # Q4_K_M ≈ 4.5 bits/param, Q5_K_M ≈ 5.5 bits/param, Q8_0 ≈ 8 bits/param
-            bits_per_param = {
-                "Q2_K": 2.5,
-                "Q3_K_S": 3.5,
-                "Q3_K_M": 3.5,
-                "Q3_K_L": 3.5,
-                "Q4_0": 4.5,
-                "Q4_K_S": 4.5,
-                "Q4_K_M": 4.5,
-                "Q5_0": 5.5,
-                "Q5_K_S": 5.5,
-                "Q5_K_M": 5.5,
-                "Q6_K": 6.5,
-                "Q8_0": 8.5,
-                "F16": 16,
-                "F32": 32,
-            }.get(self.quantization, 4.5)  # Default to Q4_K_M
-            
-            # Estimate size: (params_billions * bits_per_param) / 8 = GB
-            estimated_size_gb = (model_size_b * bits_per_param) / 8
-            
-            self.backend_name = select_backend(model_size_gb=estimated_size_gb)
-            logger.info(f"✓ Auto-selected backend: {self.backend_name} (estimated {estimated_size_gb:.1f}GB)")
-        
-        # Ensure backend_name is never None
-        if self.backend_name is None:
-            self.backend_name = "llama.cpp"
-            logger.warning("Backend was None, defaulting to llama.cpp")
-
     def _is_server_running(self) -> bool:
         """Check if the oprel daemon server is running."""
         try:
@@ -311,12 +233,14 @@ class Model:
     def _server_generate(
         self,
         prompt: str,
-        max_tokens: int = 512,
+        max_tokens: int = 8192,
         temperature: float = 0.7,
         stream: bool = False,
         conversation_id: Optional[str] = None,
         system_prompt: Optional[str] = None,
         reset_conversation: bool = False,
+        thinking: bool = False,
+        rag: bool = False,
         **kwargs: Any,
     ) -> str | Iterator[str]:
         """Generate text via server API."""
@@ -329,6 +253,8 @@ class Model:
             "conversation_id": conversation_id,
             "system_prompt": system_prompt,
             "reset_conversation": reset_conversation,
+            "thinking": thinking,
+            "rag": rag,
         }
         
         try:
@@ -438,48 +364,8 @@ class Model:
             quantization=self.quantization,
             cache_dir=self.config.cache_dir,
         )
+        self._model_path = model_path
 
-        # Step 2: Check if using PyTorch backend (in-process)
-        if self.backend_name == "pytorch":
-            # PyTorch backend runs in-process, not as subprocess
-            logger.info("Loading with PyTorch backend (in-process)")
-            try:
-                from oprel.runtime.backends.pytorch_backend import PyTorchBackend
-                
-                self._pytorch_backend = PyTorchBackend(
-                    binary_path=Path(),  # Not used
-                    model_path=model_path,
-                    config=self.config,
-                )
-                self._pytorch_backend.load()
-                
-                # Create a lightweight client wrapper for PyTorch backend
-                self._client = _PyTorchClientWrapper(self._pytorch_backend)
-                self._loaded = True
-                
-                logger.info("✓ PyTorch backend loaded successfully")
-                return
-                
-            except RuntimeError as e:
-                # This catches our VRAM/GPU requirement errors with helpful messages
-                error_str = str(e)
-                if "PyTorch backend requires" in error_str or "VRAM" in error_str:
-                    # Re-raise with the helpful error message intact
-                    logger.error("PyTorch backend requirement not met")
-                    raise OprelError(error_str) from e
-                else:
-                    # Other runtime errors
-                    logger.warning(f"PyTorch backend failed: {e}. Falling back to llama.cpp")
-                    self.backend_name = "llama.cpp"
-                
-            except ImportError as e:
-                logger.warning(
-                    f"PyTorch backend not available: {e}. "
-                    f"Falling back to llama.cpp"
-                )
-                self.backend_name = "llama.cpp"
-        
-        # Step 3: Spawn backend process (llama.cpp, vllm, etc.)
         logger.info(f"Starting {self.backend_name} backend")
         self._process = ModelProcess(
             model_path=model_path,
@@ -516,13 +402,15 @@ class Model:
     def generate(
         self,
         prompt: str,
-        max_tokens: int = 512,
+        max_tokens: int = 8192,
         temperature: float = 0.7,
         stream: bool = False,
         conversation_id: Optional[str] = None,
         system_prompt: Optional[str] = None,
         reset_conversation: bool = False,
         images: Optional[list] = None,  # New: Support for vision models
+        thinking: bool = False,
+        rag: bool = False,
         **kwargs: Any,
     ) -> str | Iterator[str]:
         """
@@ -560,6 +448,8 @@ class Model:
                 conversation_id=conversation_id,
                 system_prompt=system_prompt,
                 reset_conversation=reset_conversation,
+                thinking=thinking,
+                rag=rag,
                 **kwargs,
             )
         else:
@@ -569,6 +459,29 @@ class Model:
             if health_error:
                 raise health_error
 
+            # --- Manual mode injection for direct mode ---
+            from oprel.utils.chat_templates import THINKING_MODE_INSTRUCTION, FAST_MODE_SUPPRESSION
+            
+            # Note: We apply basic instruction injection here. 
+            # If the user uses the CLI, it already called format_chat_prompt(..., thinking=T/F),
+            # so we avoid double-injection by checking if the markers already exist.
+            if thinking:
+                if THINKING_MODE_INSTRUCTION.strip() not in prompt:
+                    prompt = THINKING_MODE_INSTRUCTION + "\n" + prompt
+                
+                # Thinking mode needs budget
+                if max_tokens < 8192:
+                    max_tokens = 8192
+                    logger.debug("Direct mode: bumping max_tokens to 8192 for thinking")
+            else:
+                # Fast mode: actively suppress and cap
+                if FAST_MODE_SUPPRESSION.strip() not in prompt:
+                    prompt = FAST_MODE_SUPPRESSION + "\n" + prompt
+                
+                if max_tokens > 2048:
+                    max_tokens = 2048
+                    logger.debug("Direct mode: capping max_tokens to 2048 for fast mode")
+
             # Generate via client
             return self._client.generate(
                 prompt=prompt,
@@ -576,8 +489,93 @@ class Model:
                 temperature=temperature,
                 stream=stream,
                 images=images,
+                model=self.model_id,
                 **kwargs,
             )
+
+
+    def generate_structured(
+        self,
+        prompt: str,
+        response_model: Any,
+        max_retries: int = 2,
+        **kwargs: Any
+    ) -> Any:
+        """
+        Generate structured data matching a Pydantic model.
+        
+        Args:
+            prompt: Input text
+            response_model: Pydantic BaseModel class
+            max_retries: Number of retries if validation fails
+            **kwargs: Arguments passed to generate()
+            
+        Returns:
+            Instance of response_model
+            
+        Raises:
+            ValidationError: If model fails to generate valid data after retries
+        """
+        import json
+        import re
+        from pydantic import ValidationError
+        
+        schema = response_model.model_json_schema()
+        
+        # enhance prompt with schema compliance instructions
+        system_instruction = (
+            f"You are a precise data extraction engine.\n"
+            f"You MUST output valid JSON matching this schema:\n"
+            f"{json.dumps(schema, indent=2)}\n"
+            f"Do not include markdown formatting (```json), comments, or explanations.\n"
+            f"Output ONLY the JSON object."
+        )
+        
+        # If user passed system prompt, append to it, otherwise use ours
+        user_system = kwargs.get('system_prompt', '')
+        full_system = f"{user_system}\n\n{system_instruction}" if user_system else system_instruction
+        kwargs['system_prompt'] = full_system
+        
+        # Force low temperature for deterministic structure
+        if 'temperature' not in kwargs:
+            kwargs['temperature'] = 0.2
+            
+        last_error = None
+        
+        for attempt in range(max_retries + 1):
+            try:
+                # Generate raw text
+                text = self.generate(
+                    prompt=prompt,
+                    stream=False,
+                    **kwargs
+                )
+                
+                # Clean up markdown code blocks if present
+                clean_text = text.strip()
+                match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', clean_text, re.DOTALL)
+                if match:
+                    clean_text = match.group(1)
+                else:
+                    # Try to find the first { and last }
+                    start = clean_text.find('{')
+                    end = clean_text.rfind('}')
+                    if start != -1 and end != -1:
+                        clean_text = clean_text[start : end + 1]
+                
+                # Parse JSON
+                data = json.loads(clean_text)
+                
+                # Validate with Pydantic
+                return response_model.model_validate(data)
+                
+            except (json.JSONDecodeError, ValidationError) as e:
+                logger.warning(f"Structured geneation attempt {attempt+1} failed: {e}")
+                last_error = e
+                # Setup retry prompt
+                prompt += f"\n\nERROR: The previous output was invalid. {str(e)}\nPlease correct the JSON format."
+                
+        raise last_error
 
     def unload(self) -> None:
         """
@@ -597,14 +595,6 @@ class Model:
                 logger.debug(f"Model {self.model_id} kept in server cache")
             else:
                 # Direct mode: stop local process or PyTorch backend
-                
-                # Cleanup PyTorch backend if used
-                if hasattr(self, '_pytorch_backend') and self._pytorch_backend:
-                    logger.debug("Unloading PyTorch backend...")
-                    self._pytorch_backend.unload()
-                    self._pytorch_backend = None
-                
-                # Cleanup traditional backends (llama.cpp, etc.)
                 if self._monitor:
                     self._monitor.stop()
 
