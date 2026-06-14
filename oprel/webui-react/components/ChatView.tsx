@@ -1004,8 +1004,14 @@ export function ChatView({
       ? (typeof userContent === 'string' ? userContent : textWithFiles) + canvasSystemSuffix
       : userContent;
 
+    let finalSystemPrompt = settings.systemPrompt || '';
+    if (activeSkill?.systemPrompt) {
+      const skillContext = `[Active Skill: ${activeSkill.name}]\n${activeSkill.systemPrompt}`;
+      finalSystemPrompt = finalSystemPrompt ? `${finalSystemPrompt}\n\n${skillContext}` : skillContext;
+    }
+
     const contextMessages = [
-      ...(settings.systemPrompt ? [{ role: 'system', content: settings.systemPrompt }] : []),
+      ...(finalSystemPrompt ? [{ role: 'system', content: finalSystemPrompt }] : []),
       ...history,
       { role: 'user', content: canvasUserContent },
     ];

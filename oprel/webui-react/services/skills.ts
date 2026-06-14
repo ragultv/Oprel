@@ -190,6 +190,91 @@ export const ALL_SKILLS: Skill[] = [
     maxTokens: 2048,
     isPremium: true,
     enabled: true
+  },
+  // Converted Presets
+  {
+    id: "diagrams",
+    name: "Diagrams",
+    description: "Create Mermaid diagrams",
+    command: "diagrams",
+    icon: "TrendingUp",
+    category: "Development",
+    systemPrompt: "You are a technical diagram expert. When asked to create diagrams, output valid Mermaid syntax inside ```mermaid code blocks. Always produce syntactically correct Mermaid.\n\nCRITICAL RULES FOR MERMAID:\n1. NEVER use spaces in subgraph IDs. Format as: `subgraph ID [\"Title\"]` (e.g. `subgraph ClientLayer [\"Client Layer\"]`).\n2. ALWAYS wrap node labels containing parentheses or special characters in double quotes (e.g., `A[\"Input (X)\"]`).\n3. ALWAYS use newlines to separate statements (never put `subgraph` on the same line as a node).\n4. Use standard ASCII characters only. Avoid special hyphens.",
+    temperature: 0.1,
+    maxTokens: 4096,
+    enabled: true
+  },
+  {
+    id: "webbuilder",
+    name: "Web Builder",
+    description: "Build self-contained web UIs",
+    command: "webbuilder",
+    icon: "Code2",
+    category: "Development",
+    systemPrompt: "You are a senior frontend engineer. When asked to build UIs, produce complete, self-contained HTML files with embedded CSS and JS inside ```html code blocks.",
+    temperature: 0.2,
+    maxTokens: 8192,
+    enabled: true
+  },
+  {
+    id: "writer",
+    name: "Writer",
+    description: "Professional writing and editing",
+    command: "writer",
+    icon: "Edit3",
+    category: "Writing",
+    systemPrompt: "You are a professional writer and editor. Help craft clear, engaging, and well-structured prose. Adapt tone to the request.",
+    temperature: 0.7,
+    maxTokens: 4096,
+    enabled: true
+  },
+  {
+    id: "analyst",
+    name: "Data Analyst",
+    description: "Analyze data and trends",
+    command: "analyst",
+    icon: "TrendingUp",
+    category: "Research",
+    systemPrompt: "You are a data analyst. Provide structured analysis, identify trends, and support conclusions with reasoning and data.",
+    temperature: 0.3,
+    maxTokens: 4096,
+    enabled: true
+  },
+  {
+    id: "sql",
+    name: "Data / SQL",
+    description: "Write performant SQL queries",
+    command: "sql",
+    icon: "Target",
+    category: "Development",
+    systemPrompt: "You are a database expert specialising in SQL. Write performant, standards-compliant queries. Explain query plans when asked.",
+    temperature: 0.1,
+    maxTokens: 4096,
+    enabled: true
+  },
+  {
+    id: "devops",
+    name: "DevOps",
+    description: "Cloud infrastructure solutions",
+    command: "devops",
+    icon: "Terminal",
+    category: "Development",
+    systemPrompt: "You are a DevOps and cloud infrastructure expert. Provide practical, secure, and scalable solutions using industry best practices.",
+    temperature: 0.2,
+    maxTokens: 4096,
+    enabled: true
+  },
+  {
+    id: "coach",
+    name: "Life Coach",
+    description: "Supportive life & productivity coach",
+    command: "coach",
+    icon: "Brain",
+    category: "Writing",
+    systemPrompt: "You are a supportive life and productivity coach. Help the user clarify goals, overcome obstacles, and build positive habits.",
+    temperature: 0.7,
+    maxTokens: 4096,
+    enabled: true
   }
 ];
 
