@@ -50,63 +50,13 @@ const emptySkill: Skill = {
 
 const TABS = [
   { id: 'config', label: 'Generation', icon: SlidersHorizontal },
-  { id: 'presets', label: 'Prompt Presets', icon: BookOpen },
   { id: 'providers', label: 'AI Providers', icon: Globe },
   { id: 'skills', label: 'Skills', icon: Sparkles },
 ] as const
 
 type TabId = (typeof TABS)[number]['id']
 
-// ─── System Prompt Presets ────────────────────────────────────────────────────
-
-const SYSTEM_PRESETS = [
-  { label: 'General', prompt: 'You are a helpful AI assistant.' },
-  {
-    label: 'Coder',
-    prompt:
-      'You are an expert software engineer. Write clean, efficient, well-documented code. Prefer concise explanations. Always include code examples.',
-  },
-  {
-    label: 'Diagrams',
-    prompt:
-      'You are a technical diagram expert. When asked to create diagrams, output valid Mermaid syntax inside ```mermaid code blocks. Always produce syntactically correct Mermaid.',
-  },
-  {
-    label: 'Web Builder',
-    prompt:
-      'You are a senior frontend engineer. When asked to build UIs, produce complete, self-contained HTML files with embedded CSS and JS inside ```html code blocks.',
-  },
-  {
-    label: 'Writer',
-    prompt:
-      'You are a professional writer and editor. Help craft clear, engaging, and well-structured prose. Adapt tone to the request.',
-  },
-  {
-    label: 'Tutor',
-    prompt:
-      'You are a patient and thorough tutor. Explain concepts step-by-step, use analogies and examples, and check for understanding.',
-  },
-  {
-    label: 'Analyst',
-    prompt:
-      'You are a data analyst. Provide structured analysis, identify trends, and support conclusions with reasoning and data.',
-  },
-  {
-    label: 'Data / SQL',
-    prompt:
-      'You are a database expert specialising in SQL. Write performant, standards-compliant queries. Explain query plans when asked.',
-  },
-  {
-    label: 'DevOps',
-    prompt:
-      'You are a DevOps and cloud infrastructure expert. Provide practical, secure, and scalable solutions using industry best practices.',
-  },
-  {
-    label: 'Coach',
-    prompt:
-      'You are a supportive life and productivity coach. Help the user clarify goals, overcome obstacles, and build positive habits.',
-  },
-]
+// ─── System Prompt Presets Removed ──────────────────────────────────────────
 
 // ─── Slider helper ────────────────────────────────────────────────────────────
 
@@ -752,43 +702,11 @@ export default function SettingsPage() {
                   format={v => v.toFixed(2)}
                 />
               </div>
-            </>
-          )}
 
-          {/* ── Prompt Presets ── */}
-          {activeTab === 'presets' && (
-            <>
-              <div>
-                <h1 className="text-xl font-bold text-foreground">Prompt Presets</h1>
-                <p className="text-sm text-muted-foreground mt-0.5">
-                  Choose a preset to instantly set the system prompt, or write your own below
-                </p>
-              </div>
-
-              {/* Preset grid */}
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                {SYSTEM_PRESETS.map(p => (
-                  <button
-                    key={p.label}
-                    onClick={() => {
-                      updateSetting('systemPrompt', p.prompt)
-                    }}
-                    className={cn(
-                      'text-left px-3 py-2.5 rounded-xl border text-sm font-medium transition-all',
-                      localSettings.systemPrompt === p.prompt
-                        ? 'border-primary/50 bg-primary/10 text-primary'
-                        : 'border-border bg-card/50 text-muted-foreground hover:border-border/80 hover:bg-secondary/60 hover:text-foreground'
-                    )}
-                  >
-                    {p.label}
-                  </button>
-                ))}
-              </div>
-
-              {/* Editable textarea */}
-              <div className="space-y-2">
+              {/* Editable textarea for Base System Prompt */}
+              <div className="space-y-2 mt-6">
                 <label className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">
-                  System Prompt
+                  Base System Prompt
                 </label>
                 <textarea
                   value={localSettings.systemPrompt}
