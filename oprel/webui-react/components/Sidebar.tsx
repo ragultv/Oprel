@@ -15,6 +15,7 @@ import {
   Database,
   Image,
   RefreshCw,
+  ScanText,
 } from "lucide-react"
 import { usePathname, useRouter } from "next/navigation"
 import { cn } from "@/services/utils"
@@ -118,6 +119,7 @@ export function Sidebar() {
   const canUpdateChatUrlInPlace = pathname.startsWith("/chat")
   const isModelsRoute = pathname.startsWith("/models")
   const isImagesRoute = pathname.startsWith("/images")
+  const isOcrRoute = pathname.startsWith("/ocr")
   const isKnowledgeRoute = pathname.startsWith("/knowledge")
   const isDevRoute = pathname.startsWith("/dev")
 
@@ -243,7 +245,7 @@ export function Sidebar() {
             <MessageSquarePlus size={16} />
           </button>
 
-          {/* Nav buttons */}
+          {/* Nav buttons — 2 per row */}
           <div className="grid grid-cols-2 gap-2">
             <button
               onClick={() => router.push("/models")}
@@ -270,16 +272,16 @@ export function Sidebar() {
               <span className="text-[10px]">Images</span>
             </button>
             <button
-              onClick={() => router.push("/dev")}
+              onClick={() => router.push("/ocr")}
               className={cn(
                 "flex flex-col items-center gap-1.5 py-3 rounded-lg border border-border text-xs font-semibold transition-all text-center",
-                isDevRoute
+                isOcrRoute
                   ? "bg-secondary text-foreground border-border"
                   : "text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
               )}
             >
-              <BarChart2 size={18} />
-              <span className="text-[10px]">Dev</span>
+              <ScanText size={18} />
+              <span className="text-[10px]">OCR</span>
             </button>
             <button
               onClick={() => router.push("/knowledge")}
@@ -292,6 +294,18 @@ export function Sidebar() {
             >
               <Database size={18} />
               <span className="text-[10px]">Knowledge</span>
+            </button>
+            <button
+              onClick={() => router.push("/dev")}
+              className={cn(
+                "flex flex-col items-center gap-1.5 py-3 rounded-lg border border-border text-xs font-semibold transition-all col-span-2 text-center",
+                isDevRoute
+                  ? "bg-secondary text-foreground border-border"
+                  : "text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
+              )}
+            >
+              <BarChart2 size={18} />
+              <span className="text-[10px]">Dev</span>
             </button>
           </div>
         </div>
