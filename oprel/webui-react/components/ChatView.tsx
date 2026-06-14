@@ -393,36 +393,43 @@ function MessageBubble({
     const rawText = getContentText(message.content);
     const images = renderImages(message.content);
 
-    // Canvas card — render a clickable blue card (like Gemini)
-    if (rawText.startsWith(CANVAS_CARD_PREFIX)) {
-      const parts = rawText.slice(CANVAS_CARD_PREFIX.length).split('||')
-      const title = parts[0] || 'Canvas'
-      const date = parts[1] ? new Date(parts[1]) : new Date()
+    let cleaned = rawText;
+    let canvasCardElement = null;
+
+    // Check if there is a canvas card embedded in the text
+    const canvasMarkerIdx = cleaned.indexOf(CANVAS_CARD_PREFIX);
+    if (canvasMarkerIdx !== -1) {
+      // Extract the card info
+      const cardStr = cleaned.slice(canvasMarkerIdx + CANVAS_CARD_PREFIX.length).split('\n')[0];
+      const parts = cardStr.split('||');
+      const title = parts[0] || 'Canvas';
+      const date = parts[1] ? new Date(parts[1]) : new Date();
       const dateStr = date.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) +
-        ', ' + date.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
-      return (
-        <div>
-          {images}
-          <button
-            onClick={() => onOpenCanvas?.()}
-            className="flex items-center gap-3 px-4 py-3.5 rounded-2xl bg-[#1e3a5f] hover:bg-[#1e4a7a] border border-[#2563eb]/30 hover:border-[#2563eb]/60 transition-all text-left w-full max-w-[320px] group shadow-lg shadow-blue-950/20 mt-1"
-          >
-            <div className="w-9 h-9 rounded-xl bg-[#2563eb]/20 border border-[#2563eb]/30 flex items-center justify-center shrink-0">
-              <Layout size={16} className="text-[#60a5fa]" />
-            </div>
-            <div className="flex-1 min-w-0">
-              <div className="text-[13px] font-semibold text-white truncate">{title}</div>
-              <div className="text-[11px] text-[#93c5fd] mt-0.5">{dateStr}</div>
-            </div>
-          </button>
-        </div>
-      )
+        ', ' + date.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+
+      canvasCardElement = (
+        <button
+          onClick={() => onOpenCanvas?.()}
+          className="flex items-center gap-3 px-4 py-3.5 rounded-2xl bg-[#1e3a5f] hover:bg-[#1e4a7a] border border-[#2563eb]/30 hover:border-[#2563eb]/60 transition-all text-left w-full max-w-[320px] group shadow-lg shadow-blue-950/20 mt-4 mb-2"
+        >
+          <div className="w-9 h-9 rounded-xl bg-[#2563eb]/20 border border-[#2563eb]/30 flex items-center justify-center shrink-0">
+            <Layout size={16} className="text-[#60a5fa]" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="text-[13px] font-semibold text-white truncate">{title}</div>
+            <div className="text-[11px] text-[#93c5fd] mt-0.5">{dateStr}</div>
+          </div>
+        </button>
+      );
+
+      // Remove the canvas marker from the text
+      cleaned = cleaned.slice(0, canvasMarkerIdx).trim();
     }
 
-    if (!rawText) return images;
+    if (!cleaned && !canvasCardElement) return images;
 
     // Apply streaming-safe or full cleanup
-    let cleaned = isStreaming ? cleanLLMOutputLight(rawText) : cleanLLMOutput(rawText);
+    cleaned = isStreaming ? cleanLLMOutputLight(cleaned) : cleanLLMOutput(cleaned);
 
     // Extract <think>…</think> block
     let thinking = "";
@@ -453,6 +460,7 @@ function MessageBubble({
             </ReactMarkdown>
           </div>
         )}
+        {canvasCardElement}
       </div>
     );
   }, [message.content, renderers, isStreaming, onOpenCanvas]);
@@ -655,6 +663,18 @@ export function ChatView({
   // abort controller for stop-generation
   const abortRef = useRef<AbortController | null>(null)
 
+  // ── Abort ongoing generation when switching conversations ───────────────
+  useEffect(() => {
+    return () => {
+      if (abortRef.current) {
+        abortRef.current.abort()
+        setIsGenerating(false)
+        setShowTyping(false)
+        setStreamingMessage(null)
+      }
+    }
+  }, [activeConversationId])
+
   // ── Save canvas to database whenever it changes ───────────────────────
   useEffect(() => {
     if (canvasMode && activeConversationId && canvasDoc.content) {
@@ -702,7 +722,6 @@ export function ChatView({
           updatedAt: new Date(saved.updated_at),
         })
         setCanvasCardTimestamp(saved.card_timestamp || new Date().toISOString())
-        setCanvasMode(true)
       }
     }
     
@@ -807,14 +826,24 @@ export function ChatView({
     loadedConvIdRef.current = activeConversationId;
     setIsHistoryLoading(true);
     API.getConversation(activeConversationId).then(data => {
-      // Backend returns a list of messages directly
       const messages = Array.isArray(data) ? data : (data as any).history || [];
-      const history: ChatMessage[] = messages.map((m: any, i: number) => ({
-        id: `${activeConversationId}-${i}`,
-        role: m.role,
-        content: m.content,
-        timestamp: new Date(),
-      }));
+      const history: ChatMessage[] = messages.map((m: any, i: number) => {
+        let content = m.content;
+        if (typeof content === 'string' && content.includes('<!--CHAT-->')) {
+          const parts = content.split('<!--CHAT-->');
+          const chatPart = parts[1].trim();
+          content = chatPart + `\n\n__canvas__:Canvas||${new Date().toISOString()}`;
+        } else if (typeof content === 'string' && content.includes('<html') && content.includes('</html>') && !content.includes('```html')) {
+          // Fallback if no <!--CHAT--> but it's raw HTML
+          content = `__canvas__:Canvas||${new Date().toISOString()}`;
+        }
+        return {
+          id: `${activeConversationId}-${i}`,
+          role: m.role,
+          content: content,
+          timestamp: new Date(),
+        };
+      });
       setConversationMessages(activeConversationId, history);
     })
       .catch(err => {
@@ -1149,7 +1178,7 @@ export function ChatView({
             // First creation → show blue canvas card + store card timestamp
             const ts = new Date().toISOString()
             setCanvasCardTimestamp(ts)
-            chatContent = `${CANVAS_CARD_PREFIX}${canvasTitle}||${ts}`;
+            chatContent = (chatPart ? chatPart + '\n\n' : '') + `${CANVAS_CARD_PREFIX}${canvasTitle}||${ts}`;
           } else {
             // Subsequent update → show natural language summary from the AI
             chatContent = chatPart || 'Canvas updated ✓';

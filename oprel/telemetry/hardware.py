@@ -551,7 +551,7 @@ def _detect_metal() -> Optional[Dict[str, Any]]:
     try:
         import torch
         mps_available = torch.backends.mps.is_available()
-    except (ImportError, AttributeError):
+    except (ImportError, AttributeError, OSError, Exception):
         pass
     
     logger.info(f"Detected {gpu_name} (Metal) - {total_ram_gb:.0f}GB unified memory, ~{available_for_gpu:.0f}GB available for GPU")
@@ -591,8 +591,8 @@ def detect_gpu() -> Optional[Dict[str, Any]]:
                 "gpu_name": device.name,
                 "vram_total_gb": round(device.total_memory / (1024**3), 2),
             }
-    except ImportError:
-        logger.debug("PyTorch not installed, trying nvidia-smi")
+    except (ImportError, OSError, Exception) as e:
+        logger.debug(f"PyTorch CUDA detection failed ({type(e).__name__}), trying nvidia-smi")
 
     # Method 2: Try nvidia-smi (Windows/Linux without torch)
     nvidia_gpu = _detect_nvidia_smi()
