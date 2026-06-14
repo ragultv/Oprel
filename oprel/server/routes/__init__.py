@@ -14,6 +14,8 @@ from . import (
     images,
     providers,
     system,
+    skills,
+    ocr,
 )
 
 __all__ = [
@@ -30,4 +32,6 @@ __all__ = [
     "images",
     "providers",
     "system",
+    "skills",
+    "ocr",
 ]

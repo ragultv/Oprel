@@ -701,3 +701,110 @@ export const API = {
   },
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// OCR Types
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface OcrStatus {
+  ready: boolean;
+  model_dir: string;
+  size_mb: number;
+  gpu: boolean;
+  installed: boolean;
+}
+
+export interface OcrResult {
+  text: string;
+  confidence: number;
+  bbox: number[][];  // [[x1,y1],[x2,y2],[x3,y3],[x4,y4]] absolute pixels
+  bbox_norm?: {      // 0-1 normalized — present from /extract, may be absent in history
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+  };
+}
+
+export interface OcrJob {
+  id: string;
+  filename: string;
+  image_data: string;   // base64 data URL
+  results: OcrResult[];
+  full_text: string;
+  word_count: number;
+  created_at: string;
+  img_width?: number;   // present in fresh /extract response
+  img_height?: number;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// OCR API Methods
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const OCR = {
+  /** Check whether PaddleOCR models are ready. */
+  async fetchStatus(): Promise<OcrStatus> {
+    const res = await fetch(`${API_BASE}/v1/ocr/status`);
+    if (!res.ok) throw new Error(`OCR status fetch failed: ${res.status}`);
+    return res.json();
+  },
+
+  /** Kick off the background model download. */
+  async startSetup(): Promise<{ status: string }> {
+    const res = await fetch(`${API_BASE}/v1/ocr/setup`, { method: 'POST' });
+    if (!res.ok) throw new Error(`OCR setup failed: ${res.status}`);
+    return res.json();
+  },
+
+  /**
+   * Stream OCR setup progress via SSE.
+   * Returns a cleanup function to close the stream.
+   */
+  streamSetupProgress(
+    onStep: (step: string, message: string) => void,
+    onDone: (error?: string) => void,
+  ): () => void {
+    const eventSource = new EventSource(`${API_BASE}/v1/ocr/setup/progress`);
+    eventSource.onmessage = (e) => {
+      try {
+        const data = JSON.parse(e.data) as { step: string; message: string; done: boolean; error?: string };
+        onStep(data.step, data.message);
+        if (data.done) {
+          onDone(data.error);
+          eventSource.close();
+        }
+      } catch {
+        // ignore parse errors
+      }
+    };
+    eventSource.onerror = () => {
+      onDone('Stream disconnected');
+      eventSource.close();
+    };
+    return () => eventSource.close();
+  },
+
+  /** Upload an image and extract text. Returns full job result. */
+  async extract(file: File): Promise<OcrJob> {
+    const form = new FormData();
+    form.append('file', file);
+    const res = await fetch(`${API_BASE}/v1/ocr/extract`, { method: 'POST', body: form });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Unknown error' }));
+      throw new Error(err.detail || `OCR extract failed: ${res.status}`);
+    }
+    return res.json();
+  },
+
+  /** Fetch the last N OCR jobs from the DB. */
+  async fetchHistory(limit = 50): Promise<OcrJob[]> {
+    const res = await fetch(`${API_BASE}/v1/ocr/history?limit=${limit}`);
+    if (!res.ok) throw new Error(`OCR history fetch failed: ${res.status}`);
+    return res.json();
+  },
+
+  /** Delete a single OCR job by ID. */
+  async deleteJob(jobId: string): Promise<void> {
+    await fetch(`${API_BASE}/v1/ocr/history/${jobId}`, { method: 'DELETE' });
+  },
+};

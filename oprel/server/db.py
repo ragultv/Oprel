@@ -162,6 +162,18 @@ def init_db():
             INSERT INTO skills (id, name, description, system_prompt, category, icon, temperature, max_tokens, output_schema, is_premium, enabled)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, default_skills)
+    # ── OCR jobs table ────────────────────────────────────────────────────────
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS ocr_jobs (
+            id TEXT PRIMARY KEY,
+            filename TEXT NOT NULL,
+            image_data TEXT NOT NULL,
+            result_json TEXT NOT NULL,
+            full_text TEXT NOT NULL,
+            word_count INTEGER NOT NULL DEFAULT 0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
     # ── Migrations: add missing columns to existing tables ───────────────────
     # This handles databases created before schema additions
     try:
@@ -654,3 +666,50 @@ def delete_skill(skill_id: str):
     conn.commit()
     conn.close()
 
+
+# ── OCR CRUD ──────────────────────────────────────────────────────────────────
+
+def add_ocr_job(job_id: str, filename: str, image_data: str, result_json: str, full_text: str, word_count: int) -> None:
+    """Persist an OCR extraction result to the database."""
+    conn = get_db()
+    cursor = conn.cursor()
+    now = datetime.now().isoformat()
+    cursor.execute(
+        "INSERT INTO ocr_jobs (id, filename, image_data, result_json, full_text, word_count, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (job_id, filename, image_data, result_json, full_text, word_count, now),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_ocr_jobs(limit: int = 50) -> list:
+    """Return the most recent OCR jobs, newest first."""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, filename, image_data, result_json, full_text, word_count, created_at FROM ocr_jobs ORDER BY created_at DESC LIMIT ?",
+        (limit,),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [
+        {
+            "id": r["id"],
+            "filename": r["filename"],
+            "image_data": r["image_data"],
+            "result_json": r["result_json"],
+            "full_text": r["full_text"],
+            "word_count": r["word_count"],
+            "created_at": r["created_at"],
+        }
+        for r in rows
+    ]
+
+
+def delete_ocr_job(job_id: str) -> None:
+    """Delete a single OCR job by ID."""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM ocr_jobs WHERE id = ?", (job_id,))
+    conn.commit()
+    conn.close()
