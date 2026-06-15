@@ -35,7 +35,14 @@ class ImageGenerationParams:
 
 def _is_cuda_oom_error(details: str) -> bool:
     lowered = details.lower()
-    return "cuda error: out of memory" in lowered or "out of memory" in lowered and "cuda" in lowered
+    # Direct check for explicit out of memory messages
+    if "cuda error: out of memory" in lowered or ("out of memory" in lowered and "cuda" in lowered):
+        return True
+    # If the process was using CUDA and crashed/failed, fall back to CPU.
+    # This catches silent driver aborts/crashes on low-VRAM GPUs.
+    if "cuda" in lowered or "ggml_cuda" in lowered:
+        return True
+    return False
 
 
 class StableDiffusionCppRunner:

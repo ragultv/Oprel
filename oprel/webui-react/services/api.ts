@@ -103,7 +103,7 @@ export interface ModelDetailedInfo {
   default_quantization: string | null;
 }
 
-const API_BASE = (typeof window !== 'undefined' && window.location.port === '3000') 
+export const API_BASE = (typeof window !== 'undefined' && window.location.port === '3000') 
 ? 'http://localhost:11435' 
 : ''; 
 

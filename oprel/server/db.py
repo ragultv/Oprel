@@ -725,3 +725,243 @@ def delete_ocr_job(job_id: str) -> None:
     cursor.execute("DELETE FROM ocr_jobs WHERE id = ?", (job_id,))
     conn.commit()
     conn.close()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# MCP Connectors
+# ──────────────────────────────────────────────────────────────────────────────
+
+def init_mcp_tables() -> None:
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS mcp_connectors (
+            id          TEXT PRIMARY KEY,
+            builtin_id  TEXT NOT NULL,
+            name        TEXT NOT NULL,
+            transport   TEXT NOT NULL DEFAULT 'stdio',
+            config      TEXT NOT NULL DEFAULT '{}',
+            enabled     INTEGER NOT NULL DEFAULT 1,
+            status      TEXT NOT NULL DEFAULT 'disconnected',
+            created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_mcp_conn_builtin ON mcp_connectors(builtin_id)")
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS mcp_tools (
+            id           TEXT PRIMARY KEY,
+            connector_id TEXT NOT NULL,
+            name         TEXT NOT NULL,
+            description  TEXT DEFAULT '',
+            input_schema TEXT NOT NULL DEFAULT '{}',
+            fetched_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (connector_id) REFERENCES mcp_connectors(id) ON DELETE CASCADE
+        )
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_mcp_tools_conn ON mcp_tools(connector_id)")
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS mcp_call_logs (
+            id              TEXT PRIMARY KEY,
+            connector_id    TEXT NOT NULL,
+            conversation_id TEXT,
+            tool_name       TEXT NOT NULL,
+            arguments       TEXT NOT NULL DEFAULT '{}',
+            result          TEXT,
+            error           TEXT,
+            duration_ms     REAL DEFAULT 0,
+            created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_mcp_logs_conv ON mcp_call_logs(conversation_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_mcp_logs_time ON mcp_call_logs(created_at DESC)")
+    conn.commit()
+    conn.close()
+
+
+def _row_to_mcp_connector(row) -> dict:
+    d = dict(row)
+    d["enabled"] = bool(d.get("enabled", 1))
+    try:
+        d["config"] = json.loads(d.get("config") or "{}")
+    except Exception:
+        d["config"] = {}
+    return d
+
+
+def list_mcp_connectors() -> list:
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM mcp_connectors ORDER BY created_at ASC")
+    rows = cur.fetchall()
+    conn.close()
+    return [_row_to_mcp_connector(r) for r in rows]
+
+
+def get_mcp_connector(connector_id: str) -> Optional[dict]:
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM mcp_connectors WHERE id = ?", (connector_id,))
+    row = cur.fetchone()
+    conn.close()
+    return _row_to_mcp_connector(row) if row else None
+
+
+def upsert_mcp_connector(data: dict) -> dict:
+    conn = get_db()
+    cur = conn.cursor()
+    now = datetime.now().isoformat()
+    cur.execute("""
+        INSERT INTO mcp_connectors (id, builtin_id, name, transport, config, enabled, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            name      = excluded.name,
+            transport = excluded.transport,
+            config    = excluded.config,
+            enabled   = excluded.enabled,
+            status    = excluded.status,
+            updated_at = excluded.updated_at
+    """, (
+        data["id"], data["builtin_id"], data["name"],
+        data.get("transport", "stdio"),
+        json.dumps(data.get("config", {})),
+        1 if data.get("enabled", True) else 0,
+        data.get("status", "disconnected"),
+        data.get("created_at", now), now,
+    ))
+    conn.commit()
+    conn.close()
+    return get_mcp_connector(data["id"])
+
+
+def set_mcp_connector_status(connector_id: str, status: str) -> None:
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE mcp_connectors SET status = ?, updated_at = ? WHERE id = ?",
+        (status, datetime.now().isoformat(), connector_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def delete_mcp_connector(connector_id: str) -> None:
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM mcp_tools WHERE connector_id = ?", (connector_id,))
+    cur.execute("DELETE FROM mcp_connectors WHERE id = ?", (connector_id,))
+    conn.commit()
+    conn.close()
+
+
+def save_mcp_tools(connector_id: str, tools: list) -> None:
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM mcp_tools WHERE connector_id = ?", (connector_id,))
+    now = datetime.now().isoformat()
+    for t in tools:
+        cur.execute("""
+            INSERT INTO mcp_tools (id, connector_id, name, description, input_schema, fetched_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            f"tool_{uuid.uuid4().hex[:12]}", connector_id,
+            t["name"], t.get("description", ""),
+            json.dumps(t.get("input_schema") or t.get("inputSchema") or {}),
+            now,
+        ))
+    conn.commit()
+    conn.close()
+
+
+def get_mcp_tools(connector_id: str) -> list:
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM mcp_tools WHERE connector_id = ? ORDER BY name ASC", (connector_id,))
+    rows = cur.fetchall()
+    conn.close()
+    result = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["input_schema"] = json.loads(d.get("input_schema") or "{}")
+        except Exception:
+            d["input_schema"] = {}
+        result.append(d)
+    return result
+
+
+def get_all_mcp_enabled_tools() -> list:
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT t.*, c.name AS connector_name, c.id AS connector_id
+        FROM mcp_tools t
+        JOIN mcp_connectors c ON t.connector_id = c.id
+        WHERE c.enabled = 1 AND c.status = 'connected'
+        ORDER BY c.name ASC, t.name ASC
+    """)
+    rows = cur.fetchall()
+    conn.close()
+    result = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["input_schema"] = json.loads(d.get("input_schema") or "{}")
+        except Exception:
+            d["input_schema"] = {}
+        result.append(d)
+    return result
+
+
+def log_mcp_tool_call(
+    connector_id: str,
+    tool_name: str,
+    arguments: dict,
+    result: Any = None,
+    error: str = None,
+    duration_ms: float = 0,
+    conversation_id: str = None,
+) -> str:
+    conn = get_db()
+    cur = conn.cursor()
+    log_id = f"mcpcall_{uuid.uuid4().hex[:12]}"
+    cur.execute("""
+        INSERT INTO mcp_call_logs
+            (id, connector_id, conversation_id, tool_name, arguments, result, error, duration_ms, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        log_id, connector_id, conversation_id, tool_name,
+        json.dumps(arguments),
+        json.dumps(result) if result is not None else None,
+        error, duration_ms, datetime.now().isoformat(),
+    ))
+    conn.commit()
+    conn.close()
+    return log_id
+
+
+def list_mcp_call_logs(limit: int = 100, conversation_id: str = None) -> list:
+    conn = get_db()
+    cur = conn.cursor()
+    if conversation_id:
+        cur.execute(
+            "SELECT * FROM mcp_call_logs WHERE conversation_id = ? ORDER BY created_at DESC LIMIT ?",
+            (conversation_id, limit),
+        )
+    else:
+        cur.execute("SELECT * FROM mcp_call_logs ORDER BY created_at DESC LIMIT ?", (limit,))
+    rows = cur.fetchall()
+    conn.close()
+    result = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["arguments"] = json.loads(d.get("arguments") or "{}")
+        except Exception:
+            d["arguments"] = {}
+        try:
+            d["result"] = json.loads(d["result"]) if d.get("result") else None
+        except Exception:
+            pass
+        result.append(d)
+    return result

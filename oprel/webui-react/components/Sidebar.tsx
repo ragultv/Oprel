@@ -16,12 +16,14 @@ import {
   Image,
   RefreshCw,
   ScanText,
+  Plug,
 } from "lucide-react"
 import { usePathname, useRouter } from "next/navigation"
 import { cn } from "@/services/utils"
 import { useApp } from "@/services/context"
 import { useDownloads } from "@/services/downloadContext"
 import { API } from "@/services/api"
+import { mcpApi } from "@/services/mcp"
 import type { Conversation } from "@/services/data"
 
 function groupConversations(convs: Conversation[]) {
@@ -122,6 +124,7 @@ export function Sidebar() {
   const isOcrRoute = pathname.startsWith("/ocr")
   const isKnowledgeRoute = pathname.startsWith("/knowledge")
   const isDevRoute = pathname.startsWith("/dev")
+  const isConnectorsRoute = pathname.startsWith("/connectors")
 
   const [search, setSearch] = useState("")
   const [deleteId, setDeleteId] = useState<string | null>(null)
@@ -208,6 +211,15 @@ export function Sidebar() {
     role: "Developer",
     initials: "U",
   })
+
+  const [mcpStatus, setMcpStatus] = useState({ connected: 0 })
+
+  useEffect(() => {
+    const fetchMcp = () => mcpApi.getStatus().then(res => setMcpStatus({ connected: res.connected })).catch(() => {})
+    fetchMcp()
+    const interval = setInterval(fetchMcp, 10000)
+    return () => clearInterval(interval)
+  }, [])
 
   useEffect(() => {
     API.fetchUser()
@@ -296,7 +308,7 @@ export function Sidebar() {
             <button
               onClick={() => router.push("/dev")}
               className={cn(
-                "flex flex-col items-center gap-1.5 py-3 rounded-lg border border-border text-xs font-semibold transition-all col-span-2 text-center",
+                "flex flex-col items-center gap-1.5 py-3 rounded-lg border border-border text-xs font-semibold transition-all text-center",
                 isDevRoute
                   ? "bg-secondary text-foreground border-border"
                   : "text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
@@ -304,6 +316,23 @@ export function Sidebar() {
             >
               <BarChart2 size={18} />
               <span className="text-[10px]">Dev</span>
+            </button>
+            <button
+              onClick={() => router.push("/connectors")}
+              className={cn(
+                "flex flex-col items-center justify-center gap-1.5 py-3 rounded-lg border border-border text-xs font-semibold transition-all text-center relative",
+                isConnectorsRoute
+                  ? "bg-secondary text-foreground border-border"
+                  : "text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
+              )}
+            >
+              <Plug size={18} />
+              <span className="text-[10px]">Connectors</span>
+              {mcpStatus.connected > 0 && (
+                <span className="absolute top-1.5 right-1.5 w-4 h-4 bg-green-500 text-[9px] font-bold text-white rounded-full flex items-center justify-center border border-[#171717]">
+                  {mcpStatus.connected}
+                </span>
+              )}
             </button>
           </div>
         </div>

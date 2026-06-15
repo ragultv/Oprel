@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from dotenv import load_dotenv
+load_dotenv()
+
 import asyncio
 import signal
 import sys
@@ -34,6 +37,7 @@ from oprel.server.routes import (
     system,
     skills,
     ocr,
+    mcp,
 )
 
 
@@ -132,10 +136,29 @@ async def lifespan(app: FastAPI):
     state.cleanup_task = asyncio.create_task(monitor_idle_models())
     logger.info("Started idle model monitoring task")
 
+    # ── MCP connectors ────────────────────────────────────────────────────────
+    try:
+        from oprel.mcp import manager as mcp_manager
+        from oprel.server.db import init_mcp_tables
+        init_mcp_tables()
+        await mcp_manager.startup()
+        logger.info("MCP connector subsystem started")
+    except Exception as exc:
+        logger.warning(f"MCP startup error (non-fatal): {exc}")
+    # ─────────────────────────────────────────────────────────────────────────
+
     yield
 
     print("\nReceived shutdown signal, cleaning up...")
     cleanup_models()
+
+    # ── MCP shutdown ──────────────────────────────────────────────────────────
+    try:
+        from oprel.mcp import manager as mcp_manager
+        await mcp_manager.shutdown()
+    except Exception:
+        pass
+    # ─────────────────────────────────────────────────────────────────────────
 
     if state.cleanup_task:
         state.cleanup_task.cancel()
@@ -191,6 +214,7 @@ app.include_router(providers.router)
 app.include_router(system.router)
 app.include_router(skills.router)
 app.include_router(ocr.router)
+app.include_router(mcp.router)
 
 
 def run_server(host: str = "127.0.0.1", port: int = 11435):

@@ -1,7 +1,7 @@
 # OPREL — Complete Usage Guide
 
 Run Large Language Models Locally - With Studio, API & Cloud Integration  
-**Version 0.6.1**
+**Version 0.6.2**
 
 Oprel is a high-performance Python library and local AI platform for running large language models (LLMs) and multimodal AI entirely on your own hardware. It provides a curated model registry, a beautiful web UI (Oprel Studio), a developer API, image generation, RAG-powered knowledge base, and support for external cloud providers — all in one tool.
 
@@ -339,4 +339,4 @@ print(model.generate("Your prompt"))
 ---
 
 *Oprel — Run AI Locally, Your Way*  
-[PyPI Page](https://pypi.org/project/oprel/0.6.1/)
+[PyPI Page](https://pypi.org/project/oprel/0.6.2/)

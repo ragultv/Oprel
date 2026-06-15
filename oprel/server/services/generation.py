@@ -144,6 +144,32 @@ def _extract_prompt_and_images(prompt: Any, images: list[str] | None) -> tuple[s
 
 
 async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult:
+    from oprel.server import db
+    from oprel.mcp.tool_loop import run_mcp_tool_loop, stream_mcp_tool_loop
+
+    # ── MCP gate: if any tools are enabled, use the agentic loop ──────────────
+    mcp_tools = db.get_all_mcp_enabled_tools()
+    if mcp_tools:
+        state = get_state()
+        conv_id = params.conversation_id or f"eph_{uuid.uuid4().hex[:8]}"
+
+        if params.stream:
+            async def _mcp_stream():
+                async for chunk in stream_mcp_tool_loop(params, state, conv_id):
+                    yield chunk
+
+            return StreamResult(iterator=_mcp_stream(), conversation_id=conv_id)
+        else:
+            final_text, conv_id = await run_mcp_tool_loop(params, state, conv_id)
+            history = db.get_conversation_messages(conv_id) if conv_id.startswith("chat_") else []
+            return GenerateResult(
+                text=final_text,
+                model_id=params.model_id,
+                conversation_id=conv_id,
+                message_count=len(history),
+            )
+    # ── existing local/cloud model path continues below unchanged ──────────────
+
     state = get_state()
     resolved_model_id = _resolve_model_id(params.model_id)
 
@@ -312,20 +338,50 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
                 start_gen_time = time_module.perf_counter()
                 token_count = 0
 
-                for token in model._client.generate(
-                    prompt=full_prompt,
-                    max_tokens=params.max_tokens,
-                    temperature=params.temperature,
-                    top_p=params.top_p,
-                    top_k=params.top_k,
-                    repeat_penalty=params.repeat_penalty,
-                    stream=True,
-                    images=images if images else None,
-                    model=resolved_model_id,
-                ):
-                    full_resp += token
-                    token_count += 1
-                    yield f"data: {token}\n\n"
+                # ── MCP tool loop (active when connectors have enabled tools) ──
+                _mcp_active = False
+                try:
+                    _mcp_active = bool(db.get_all_mcp_enabled_tools())
+                except Exception:
+                    _mcp_active = False
+
+                if _mcp_active:
+                    from oprel.mcp.tool_loop import run_tool_loop
+                    async for sse_chunk in run_tool_loop(
+                        model_client=model._client,
+                        model_id=resolved_model_id,
+                        text_prompt=text_prompt,
+                        history=history,
+                        system_prompt=params.system_prompt,
+                        max_tokens=params.max_tokens,
+                        temperature=params.temperature,
+                        top_p=params.top_p,
+                        top_k=params.top_k,
+                        repeat_penalty=params.repeat_penalty,
+                        conversation_id=conv_id,
+                        images=images if images else None,
+                    ):
+                        token = sse_chunk.removeprefix("data: ").removesuffix("\n\n")
+                        full_resp += token
+                        token_count += 1
+                        yield sse_chunk
+                else:
+                    # ── Normal (non-MCP) generation ───────────────────────────
+                    for token in model._client.generate(
+                        prompt=full_prompt,
+                        max_tokens=params.max_tokens,
+                        temperature=params.temperature,
+                        top_p=params.top_p,
+                        top_k=params.top_k,
+                        repeat_penalty=params.repeat_penalty,
+                        stream=True,
+                        images=images if images else None,
+                        model=resolved_model_id,
+                    ):
+                        full_resp += token
+                        token_count += 1
+                        yield f"data: {token}\n\n"
+                # ─────────────────────────────────────────────────────────────
 
                 end_gen_time = time_module.perf_counter()
                 duration = end_gen_time - start_gen_time
