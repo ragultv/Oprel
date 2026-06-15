@@ -371,49 +371,51 @@ function ImagePane({
   onBboxHover: (i: number | null) => void
 }) {
   return (
-    <div className="rounded-3xl border border-border bg-[#141414]/90 p-4 flex flex-col gap-3">
-      <div className="text-[11px] font-bold uppercase tracking-[0.2em] text-muted-foreground">Image</div>
-      <div className="relative overflow-hidden rounded-2xl border border-border bg-black/30">
-        <img src={src} alt="Uploaded" className="w-full h-auto block" />
+    <div className="rounded-3xl border border-border bg-[#141414]/90 p-4 flex flex-col gap-3 h-full">
+      <div className="text-[11px] font-bold uppercase tracking-[0.2em] text-muted-foreground flex-none">Image</div>
+      <div className="flex-1 flex items-center justify-center overflow-hidden rounded-2xl border border-border bg-black/30 p-2">
+        <div className="relative inline-block max-w-full max-h-full">
+          <img src={src} alt="Uploaded" className="max-w-full max-h-full object-contain block rounded-lg" />
 
-        {/* Bbox overlays — normalized coordinates */}
-        {results.map((r, i) => {
-          if (!r.bbox_norm) return null
-          if (r.confidence < minConfidence / 100) return null
-          const { left, top, width, height } = r.bbox_norm
-          const isSelected = i === selectedIdx
-          const isHovered = i === hoveredIdx
-          const active = isSelected || isHovered
+          {/* Bbox overlays — normalized coordinates */}
+          {results.map((r, i) => {
+            if (!r.bbox_norm) return null
+            if (r.confidence < minConfidence / 100) return null
+            const { left, top, width, height } = r.bbox_norm
+            const isSelected = i === selectedIdx
+            const isHovered = i === hoveredIdx
+            const active = isSelected || isHovered
 
-          return (
-            <div
-              key={i}
-              onClick={() => onBboxClick(i)}
-              onMouseEnter={() => onBboxHover(i)}
-              onMouseLeave={() => onBboxHover(null)}
-              className="absolute cursor-pointer transition-all duration-150 z-10"
-              style={{
-                top: `${top * 100}%`,
-                left: `${left * 100}%`,
-                width: `${width * 100}%`,
-                height: `${height * 100}%`,
-                outline: `2px solid ${active ? "var(--primary)" : confBorder(r.confidence)}`,
-                backgroundColor: active ? "rgba(238,70,71,0.18)" : confBg(r.confidence),
-                opacity: active ? 1 : 0.55,
-              }}
-            >
-              {/* Tooltip on hover */}
-              {isHovered && (
-                <div
-                  className="absolute -top-6 left-0 whitespace-nowrap rounded-t-md px-2 py-0.5 text-[10px] font-semibold text-primary-foreground z-20 pointer-events-none"
-                  style={{ backgroundColor: "var(--primary)" }}
-                >
-                  {r.text.length > 40 ? r.text.slice(0, 40) + "…" : r.text}
-                </div>
-              )}
-            </div>
-          )
-        })}
+            return (
+              <div
+                key={i}
+                onClick={() => onBboxClick(i)}
+                onMouseEnter={() => onBboxHover(i)}
+                onMouseLeave={() => onBboxHover(null)}
+                className="absolute cursor-pointer transition-all duration-150 z-10"
+                style={{
+                  top: `${top * 100}%`,
+                  left: `${left * 100}%`,
+                  width: `${width * 100}%`,
+                  height: `${height * 100}%`,
+                  outline: `2px solid ${active ? "var(--primary)" : confBorder(r.confidence)}`,
+                  backgroundColor: active ? "rgba(238,70,71,0.18)" : confBg(r.confidence),
+                  opacity: active ? 1 : 0.55,
+                }}
+              >
+                {/* Tooltip on hover */}
+                {isHovered && (
+                  <div
+                    className="absolute -top-6 left-0 whitespace-nowrap rounded-t-md px-2 py-0.5 text-[10px] font-semibold text-primary-foreground z-20 pointer-events-none"
+                    style={{ backgroundColor: "var(--primary)" }}
+                  >
+                    {r.text.length > 40 ? r.text.slice(0, 40) + "…" : r.text}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
       </div>
     </div>
   )
@@ -448,7 +450,7 @@ function ResizerPane({ leftChild, rightChild }: { leftChild: React.ReactNode, ri
   }, [isResizing])
 
   return (
-    <div ref={containerRef} className="flex w-full items-stretch min-h-0 select-none relative">
+    <div ref={containerRef} className="flex w-full items-stretch min-h-0 select-none relative h-[720px]">
       <div style={{ width: `calc(${leftWidth}% - 8px)` }} className="flex-none flex flex-col min-w-0">
         {leftChild}
       </div>

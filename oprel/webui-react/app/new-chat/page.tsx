@@ -13,8 +13,9 @@ export default function NewChatPage() {
   useEffect(() => {
     if (didInit.current) return
     didInit.current = true
-    const newId = createConversation()
-    router.replace(`/chat?conversationId=${newId}`)
+    createConversation().then((newId) => {
+      router.replace(`/chat?conversationId=${newId}`)
+    })
   }, [createConversation, router])
 
   return <ChatView />

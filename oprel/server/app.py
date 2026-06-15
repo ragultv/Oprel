@@ -159,6 +159,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Conversation-ID"],
 )
 
 webui_dir = get_webui_dir()
@@ -195,7 +196,22 @@ app.include_router(ocr.router)
 def run_server(host: str = "127.0.0.1", port: int = 11435):
     import uvicorn
 
-    print(f"{Colors.GREEN}{Colors.BOLD}Oprel Daemon v0.3.3{Colors.RESET}")
+    coral = "\033[38;2;230;115;90m"
+    bold = "\033[1m"
+    reset = "\033[0m"
+
+    banner = (
+       f"""{coral}{bold}
+   ██████╗ ██████╗ ██████╗ ███████╗██╗
+  ██╔═══██╗██╔══██╗██╔══██╗██╔════╝██║
+  ██║   ██║██████╔╝██████╔╝█████╗  ██║
+  ██║   ██║██╔═══╝ ██╔══██╗██╔══╝  ██║
+  ╚██████╔╝██║     ██║  ██║███████╗███████╗
+   ╚═════╝ ╚═╝     ╚═╝  ╚═╝╚══════╝╚══════╝
+{reset}"""
+    )
+    print(banner)
+    print(f" {Colors.GRAY}Oprel Daemon v0.6.2{Colors.RESET}\n")
     print(f"  Listening on: {Colors.CYAN}http://{host}:{port}{Colors.RESET}")
     print(f"  Press {Colors.YELLOW}Ctrl+C{Colors.RESET} to stop\n")
     uvicorn.run(app, host=host, port=port, log_level="warning", access_log=False)

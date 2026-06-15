@@ -25,6 +25,12 @@ export interface Conversation {
   model_id: string;
 }
 
+export interface CreatedConversation {
+  id: string;
+  title: string;
+  model_id: string;
+}
+
 export interface ChatMessage {
   role: 'user' | 'assistant' | 'system';
   content: string | any[];
@@ -286,6 +292,16 @@ export const API = {
   async fetchConversations(): Promise<Conversation[]> {
     const res = await fetch(`${API_BASE}/conversations`);
     if (!res.ok) throw new Error('Failed to fetch conversations');
+    return res.json();
+  },
+
+  async createConversation(modelId: string, title = 'New Chat'): Promise<CreatedConversation> {
+    const res = await fetch(`${API_BASE}/conversations`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model_id: modelId, title }),
+    });
+    if (!res.ok) throw new Error('Failed to create conversation');
     return res.json();
   },
 

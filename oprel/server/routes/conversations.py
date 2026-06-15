@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 
-from oprel.server.schemas.common import RenameConversationRequest, CanvasDocumentRequest
+from oprel.server.schemas.common import RenameConversationRequest, CanvasDocumentRequest, CreateConversationRequest
 from oprel.server.services import conversations as conversation_service
 
 router = APIRouter()
@@ -11,6 +11,11 @@ router = APIRouter()
 @router.get("/conversations")
 async def list_conversations():
     return conversation_service.list_conversations()
+
+
+@router.post("/conversations")
+async def create_conversation(request: CreateConversationRequest):
+    return conversation_service.create_conversation(request.model_id, request.title)
 
 
 @router.get("/conversations/{conversation_id}")
@@ -41,8 +46,6 @@ async def get_analytics_summary(days: int = 7):
 @router.get("/conversations/{conversation_id}/canvas")
 async def get_canvas(conversation_id: str):
     doc = conversation_service.get_canvas(conversation_id)
-    if not doc:
-        raise HTTPException(status_code=404, detail="Canvas document not found")
     return doc
 
 

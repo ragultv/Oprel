@@ -210,7 +210,6 @@ def create_conversation(model_id: str, title: str = "New Chat", conversation_id:
     conn.commit()
     conn.close()
     return conv_id
-
 def delete_conversation(conversation_id: str):
     conn = get_db()
     cursor = conn.cursor()

@@ -7,6 +7,15 @@ def list_conversations() -> list[dict[str, str]]:
     return db.list_conversations()
 
 
+def create_conversation(model_id: str, title: str = "New Chat") -> dict[str, str]:
+    conversation_id = db.create_conversation(model_id=model_id, title=title)
+    return {
+        "id": conversation_id,
+        "title": title,
+        "model_id": model_id,
+    }
+
+
 def get_conversation(conversation_id: str) -> list[dict[str, str]]:
     messages = db.get_conversation_messages(conversation_id)
     if not messages:

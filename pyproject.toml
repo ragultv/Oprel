@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "oprel"
-version = "0.6.1"
+version = "0.6.2"
 description = "Oprel is a high-performance Python library for running large language models locally. It provides a production-ready runtime with advanced memory management, hybrid offloading, and full multimodal support."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -146,7 +146,7 @@ all = [
 
 [project.urls]
 Homepage = "https://github.com/ragultv/oprel-SDK"
-Documentation = "https://oprel.skyrootsolutions.com"
+Documentation = "https://oprel.dev/docs"
 Repository = "https://github.com/ragultv/oprel-SDK"
 Issues = "https://github.com/ragultv/oprel-SDK/issues"
 
