@@ -18,6 +18,7 @@ export interface Conversation {
   id: string
   title: string
   messages: ChatMessage[]
+  messageCount: number
   createdAt: Date
   updatedAt?: Date
   modelId: string

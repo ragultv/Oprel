@@ -65,6 +65,11 @@ class RenameConversationRequest(BaseModel):
     title: str
 
 
+class CreateConversationRequest(BaseModel):
+    model_id: str
+    title: str = "New Chat"
+
+
 class UserProfile(BaseModel):
     name: str
     role: str

@@ -127,9 +127,7 @@ export function Sidebar() {
   const [deleteId, setDeleteId] = useState<string | null>(null)
 
   const activeModel = models.find((m) => m.id === activeModelId)
-  // Hide temp (unsaved) conversations — they appear only after first message is sent
-  const savedConversations = conversations.filter(c => !c.id.startsWith('temp-'))
-  const filtered = savedConversations.filter((c) =>
+  const filtered = conversations.filter((c) =>
     c.title.toLowerCase().includes(search.toLowerCase())
   )
   const groups = groupConversations(filtered)
@@ -146,8 +144,8 @@ export function Sidebar() {
     router.push(`/chat?conversationId=${conversationId}`)
   }
 
-  const startConversation = () => {
-    const newId = createConversation()
+  const startConversation = async () => {
+    const newId = await createConversation()
     setActiveConversationId(newId)
 
     if (canUpdateChatUrlInPlace) {
