@@ -612,7 +612,6 @@ export function ChatView({
     activeConversationId,
     setActiveConversationId,
     addMessage,
-    linkConversation,
     refreshConversations,
     models,
     localModels,
@@ -707,11 +706,6 @@ export function ChatView({
     let isMounted = true
 
     async function loadCanvas() {
-      if (activeConversationId.startsWith('temp-')) {
-        // No need to fetch for new unsaved conversations
-        return
-      }
-      
       const saved = await API.getCanvas(activeConversationId)
       if (isMounted && saved && saved.content) {
         setCanvasDoc({
@@ -740,7 +734,7 @@ export function ChatView({
   const { toast } = useToast()
   const [isHistoryLoading, setIsHistoryLoading] = useState(() => {
     // Initial state: true if we have an ID that needs loading
-    return !!activeConversationId && !activeConversationId.startsWith('temp-');
+    return !!activeConversationId;
   })
 
   const [prevActiveId, setPrevActiveId] = useState(activeConversationId);
@@ -750,7 +744,7 @@ export function ChatView({
     // Optimization: Only show loading screen if we don't have this conversation's messages in state yet
     const hasMessages = conversations.some(c => c.id === activeConversationId && c.messages.length > 0);
 
-    if (activeConversationId && !activeConversationId.startsWith('temp-') && !hasMessages) {
+    if (activeConversationId && !hasMessages) {
       setIsHistoryLoading(true);
     } else {
       setIsHistoryLoading(false);
@@ -807,7 +801,7 @@ export function ChatView({
   // Load conversation history - only trigger when activeConversationId changes
   const loadedConvIdRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!activeConversationId || activeConversationId.startsWith('temp-')) {
+    if (!activeConversationId) {
       setIsHistoryLoading(false);
       return;
     }
@@ -829,14 +823,25 @@ export function ChatView({
       const messages = Array.isArray(data) ? data : (data as any).history || [];
       const history: ChatMessage[] = messages.map((m: any, i: number) => {
         let content = m.content;
-        if (typeof content === 'string' && content.includes('<!--CHAT-->')) {
-          const parts = content.split('<!--CHAT-->');
-          const chatPart = parts[1].trim();
-          content = chatPart + `\n\n__canvas__:Canvas||${new Date().toISOString()}`;
-        } else if (typeof content === 'string' && content.includes('<html') && content.includes('</html>') && !content.includes('```html')) {
-          // Fallback if no <!--CHAT--> but it's raw HTML
-          content = `__canvas__:Canvas||${new Date().toISOString()}`;
+        
+        if (typeof content === 'string') {
+          // Strip the injected canvas instructions from user messages
+          const CANVAS_SUFFIX_RE = /\n\nIMPORTANT [\u2014-] Canvas mode( is)? active\.?[\s\S]*$/;
+          content = content.replace(CANVAS_SUFFIX_RE, '').trim();
+          
+          // Only process canvas tokens for assistant messages
+          if (m.role === 'assistant') {
+            if (content.includes('<!--CHAT-->')) {
+              const parts = content.split('<!--CHAT-->');
+              const chatPart = parts[1].trim();
+              content = chatPart + `\n\n__canvas__:Canvas||${new Date().toISOString()}`;
+            } else if (content.includes('<html') && content.includes('</html>') && !content.includes('```html')) {
+              // Fallback if no <!--CHAT--> but it's raw HTML
+              content = `__canvas__:Canvas||${new Date().toISOString()}`;
+            }
+          }
         }
+
         return {
           id: `${activeConversationId}-${i}`,
           role: m.role,
@@ -965,8 +970,7 @@ export function ChatView({
 
     let convId = activeConversationId;
     if (!convId) {
-      convId = `temp-${Date.now()}`;
-      setActiveConversationId(convId);
+      throw new Error('Conversation is not ready yet. Please try again.');
     }
     const finalConvId = convId;
 
@@ -1055,7 +1059,7 @@ export function ChatView({
             max_tokens: settings.maxTokens,
             temperature: settings.temperature,
             top_p: settings.topP,
-            conversation_id: finalConvId.startsWith('temp-') ? undefined : finalConvId,
+            conversation_id: finalConvId,
             rag: ragEnabled,
             skill: userMsg.skill,
           },
@@ -1092,13 +1096,8 @@ export function ChatView({
             }
           },
           (newId) => {
-            if (finalConvId.startsWith('temp-')) {
-              linkConversation(finalConvId, newId);
-              const basePath = window.location.pathname.startsWith('/gui') ? '/gui' : '';
-              window.history.replaceState(null, "", `${basePath}/chat?conversationId=${newId}`);
-              effectiveConvId = newId;
-              refreshConversations();
-            }
+            loadedConvIdRef.current = newId;
+            effectiveConvId = newId;
           },
           abort.signal,
         );
@@ -1107,7 +1106,7 @@ export function ChatView({
           {
             model: apiModelId,
             messages: contextMessages,
-            conversation_id: finalConvId.startsWith('temp-') ? undefined : finalConvId,
+            conversation_id: finalConvId,
             thinking,
             temperature: settings.temperature,
             max_tokens: settings.maxTokens,
@@ -1148,13 +1147,8 @@ export function ChatView({
             }
           },
           (newId) => {
-            if (finalConvId.startsWith('temp-')) {
-              linkConversation(finalConvId, newId);
-              const basePath = window.location.pathname.startsWith('/gui') ? '/gui' : '';
-              window.history.replaceState(null, "", `${basePath}/chat?conversationId=${newId}`);
-              effectiveConvId = newId;
-              refreshConversations();
-            }
+            loadedConvIdRef.current = newId;
+            effectiveConvId = newId;
           },
           abort.signal,
         );
@@ -1198,7 +1192,7 @@ export function ChatView({
           timestamp: new Date(),
         });
 
-        if (effectiveConvId && !effectiveConvId.startsWith('temp-')) {
+        if (effectiveConvId) {
           // Save canvas to DB immediately so it's available on page refresh
           if (wasCanvasMode) {
             const sepIdx = currentResponse.indexOf('<!--CHAT-->');
@@ -1294,7 +1288,6 @@ export function ChatView({
     refreshConversations,
     providers,
     ragEnabled,
-    linkConversation,
   ]);
 
   const handleInputChange = (val: string) => {
@@ -1492,9 +1485,6 @@ export function ChatView({
             </div>
           ) : (!activeConv && !isHistoryLoading) || (activeConv && activeConv.messages.length === 0 && !streamingMessage && !isHistoryLoading) ? (
             <div className="flex flex-col items-center justify-center h-full min-h-[400px] text-center gap-4">
-              <div className="w-16 h-16 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center">
-                <Sparkles size={30} className="text-primary" />
-              </div>
               <div>
                 <h2 className="text-xl font-bold text-foreground mb-1">
                   {getGreeting(user?.name).text}

@@ -22,7 +22,7 @@ interface AppContextType {
   conversations: Conversation[]
   activeConversationId: string | null
   setActiveConversationId: (id: string | null) => void
-  createConversation: () => string
+  createConversation: () => Promise<string>
   deleteConversation: (id: string) => void
   addMessage: (conversationId: string, message: ChatMessage) => void
   setConversationMessages: (conversationId: string, messages: ChatMessage[]) => void
@@ -109,8 +109,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (savedModel) setActiveModelId(savedModel);
 
     const savedConv = localStorage.getItem('oprel_active_conv');
-    // Only restore permanent IDs, not temp- ones (which lose their messages in-memory)
-    if (savedConv && !savedConv.startsWith('temp-')) {
+    if (savedConv) {
       setActiveConversationId(savedConv);
     }
   }, []);
@@ -130,7 +129,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!isClient.current) return;
-    if (activeConversationId && !activeConversationId.startsWith('temp-')) {
+    if (activeConversationId) {
       localStorage.setItem('oprel_active_conv', activeConversationId);
     } else {
       localStorage.removeItem('oprel_active_conv');
@@ -291,29 +290,50 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const refreshConversations = useCallback(async () => {
     try {
       const apiConvs = await API.fetchConversations();
+      const emptyConversations = apiConvs.filter(c => c.message_count === 0);
+
+      let emptyConversationToKeep: string | null = null;
+      if (emptyConversations.length > 0) {
+        emptyConversationToKeep =
+          emptyConversations.find(c => c.id === activeConversationId)?.id ||
+          [...emptyConversations]
+            .sort((a, b) => new Date(b.last_updated || b.created_at).getTime() - new Date(a.last_updated || a.created_at).getTime())[0]
+            .id;
+
+        const redundantEmptyConversations = emptyConversations.filter(c => c.id !== emptyConversationToKeep);
+        if (redundantEmptyConversations.length > 0) {
+          await Promise.all(
+            redundantEmptyConversations.map(c =>
+              API.deleteConversation(c.id).catch(() => null)
+            )
+          );
+        }
+      }
+
       setConversations(prev => {
         // Build map of existing localized messages
         const messageMap = new Map(prev.map(c => [c.id, c.messages]));
 
-        const updated = apiConvs.map(c => {
+        const updated = apiConvs
+          .filter(c => c.message_count > 0 || c.id === emptyConversationToKeep)
+          .map(c => {
           return {
             id: c.id,
             title: c.title || "New Chat",
             messages: messageMap.get(c.id) || [],
+            messageCount: c.message_count,
             createdAt: new Date(c.created_at),
             updatedAt: new Date(c.last_updated || c.created_at),
             modelId: c.model_id
           };
         });
 
-        // Keep temp conversations that aren't yet on server
-        const temps = prev.filter(c => c.id.startsWith('temp-'));
-        return [...temps, ...updated];
+        return updated;
       });
     } catch (error) {
       console.error("Failed to fetch conversations:", error);
     }
-  }, []);
+  }, [activeConversationId]);
 
   const refreshSettings = useCallback(async () => {
     try {
@@ -427,20 +447,35 @@ export function AppProvider({ children }: { children: ReactNode }) {
     refreshSkills();
   }, [refreshModels, refreshConversations, refreshSettings, refreshUser, refreshProviders, refreshSkills]);
 
-  const createConversation = useCallback(() => {
-    // Just set a temp active ID — do NOT add to the sidebar list.
-    // The real sidebar entry is created by linkConversation() when the
-    // first message is sent and the server assigns a permanent ID.
-    const newId = `temp-${Date.now()}`;
-    setActiveConversationId(newId);
-    return newId;
-  }, []);
+  const createConversation = useCallback(async () => {
+    const existingEmptyConversation = conversations.find(c => c.messageCount === 0);
+    if (existingEmptyConversation) {
+      setActiveConversationId(existingEmptyConversation.id);
+      return existingEmptyConversation.id;
+    }
+
+    const created = await API.createConversation(activeModelId || 'chat');
+    const now = new Date();
+    const newConversation: Conversation = {
+      id: created.id,
+      title: created.title || 'New Chat',
+      messages: [],
+      messageCount: 0,
+      createdAt: now,
+      updatedAt: now,
+      modelId: created.model_id,
+    };
+
+    setConversations(prev => {
+      return [newConversation, ...prev.filter(c => c.id !== created.id)];
+    });
+    setActiveConversationId(created.id);
+    return created.id;
+  }, [activeModelId]);
 
   const deleteConversation = useCallback(async (id: string) => {
     try {
-      if (!id.startsWith('temp-')) {
-        await API.deleteConversation(id);
-      }
+      await API.deleteConversation(id);
       setConversations((prev) => prev.filter((c) => c.id !== id));
       setActiveConversationId((prev) => (prev === id ? null : prev));
     } catch (error) {
@@ -475,6 +510,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             ? (typeof message.content === 'string' ? message.content : '').slice(0, 50)
             : 'New Chat',
           messages: [message],
+          messageCount: 1,
           createdAt: new Date(),
           updatedAt: new Date(),
           modelId: activeModelId,
@@ -484,7 +520,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
       return prev.map((c) => {
         if (c.id !== conversationId) return c
-        const updated = { ...c, messages: [...c.messages, message], updatedAt: new Date() }
+        const updated = {
+          ...c,
+          messages: [...c.messages, message],
+          messageCount: Math.max(c.messageCount + 1, c.messages.length + 1),
+          updatedAt: new Date(),
+        }
         if ((!c.title || c.title === "New Chat") && message.role === "user") {
           const text = typeof message.content === 'string'
             ? message.content
@@ -512,7 +553,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setConversations((prev) =>
       prev.map((c) => {
         if (c.id !== conversationId) return c
-        return { ...c, messages }
+        return { ...c, messages, messageCount: Math.max(c.messageCount, messages.length) }
       })
     )
   }, [])

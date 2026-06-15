@@ -12,6 +12,8 @@ Responsibilities:
 from __future__ import annotations
 
 import base64
+import importlib
+import importlib.util
 import io
 import json
 import logging
@@ -46,21 +48,42 @@ _download_error: str | None = None
 # Public helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
+_gpu_available: bool | None = None
+
 def detect_gpu() -> bool:
-    """Return True if paddle is installed and CUDA is available."""
+    """Return True if paddle is installed and CUDA is available (cached)."""
+    global _gpu_available
+    if _gpu_available is not None:
+        return _gpu_available
     try:
+        importlib.invalidate_caches()
+        if importlib.util.find_spec("paddle") is None:
+            _gpu_available = False
+            return False
         import paddle  # type: ignore
-        return paddle.is_compiled_with_cuda()
+        _gpu_available = bool(paddle.is_compiled_with_cuda())
+        return _gpu_available
     except Exception:
+        _gpu_available = False
         return False
 
 
-def is_paddleocr_installed() -> bool:
-    """Check whether paddleocr is importable."""
+# Warm up GPU/installation cache in a background thread on startup to prevent blocking first UI load
+def _warmup_gpu_cache():
     try:
-        import paddleocr  # type: ignore   # noqa: F401
-        return True
-    except ImportError:
+        detect_gpu()
+    except Exception:
+        pass
+
+threading.Thread(target=_warmup_gpu_cache, daemon=True).start()
+
+
+def is_paddleocr_installed() -> bool:
+    """Check whether paddleocr is importable without loading the package."""
+    try:
+        importlib.invalidate_caches()
+        return importlib.util.find_spec("paddleocr") is not None
+    except Exception:
         return False
 
 

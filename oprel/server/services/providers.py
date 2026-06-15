@@ -186,7 +186,7 @@ async def fetch_provider_models(provider_id: str) -> list[str]:
                 f"{url}/models",
                 headers={
                     "Authorization": f"Bearer {api_key}",
-                    "HTTP-Referer": "https://oprel.ai",
+                    "HTTP-Referer": "https://oprel.dev",
                     "X-Title": "OPREL",
                 },
             )
