@@ -8,7 +8,7 @@ version = "0.6.2"
 description = "Oprel is a high-performance Python library for running large language models locally. It provides a production-ready runtime with advanced memory management, hybrid offloading, and full multimodal support."
 readme = "README.md"
 requires-python = ">=3.9"
-license = {text = "MIT"}
+license = {file = "LICENSE"}
 authors = [
     {name = "Oprel Team", email = "tragulragul@gmail.com"}
 ]
@@ -65,7 +65,7 @@ classifiers = [
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
     "Intended Audience :: Information Technology",
-    "License :: OSI Approved :: MIT License",
+    "License :: Other/Proprietary License",
     "Operating System :: OS Independent",
     "Operating System :: MacOS",
     "Operating System :: Microsoft :: Windows",
@@ -145,10 +145,10 @@ all = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/ragultv/oprel-SDK"
+Homepage = "https://github.com/ragultv/Oprel"
 Documentation = "https://oprel.dev/docs"
-Repository = "https://github.com/ragultv/oprel-SDK"
-Issues = "https://github.com/ragultv/oprel-SDK/issues"
+Repository = "https://github.com/ragultv/Oprel"
+Issues = "https://github.com/ragultv/Oprel/issues"
 
 [project.scripts]
 oprel = "oprel.cli.main:main"
