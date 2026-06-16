@@ -18,6 +18,10 @@ Oprel requires Python 3.9+ and is distributed via PyPI. Install it with:
 pip install oprel==0.6.2
 ```
 
+### System Requirements
+
+Oprel runs on Linux, macOS, and Windows. For GPU acceleration, see the [Hardware & Deployment Guide](docs/external/hardware_guide.md) — it covers NVIDIA CUDA, AMD Vulkan/ROCm, Apple Metal, RAM and VRAM requirements, and hardware-tier recommendations.
+
 ### Launching Oprel Studio (Web UI)
 Oprel Studio is the built-in browser interface for chatting with models, managing your knowledge base, generating images, and monitoring system performance. Start it with a single command:
 
