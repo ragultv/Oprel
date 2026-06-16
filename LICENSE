@@ -1,38 +1,29 @@
-NON-PUBLICATION PERMISSIVE LICENSE (NP-1.0)
+CUSTOM SOURCE-AVAILABLE LICENSE
 
 Copyright (c) 2026 Ragul
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to use,
-copy, and modify the Software for any private, academic, research, or internal
-purpose.
+of this software and associated documentation files (the "Software"), to use the
+Software for private, academic, research, or internal purposes.
 
-Conditions:
-- Attribution: Redistributions of source code (modified or unmodified) must
-	retain the above copyright notice, this list of conditions, and the
-	following disclaimer.
-- Non-Publication: The licensee may NOT publish, distribute publicly, sell,
-	or otherwise release as a product, service, or commercial offering any
-	software, application, service, binary, or derivative work that includes,
-	embeds, incorporates, or is substantially derived from the Software. This
-	includes, but is not limited to, publishing to public package registries,
-	distributing compiled binaries for public use, offering SaaS products that
-	include the Software, or bundling the Software into a product intended for
-	public distribution.
+RESTRICTIONS:
+1. No Modification: You may NOT modify, alter, or create derivative works of
+   the Software for your own distribution or use, except for the explicit purpose
+   of submitting pull requests back to the original repository.
+2. No Commercial Use or Selling: You may NOT sell, rent, lease, or commercialize
+   the Software in any way. The Software may not be used for any commercial 
+   purposes or integrated into a commercial product or service.
+3. No Redistribution of Modifications: Since modifications are not permitted, 
+   you may not distribute any modified versions of the Software. You may only 
+   redistribute the original, unmodified source code provided you include this 
+   license.
 
-Definitions:
-- "Publish" or "Publicly distribute" means making the Software or a
-	derivative available to any persons or entities beyond the licensee's
-	internal organization, private collaborators, or a limited group of named
-	recipients under non-public agreement.
+"Open Source" Notice:
+The source code of this Software is made publicly available for transparency, 
+education, and personal use. While the source code is open to view (source-available), 
+it does not strictly meet the Open Source Initiative (OSI) definition of "Open Source" 
+because it restricts modification and commercial use.
 
-Termination:
-This license is automatically terminated if the licensee violates the
-Non-Publication condition above. Upon termination the licensee must cease any
-use of the Software that is inconsistent with the terms and, if requested by
-the copyright holder, destroy or return all copies of the Software.
-
-No Warranty:
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -40,12 +31,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
-Notes:
-- This license grants broad rights to use and modify the code for private and
-	non-public purposes while explicitly prohibiting public distribution or
-	commercial productization of works that incorporate the Software. It is not
-	an OSI-approved "open source" license as that term is commonly defined,
-	because it restricts redistribution. If you need a fully open-source license
-	(permitting public redistribution), consider using MIT, Apache-2.0, or
-	another standard license instead.
