@@ -41,7 +41,7 @@ def extract_text_from_docx(file_path: Path) -> str:
     """Extract text from a DOCX file using python-docx."""
     try:
         import docx
-        doc = docx.Document(file_path)
+        doc = docx.Document(str(file_path))
         full_text = []
         for para in doc.paragraphs:
             full_text.append(para.text)
