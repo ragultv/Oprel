@@ -174,7 +174,7 @@ if webui_dir:
         return Response(status_code=404)
 
 if webui_dir:
-    app.mount("/gui", UIStaticFiles(directory=str(webui_dir), html=True), name="gui")
+    app.mount("/gui", UIStaticFiles(directory=webui_dir, html=True), name="gui")
 
 app.include_router(health.router)
 app.include_router(metrics.router)
@@ -210,7 +210,10 @@ def run_server(host: str = "127.0.0.1", port: int = 11435):
    ╚═════╝ ╚═╝     ╚═╝  ╚═╝╚══════╝╚══════╝
 {reset}"""
     )
-    print(banner)
+    try:
+        print(banner)
+    except UnicodeEncodeError:
+        print(f"{coral}{bold}   OPREL DAEMON{reset}\n")
     print(f" {Colors.GRAY}Oprel Daemon v0.6.2{Colors.RESET}\n")
     print(f"  Listening on: {Colors.CYAN}http://{host}:{port}{Colors.RESET}")
     print(f"  Press {Colors.YELLOW}Ctrl+C{Colors.RESET} to stop\n")

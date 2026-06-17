@@ -147,6 +147,10 @@ def get_gguf_quantizations(repo_id: str) -> List[str]:
     Returns:
         List of quantization types (e.g., ["Q4_K_M", "Q5_K_M", "Q8_0"])
     """
+    # Cloud models and aliases with providers don't have GGUF quantizations on HuggingFace
+    if ":" in repo_id:
+        return []
+        
     try:
         api = HfApi()
         model_info = api.model_info(repo_id, files_metadata=True)
@@ -231,7 +235,7 @@ def get_local_quantizations(model_id: str, cache_dir: Path) -> list[str]:
     return local_quants
 
 
-def get_model_info(repo_id: str, alias: str = None) -> Dict:
+def get_model_info(repo_id: str, alias: Optional[str] = None) -> Dict:
     """
     Get comprehensive model information including parameters and quantizations.
     

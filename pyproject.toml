@@ -7,7 +7,7 @@ name = "oprel"
 version = "0.6.2"
 description = "Oprel is a high-performance Python library for running large language models locally. It provides a production-ready runtime with advanced memory management, hybrid offloading, and full multimodal support."
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = {file = "LICENSE"}
 authors = [
     {name = "Oprel Team", email = "tragulragul@gmail.com"}
@@ -89,7 +89,7 @@ dependencies = [
     "huggingface-hub>=0.20.0",
     "psutil>=5.9.0",
     "requests>=2.31.0",
-    "pydantic>=2.10.0",
+    "pydantic>=2.11.0",
     "rich>=13.0.0",  # For pretty CLI output
     "tqdm>=4.65.0",  # For download progress bars (M1.15)
     "fastapi>=0.115.0",
@@ -100,6 +100,7 @@ dependencies = [
     "chromadb>=0.5.0",
     "rank_bm25>=0.2.2",
     "pypdf>=5.1.0",
+    "pdfplumber>=0.11.0",
     "python-docx>=1.1.2",
     "google-genai>=2.0.0",
     "groq>=0.9.0",
