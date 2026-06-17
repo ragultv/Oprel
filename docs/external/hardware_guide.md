@@ -118,14 +118,16 @@ These are approximate. Exact sizes vary by model architecture and vocabulary.
 
 ## Cache Locations
 
-Oprel stores everything under `~/.cache/oprel/`:
+Oprel stores content under `~/.cache/oprel/`:
 
 | Directory | Contents |
 |---|---|
 | `~/.cache/oprel/models/` | Downloaded GGUF model files |
 | `~/.cache/oprel/bin/` | llama-server and sd-cli binaries |
+| `~/.cache/oprel/ocr/` | PaddleOCR models (downloaded on first OCR use) |
+| `~/.cache/oprel/models/chat_history.db` | SQLite database for conversations, provider configs, and settings |
 
-You can override the base path by setting the `OPREL_HOME` environment variable.
+The `OPREL_HOME` environment variable controls the **knowledge directory only** (`OPREL_HOME / "knowledge"`). It does not affect the model cache, binary cache, OCR cache, or database paths — those are configured independently via `Config.cache_dir` and `Config.binary_dir` in `oprel/core/config.py`.
 
 ---
 
@@ -188,8 +190,9 @@ On Apple Silicon, KV cache quantization (`q8_0` or `q4_0`) can significantly red
 
 | Variable | Effect |
 |---|---|
-| `OPREL_HOME` | Override base cache directory (default: `~/.cache/oprel`) |
+| `OPREL_HOME` | Override knowledge directory base path (default: `~/.cache/oprel`). Does **not** control model, binary, OCR, or database paths |
 | `OPREL_SSL_NO_VERIFY` | Set to `1` to disable SSL verification for binary downloads (useful behind corporate proxies) |
+| `OPREL_SKIP_RUNTIME_DOWNLOAD` | Set to `1`, `true`, or `yes` to skip runtime binary downloads during `pip install` |
 
 ---
 
