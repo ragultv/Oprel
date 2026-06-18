@@ -103,9 +103,9 @@ export interface ModelDetailedInfo {
   default_quantization: string | null;
 }
 
-const API_BASE = (typeof window !== 'undefined' && window.location.port === '3000') 
+export const API_BASE = (typeof window !== 'undefined' && window.location.port === '3000') 
 ? 'http://localhost:11435' 
-: ''; 
+: '';  
 
 export const API = {
   async getCanvas(conversationId: string): Promise<any> {
@@ -824,3 +824,114 @@ export const OCR = {
     await fetch(`${API_BASE}/v1/ocr/history/${jobId}`, { method: 'DELETE' });
   },
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Groups API Methods
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface GroupMember {
+  id: string;
+  group_id: string;
+  kind: 'cloud' | 'local';
+  provider_id?: string;
+  model_id: string;
+  display_name: string;
+  role_description?: string;
+  is_moderator: number;
+  priority_order: number;
+}
+
+export interface Group {
+  id: string;
+  name: string;
+  created_at: string;
+  max_interrupt_rounds: number;
+  max_replies_per_agent: number;
+  members?: GroupMember[];
+}
+
+export interface GroupMessage {
+  id: string;
+  group_id: string;
+  round_id: string;
+  sender_type: 'user' | 'agent' | 'system';
+  member_id?: string;
+  content: string;
+  message_type: 'trigger' | 'reply' | 'interrupt' | 'final_answer';
+  sequence_number: number;
+  created_at: string;
+}
+
+export const GroupsAPI = {
+  async fetchGroups(): Promise<Group[]> {
+    const res = await fetch(`${API_BASE}/groups`);
+    if (!res.ok) throw new Error('Failed to fetch groups');
+    return res.json();
+  },
+
+  async createGroup(data: { name: string; max_interrupt_rounds?: number; max_replies_per_agent?: number }): Promise<Group> {
+    const res = await fetch(`${API_BASE}/groups`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+    if (!res.ok) throw new Error('Failed to create group');
+    return res.json();
+  },
+
+  async getGroup(id: string): Promise<Group> {
+    const res = await fetch(`${API_BASE}/groups/${id}`);
+    if (!res.ok) throw new Error('Failed to fetch group');
+    return res.json();
+  },
+
+  async updateGroup(id: string, data: any): Promise<Group> {
+    const res = await fetch(`${API_BASE}/groups/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+    if (!res.ok) throw new Error('Failed to update group');
+    return res.json();
+  },
+
+  async deleteGroup(id: string): Promise<void> {
+    const res = await fetch(`${API_BASE}/groups/${id}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error('Failed to delete group');
+  },
+
+  async addMember(groupId: string, memberData: any): Promise<GroupMember> {
+    const res = await fetch(`${API_BASE}/groups/${groupId}/members`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(memberData)
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Failed to add member' }));
+      throw new Error(err.detail || 'Failed to add member');
+    }
+    return res.json();
+  },
+
+  async removeMember(groupId: string, memberId: string): Promise<void> {
+    const res = await fetch(`${API_BASE}/groups/${groupId}/members/${memberId}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error('Failed to remove member');
+  },
+
+  async fetchMessages(groupId: string): Promise<GroupMessage[]> {
+    const res = await fetch(`${API_BASE}/groups/${groupId}/messages`);
+    if (!res.ok) throw new Error('Failed to fetch messages');
+    return res.json();
+  },
+
+  async postMessage(groupId: string, content: string): Promise<any> {
+    const res = await fetch(`${API_BASE}/groups/${groupId}/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content })
+    });
+    if (!res.ok) throw new Error('Failed to post message');
+    return res.json();
+  }
+};
+

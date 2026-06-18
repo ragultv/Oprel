@@ -181,6 +181,86 @@ def init_db():
         )
     """)
     # ── Migrations: add missing columns to existing tables ───────────────────
+    # ── Oprel AI Groups Tables ────────────────────────────────────────────────
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS groups (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            moderator_member_id TEXT,
+            max_interrupt_rounds INTEGER DEFAULT 3,
+            max_replies_per_agent INTEGER
+        )
+    """)
+    
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS group_members (
+            id TEXT PRIMARY KEY,
+            group_id TEXT NOT NULL,
+            kind TEXT NOT NULL, -- 'cloud' or 'local'
+            provider_id TEXT,
+            model_id TEXT NOT NULL,
+            display_name TEXT NOT NULL,
+            role_description TEXT,
+            is_moderator INTEGER DEFAULT 0,
+            priority_order INTEGER DEFAULT 0,
+            FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
+        )
+    """)
+    
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS group_rounds (
+            id TEXT PRIMARY KEY,
+            group_id TEXT NOT NULL,
+            user_message_id TEXT NOT NULL,
+            state TEXT NOT NULL, -- 'relevance', 'generation', 'interrupt', 'moderation', 'done'
+            interrupt_count INTEGER DEFAULT 0,
+            moderation_retries INTEGER DEFAULT 0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
+        )
+    """)
+    
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS group_messages (
+            id TEXT PRIMARY KEY,
+            group_id TEXT NOT NULL,
+            round_id TEXT NOT NULL,
+            sender_type TEXT NOT NULL, -- 'user', 'agent', 'system'
+            member_id TEXT, -- nullable for user/system
+            content TEXT NOT NULL,
+            message_type TEXT NOT NULL, -- 'reply', 'interrupt', 'final_answer', 'user'
+            sequence_number INTEGER NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE,
+            FOREIGN KEY (round_id) REFERENCES group_rounds(id) ON DELETE CASCADE
+        )
+    """)
+    
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS group_reactions (
+            id TEXT PRIMARY KEY,
+            message_id TEXT NOT NULL,
+            member_id TEXT NOT NULL,
+            emoji TEXT NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (message_id) REFERENCES group_messages(id) ON DELETE CASCADE,
+            FOREIGN KEY (member_id) REFERENCES group_members(id) ON DELETE CASCADE
+        )
+    """)
+    
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS agent_memory (
+            group_id TEXT NOT NULL,
+            member_id TEXT NOT NULL,
+            rolling_summary TEXT NOT NULL DEFAULT '',
+            last_compacted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (group_id, member_id),
+            FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE,
+            FOREIGN KEY (member_id) REFERENCES group_members(id) ON DELETE CASCADE
+        )
+    """)
+    
     # This handles databases created before schema additions
     try:
         cursor.execute("ALTER TABLE canvas_documents ADD COLUMN card_timestamp TEXT")
@@ -725,3 +805,246 @@ def delete_ocr_job(job_id: str) -> None:
     cursor.execute("DELETE FROM ocr_jobs WHERE id = ?", (job_id,))
     conn.commit()
     conn.close()
+
+# ── Oprel AI Groups CRUD ────────────────────────────────────────────────────────
+
+def create_group(name: str, max_interrupt_rounds: int = 3, max_replies_per_agent: Optional[int] = None) -> dict:
+    conn = get_db()
+    cursor = conn.cursor()
+    group_id = f"grp_{uuid.uuid4().hex[:12]}"
+    now = datetime.now().isoformat()
+    cursor.execute(
+        "INSERT INTO groups (id, name, created_at, max_interrupt_rounds, max_replies_per_agent) VALUES (?, ?, ?, ?, ?)",
+        (group_id, name, now, max_interrupt_rounds, max_replies_per_agent)
+    )
+    conn.commit()
+    conn.close()
+    return get_group(group_id)
+
+def get_group(group_id: str) -> Optional[dict]:
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM groups WHERE id = ?", (group_id,))
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        return None
+        
+    group = dict(row)
+    cursor.execute("SELECT * FROM group_members WHERE group_id = ?", (group_id,))
+    members = [dict(m) for m in cursor.fetchall()]
+    group["members"] = members
+    conn.close()
+    return group
+
+def list_groups() -> List[dict]:
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM groups ORDER BY created_at DESC")
+    rows = cursor.fetchall()
+    groups = []
+    for r in rows:
+        g = dict(r)
+        cursor.execute("SELECT COUNT(*) FROM group_members WHERE group_id = ?", (g["id"],))
+        g["member_count"] = cursor.fetchone()[0]
+        groups.append(g)
+    conn.close()
+    return groups
+
+def update_group(group_id: str, updates: dict) -> Optional[dict]:
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    set_clauses = []
+    values = []
+    for k, v in updates.items():
+        if k in ["name", "moderator_member_id", "max_interrupt_rounds", "max_replies_per_agent"]:
+            set_clauses.append(f"{k} = ?")
+            values.append(v)
+            
+    if not set_clauses:
+        conn.close()
+        return get_group(group_id)
+        
+    values.append(group_id)
+    query = f"UPDATE groups SET {', '.join(set_clauses)} WHERE id = ?"
+    cursor.execute(query, values)
+    conn.commit()
+    conn.close()
+    return get_group(group_id)
+
+def delete_group(group_id: str) -> None:
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM groups WHERE id = ?", (group_id,))
+    conn.commit()
+    conn.close()
+
+def add_group_member(group_id: str, kind: str, model_id: str, display_name: str, 
+                     provider_id: Optional[str] = None, role_description: Optional[str] = None,
+                     is_moderator: bool = False, priority_order: int = 0) -> dict:
+    conn = get_db()
+    cursor = conn.cursor()
+    member_id = f"mem_{uuid.uuid4().hex[:12]}"
+    
+    # Check constraints
+    if kind == 'local':
+        cursor.execute("SELECT COUNT(*) FROM group_members WHERE group_id = ? AND kind = 'local'", (group_id,))
+        if cursor.fetchone()[0] > 0:
+            conn.close()
+            raise ValueError("Only one local member allowed per group")
+            
+    if is_moderator:
+        cursor.execute("SELECT id FROM group_members WHERE group_id = ? AND is_moderator = 1", (group_id,))
+        existing_mod = cursor.fetchone()
+        if existing_mod:
+            # Demote existing
+            cursor.execute("UPDATE group_members SET is_moderator = 0 WHERE id = ?", (existing_mod["id"],))
+            
+    cursor.execute("""
+        INSERT INTO group_members (id, group_id, kind, provider_id, model_id, display_name, role_description, is_moderator, priority_order)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (member_id, group_id, kind, provider_id, model_id, display_name, role_description, 1 if is_moderator else 0, priority_order))
+    
+    if is_moderator:
+        cursor.execute("UPDATE groups SET moderator_member_id = ? WHERE id = ?", (member_id, group_id))
+        
+    conn.commit()
+    
+    cursor.execute("SELECT * FROM group_members WHERE id = ?", (member_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row)
+
+def remove_group_member(group_id: str, member_id: str) -> None:
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM group_members WHERE group_id = ? AND id = ?", (group_id, member_id))
+    cursor.execute("UPDATE groups SET moderator_member_id = NULL WHERE id = ? AND moderator_member_id = ?", (group_id, member_id))
+    conn.commit()
+    conn.close()
+
+def get_group_messages(group_id: str, round_id: Optional[str] = None, limit: int = 100) -> list:
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    if round_id:
+        cursor.execute("""
+            SELECT * FROM group_messages 
+            WHERE group_id = ? AND round_id = ? 
+            ORDER BY sequence_number ASC
+        """, (group_id, round_id))
+    else:
+        cursor.execute("""
+            SELECT * FROM group_messages 
+            WHERE group_id = ? 
+            ORDER BY created_at DESC LIMIT ?
+        """, (group_id, limit))
+        
+    rows = cursor.fetchall()
+    
+    messages = []
+    for r in rows:
+        msg = dict(r)
+        cursor.execute("SELECT * FROM group_reactions WHERE message_id = ?", (msg["id"],))
+        msg["reactions"] = [dict(reac) for reac in cursor.fetchall()]
+        messages.append(msg)
+        
+    conn.close()
+    if not round_id:
+        messages.reverse() # If fetched by DESC, reverse to chronological
+    return messages
+
+def add_reaction(message_id: str, member_id: str, emoji: str) -> None:
+    conn = get_db()
+    cursor = conn.cursor()
+    reac_id = f"react_{uuid.uuid4().hex[:12]}"
+    now = datetime.now().isoformat()
+    cursor.execute("""
+        INSERT INTO group_reactions (id, message_id, member_id, emoji, created_at)
+        VALUES (?, ?, ?, ?, ?)
+    """, (reac_id, message_id, member_id, emoji, now))
+    conn.commit()
+    conn.close()
+
+def get_agent_memory(group_id: str, member_id: str) -> str:
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT rolling_summary FROM agent_memory WHERE group_id = ? AND member_id = ?", (group_id, member_id))
+    row = cursor.fetchone()
+    conn.close()
+    if row:
+        return row["rolling_summary"]
+    return ""
+
+def update_agent_memory(group_id: str, member_id: str, new_summary: str) -> None:
+    from datetime import datetime
+    conn = get_db()
+    cursor = conn.cursor()
+    now = datetime.now().isoformat()
+    cursor.execute("""
+        INSERT INTO agent_memory (group_id, member_id, rolling_summary, last_compacted_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(group_id, member_id) DO UPDATE SET
+            rolling_summary = excluded.rolling_summary,
+            last_compacted_at = excluded.last_compacted_at
+    """, (group_id, member_id, new_summary, now))
+    conn.commit()
+    conn.close()
+
+def create_group_round(group_id: str, user_message_id: str) -> dict:
+    conn = get_db()
+    cursor = conn.cursor()
+    round_id = f"rnd_{uuid.uuid4().hex[:12]}"
+    now = datetime.now().isoformat()
+    cursor.execute("""
+        INSERT INTO group_rounds (id, group_id, user_message_id, state, created_at)
+        VALUES (?, ?, ?, 'relevance', ?)
+    """, (round_id, group_id, user_message_id, now))
+    conn.commit()
+    cursor.execute("SELECT * FROM group_rounds WHERE id = ?", (round_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row)
+
+def get_group_round(round_id: str) -> Optional[dict]:
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM group_rounds WHERE id = ?", (round_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+def update_group_round_state(round_id: str, state: str, increment_interrupt: bool = False) -> None:
+    conn = get_db()
+    cursor = conn.cursor()
+    if increment_interrupt:
+        cursor.execute("UPDATE group_rounds SET state = ?, interrupt_count = interrupt_count + 1 WHERE id = ?", (state, round_id))
+    else:
+        cursor.execute("UPDATE group_rounds SET state = ? WHERE id = ?", (state, round_id))
+    conn.commit()
+    conn.close()
+
+def get_max_sequence_number(group_id: str, round_id: str) -> int:
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT MAX(sequence_number) FROM group_messages WHERE group_id = ? AND round_id = ?", (group_id, round_id))
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row[0] is not None else 0
+
+def add_group_message(group_id: str, round_id: str, sender_type: str, member_id: Optional[str], 
+                      content: str, message_type: str, sequence_number: int, msg_id: Optional[str] = None) -> dict:
+    conn = get_db()
+    cursor = conn.cursor()
+    msg_id = msg_id or f"gmsg_{uuid.uuid4().hex[:12]}"
+    now = datetime.now().isoformat()
+    cursor.execute("""
+        INSERT INTO group_messages (id, group_id, round_id, sender_type, member_id, content, message_type, sequence_number, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (msg_id, group_id, round_id, sender_type, member_id, content, message_type, sequence_number, now))
+    conn.commit()
+    cursor.execute("SELECT * FROM group_messages WHERE id = ?", (msg_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row)

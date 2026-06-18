@@ -16,6 +16,8 @@ from . import (
     system,
     skills,
     ocr,
+    groups,
+    groups_ws,
 )
 
 __all__ = [
@@ -34,4 +36,6 @@ __all__ = [
     "system",
     "skills",
     "ocr",
+    "groups",
+    "groups_ws",
 ]

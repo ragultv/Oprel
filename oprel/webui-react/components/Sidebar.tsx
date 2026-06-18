@@ -16,6 +16,7 @@ import {
   Image,
   RefreshCw,
   ScanText,
+  Users,
 } from "lucide-react"
 import { usePathname, useRouter } from "next/navigation"
 import { cn } from "@/services/utils"
@@ -122,6 +123,7 @@ export function Sidebar() {
   const isOcrRoute = pathname.startsWith("/ocr")
   const isKnowledgeRoute = pathname.startsWith("/knowledge")
   const isDevRoute = pathname.startsWith("/dev")
+  const isGroupsRoute = pathname.startsWith("/groups")
 
   const [search, setSearch] = useState("")
   const [deleteId, setDeleteId] = useState<string | null>(null)
@@ -294,9 +296,21 @@ export function Sidebar() {
               <span className="text-[10px]">Knowledge</span>
             </button>
             <button
+              onClick={() => router.push("/groups")}
+              className={cn(
+                "flex flex-col items-center gap-1.5 py-3 rounded-lg border border-border text-xs font-semibold transition-all text-center",
+                isGroupsRoute
+                  ? "bg-secondary text-foreground border-border"
+                  : "text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
+              )}
+            >
+              <Users size={18} />
+              <span className="text-[10px]">Groups</span>
+            </button>
+            <button
               onClick={() => router.push("/dev")}
               className={cn(
-                "flex flex-col items-center gap-1.5 py-3 rounded-lg border border-border text-xs font-semibold transition-all col-span-2 text-center",
+                "flex flex-col items-center gap-1.5 py-3 rounded-lg border border-border text-xs font-semibold transition-all text-center",
                 isDevRoute
                   ? "bg-secondary text-foreground border-border"
                   : "text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
