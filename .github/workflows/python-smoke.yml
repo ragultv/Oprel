@@ -1,0 +1,44 @@
+name: Python Smoke Import
+
+on:
+  push:
+    branches: [dev]
+  pull_request:
+    branches: [dev]
+
+permissions:
+  contents: read
+
+jobs:
+  smoke-import:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install import-time dependencies
+        # Only the packages needed for `import oprel` and `Config()`.
+        # The full pyproject.toml dependency list includes heavy optional
+        # packages (chromadb, fastapi, uvicorn, torch, etc.) that are NOT
+        # required for a bare import and would bloat this minimal smoke CI.
+        # If a future oprel/__init__.py change adds a new import-time dep,
+        # the smoke script will report it clearly via ImportError.
+        run: |
+          pip install --quiet \
+            "huggingface-hub>=0.20.0" \
+            "psutil>=5.9.0" \
+            "requests>=2.31.0" \
+            "pydantic>=2.11.0" \
+            "rich>=13.0.0" \
+            "tqdm>=4.65.0"
+
+      - name: Run smoke import test
+        env:
+          OPREL_SKIP_RUNTIME_DOWNLOAD: "1"
+          PYTHONPATH: "."
+        run: python3 scripts/smoke_import.py
