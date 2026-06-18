@@ -224,5 +224,6 @@ This happens automatically when you click "Download OCR Models" in Oprel Studio 
 ## 10. Related Docs
 
 - [Hardware & Deployment Guide](hardware_guide.md) — GPU acceleration, RAM/VRAM requirements, hardware tiers.
+- [Binary Provenance & Checksum Verification Guide](binary_provenance.md) — where runtime binaries come from, current trust model, and a proposed verification manifest.
 - [Cloud Providers](cloud_providers.md) — configuring external AI providers and API keys.
 - [CLI Reference](cli_reference.md) — all Oprel CLI commands and options.
