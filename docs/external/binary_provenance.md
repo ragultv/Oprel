@@ -146,6 +146,18 @@ The ideal place to add verification is in `oprel/runtime/binaries/installer.py`,
 
 If upstream projects publish per-binary checksums in addition to archive checksums, Oprel could also verify the extracted executable before launching it. This adds another layer but requires upstream projects to publish those digests. Until they do, archive-level SHA256 verification is the most practical first step.
 
+### Foundation implemented
+
+A lightweight manifest and helper module — `oprel/runtime/binaries/integrity.py` — has been added as a first code-side step toward the model above. It provides:
+
+- A `BinaryIntegrityEntry` dataclass matching the manifest shape described here.
+- An empty `BINARY_INTEGRITY_MANIFEST` placeholder (no digests populated yet).
+- `get_integrity_entry()` lookup that returns `None` when no entry exists.
+- `validate_sha256_format()` (case-insensitive), `compute_sha256()`, and `verify_sha256()` helpers.
+- An `IntegrityMismatchError` exception for clear failure reporting.
+
+None of these are wired into the installer or downloader yet. The manifest is intentionally empty so that runtime behavior is unchanged. Future PRs will populate the manifest with real digests and connect verification to the download pipeline.
+
 ---
 
 ## 6. Safe Operational Guidance for Users
