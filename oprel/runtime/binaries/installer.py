@@ -16,6 +16,7 @@ from typing import Optional
 
 from oprel.core.config import Config
 from oprel.core.exceptions import BinaryNotFoundError, UnsupportedPlatformError
+from oprel.runtime.binaries.integrity import get_integrity_entry, verify_sha256
 from oprel.runtime.binaries.registry import get_binary_info, get_supported_platforms, get_optimal_platform_key
 from oprel.telemetry.hardware import detect_gpu
 from oprel.utils.logging import get_logger
@@ -125,6 +126,45 @@ def _safe_download(url: str, dest_path: Path, config: Optional[Config] = None) -
         ) from e
     except Exception as e:
         raise BinaryNotFoundError(f"Download failed: {e}") from e
+
+
+def _verify_download_integrity(
+    archive_path: Path,
+    backend: str,
+    version: str,
+    platform: str,
+    accelerator: str,
+) -> None:
+    """Optionally verify a downloaded archive against the integrity manifest.
+
+    Looks up an integrity entry for (*backend*, *version*, *platform*,
+    *accelerator*).  If an entry exists and carries a ``sha256`` digest,
+    the archive is verified in place.  When no entry exists or the entry
+    has no ``sha256``, this is a no-op so that current runtime behaviour
+    is unchanged while the manifest is empty.
+
+    Args:
+        archive_path: Path to the downloaded archive on disk.
+        backend: Backend name (e.g. ``"llama.cpp"``).
+        version: Binary version string (e.g. ``"b9616"``).
+        platform: Base platform key (e.g. ``"Linux-x86_64"``).
+        accelerator: Accelerator / gpu_type from the registry entry
+            (e.g. ``"cuda"``, ``"cpu"``, ``"vulkan"``).
+
+    Raises:
+        IntegrityMismatchError: when the computed digest does not match
+            the expected value.  The caller's existing exception handling
+            wraps this in ``BinaryNotFoundError`` with the original error
+            preserved as ``__cause__``.
+    """
+    entry = get_integrity_entry(backend, version, platform, accelerator)
+    if entry is None or not entry.sha256:
+        return
+    logger.debug(
+        f"Verifying archive checksum for {backend} {version} "
+        f"({platform}/{accelerator})"
+    )
+    verify_sha256(archive_path, entry.sha256)
 
 
 def ensure_binary(
@@ -260,6 +300,11 @@ def ensure_binary(
 
         logger.info(f"Downloading to temp file: {tmp_path}")
         _safe_download(url, tmp_path, config)
+
+        # Optionally verify the archive checksum before extraction.
+        _verify_download_integrity(
+            tmp_path, backend, version, base_platform_key, gpu_type
+        )
 
         # Extract based on archive type
         if archive_type == "zip":
