@@ -17,7 +17,12 @@ from typing import Optional
 from oprel.core.config import Config
 from oprel.core.exceptions import BinaryNotFoundError, UnsupportedPlatformError
 from oprel.runtime.binaries.integrity import get_integrity_entry, verify_sha256
-from oprel.runtime.binaries.registry import get_binary_info, get_supported_platforms, get_optimal_platform_key
+from oprel.runtime.binaries.registry import (
+    get_binary_info,
+    get_optimal_platform_key,
+    get_supported_platforms,
+    resolve_version,
+)
 from oprel.telemetry.hardware import detect_gpu
 from oprel.utils.logging import get_logger
 
@@ -232,6 +237,10 @@ def ensure_binary(
             f"Platform {platform_key} not supported. Available: {available}"
         )
 
+    # Resolve aliases like "latest" to the concrete upstream version so that
+    # integrity manifest lookups are keyed by the real build (e.g. "b9616").
+    resolved_version = resolve_version(backend, version)
+
     url = binary_info["url"]
     archive_type = binary_info["archive_type"]
     binary_name = binary_info["binary_name"]
@@ -303,7 +312,7 @@ def ensure_binary(
 
         # Optionally verify the archive checksum before extraction.
         _verify_download_integrity(
-            tmp_path, backend, version, base_platform_key, gpu_type
+            tmp_path, backend, resolved_version, base_platform_key, gpu_type
         )
 
         # Extract based on archive type

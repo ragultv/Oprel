@@ -270,3 +270,29 @@ def get_supported_platforms(backend: str, version: str) -> list[str]:
         return []
 
     return list(version_info.keys())
+
+
+def resolve_version(backend: str, version: str) -> str:
+    """Resolve a version alias to the concrete upstream version.
+
+    The registry supports string aliases such as ``"latest"`` that point to
+    a concrete build (e.g. ``"b9616"``).  This helper returns the concrete
+    version when an alias is encountered, otherwise it returns *version*
+    unchanged.  It does not mutate the registry and does not perform any
+    network I/O.
+
+    Args:
+        backend: Backend name (e.g., ``"llama.cpp"``).
+        version: Version string (e.g., ``"latest"`` or ``"b9616"``).
+
+    Returns:
+        Concrete version string if *version* is an alias, otherwise *version*.
+    """
+    backend_info = BINARY_REGISTRY.get(backend, {})
+    version_info = backend_info.get(version)
+
+    # Handle "latest" and any future string aliases.
+    if isinstance(version_info, str):
+        return version_info
+
+    return version

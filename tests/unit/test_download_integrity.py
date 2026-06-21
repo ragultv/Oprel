@@ -19,6 +19,7 @@ from oprel.runtime.binaries.integrity import (
     IntegrityMismatchError,
 )
 from oprel.runtime.binaries.installer import _verify_download_integrity
+from oprel.runtime.binaries.registry import resolve_version
 
 
 def _make_archive(tmp_path: Path, content: bytes = b"fake archive") -> Path:
@@ -196,4 +197,80 @@ class TestVerifyDownloadIntegrityEnforcement:
 
         _verify_download_integrity(
             archive, "llama.cpp", "b9616", "Windows-AMD64", "cuda"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Version alias resolution
+# ---------------------------------------------------------------------------
+
+
+class TestResolveVersion:
+    def test_latest_resolves_to_concrete_version(self):
+        """The 'latest' alias should resolve to the current concrete build."""
+        assert resolve_version("llama.cpp", "latest") == "b9616"
+        assert resolve_version("stable-diffusion.cpp", "latest") == "master-647-72e512a"
+
+    def test_concrete_version_unchanged(self):
+        """Concrete versions pass through unchanged."""
+        assert resolve_version("llama.cpp", "b9616") == "b9616"
+        assert resolve_version("llama.cpp", "b7822") == "b7822"
+        assert resolve_version(
+            "stable-diffusion.cpp", "master-647-72e512a"
+        ) == "master-647-72e512a"
+
+    def test_unknown_version_returns_original(self):
+        """Unknown versions are returned unchanged to preserve existing behavior."""
+        assert resolve_version("llama.cpp", "does-not-exist") == "does-not-exist"
+
+    def test_unknown_backend_returns_original(self):
+        """Unknown backends are returned unchanged to preserve existing behavior."""
+        assert resolve_version("unknown-backend", "latest") == "latest"
+
+
+class TestVerifyDownloadIntegrityWithResolvedVersion:
+    def test_resolved_latest_finds_concrete_keyed_entry(self, tmp_path, monkeypatch):
+        """Resolving 'latest' before lookup finds a manifest keyed by concrete version."""
+        content = b"resolved latest archive"
+        archive = _make_archive(tmp_path, content)
+        digest = hashlib.sha256(content).hexdigest()
+
+        entry = BinaryIntegrityEntry(
+            backend="llama.cpp",
+            version="b9616",
+            platform="Linux-x86_64",
+            accelerator="cpu",
+            sha256=digest,
+        )
+        monkeypatch.setattr(
+            "oprel.runtime.binaries.integrity.BINARY_INTEGRITY_MANIFEST",
+            {("llama.cpp", "b9616", "Linux-x86_64", "cpu"): entry},
+        )
+
+        resolved = resolve_version("llama.cpp", "latest")
+        _verify_download_integrity(
+            archive, "llama.cpp", resolved, "Linux-x86_64", "cpu"
+        )
+
+    def test_unresolved_latest_misses_concrete_keyed_entry(self, tmp_path, monkeypatch):
+        """Without resolving, a 'latest' lookup misses a concrete-keyed entry."""
+        content = b"unresolved latest archive"
+        archive = _make_archive(tmp_path, content)
+        digest = hashlib.sha256(content).hexdigest()
+
+        entry = BinaryIntegrityEntry(
+            backend="llama.cpp",
+            version="b9616",
+            platform="Linux-x86_64",
+            accelerator="cpu",
+            sha256=digest,
+        )
+        monkeypatch.setattr(
+            "oprel.runtime.binaries.integrity.BINARY_INTEGRITY_MANIFEST",
+            {("llama.cpp", "b9616", "Linux-x86_64", "cpu"): entry},
+        )
+
+        # Passing the raw alias must remain a no-op: no entry is keyed under "latest".
+        _verify_download_integrity(
+            archive, "llama.cpp", "latest", "Linux-x86_64", "cpu"
         )
