@@ -644,7 +644,6 @@ def list_available_quantizations(model_id: str) -> list[str]:
         return []
 
 
-
 def download_model_with_progress(
     model_id: str,
     quantization: str = "Q4_K_M",
@@ -654,24 +653,48 @@ def download_model_with_progress(
 ) -> Path:
     """
     Download a model with real-time progress callbacks.
-    
+
+    Progress is reported via ``progress_callback(downloaded_bytes, total_bytes)``
+    on every tqdm chunk emitted by ``hf_hub_download``.  The callback fires with
+    the exact byte counts that the terminal progress bar also displays.
+
+    ROOT CAUSE ANALYSIS (previous approach was wrong)
+    ==================================================
+    The first fix attempt monkey-patched ``huggingface_hub.file_download.tqdm``,
+    but hf_hub_download does NOT create tqdm instances from that module-level
+    name. It calls ``_get_progress_bar_context(tqdm_class=tqdm_class or tqdm)``
+    where ``tqdm`` is ``huggingface_hub.utils.tqdm.tqdm``.  The monkey-patch was
+    hitting the wrong reference, so tqdm instances were still the original class,
+    causing the callbacks to fire from a separate tracking layer that was out of
+    sync with the actual tqdm display.
+
+    CORRECT FIX
+    ===========
+    ``hf_hub_download`` accepts an official ``tqdm_class`` parameter.
+    We build a ``_ProgressTqdm`` subclass and pass it directly.
+    ``_get_progress_bar_context`` will use our class — the same instance that
+    renders the terminal bar — so terminal % and UI % are driven by
+    the identical ``update()`` calls.
+
     Args:
         model_id: Repository ID
         quantization: Quantization level
         cache_dir: Custom cache directory
         force_download: Skip cache
-        progress_callback: Callback function(downloaded_bytes, total_bytes)
-        
+        progress_callback: Callback(downloaded_bytes, total_bytes) called on
+            every tqdm update.  Both values are exact integers in bytes.
+
     Returns:
-        Path to downloaded model
+        Path to downloaded model file.
     """
-    from huggingface_hub import hf_hub_download, HfApi
-    from huggingface_hub.utils import HfHubHTTPError
-    import threading
-    
+    from huggingface_hub import hf_hub_download as _hf_hub_download
+    from huggingface_hub.utils.tqdm import tqdm as _hf_tqdm
+
     cache_dir = cache_dir or get_cache_path()
-    
-    # Check cache first for this specific quantization
+
+    # ------------------------------------------------------------------
+    # 1.  Cache check — return immediately if already downloaded.
+    # ------------------------------------------------------------------
     if not force_download:
         cached_model = _find_cached_model_for_repo(model_id, cache_dir, quantization)
         if cached_model:
@@ -680,14 +703,18 @@ def download_model_with_progress(
                 size = cached_model.stat().st_size
                 progress_callback(size, size)
             return cached_model
-    
-    # Find the file to download
+
+    # ------------------------------------------------------------------
+    # 2.  Resolve the exact filename to download.
+    # ------------------------------------------------------------------
     from huggingface_hub import list_repo_files
+
     files = list_repo_files(model_id)
-    matching_files = [f for f in files if f.endswith(".gguf") and quantization.lower() in f.lower()]
-    
+    matching_files = [
+        f for f in files if f.endswith(".gguf") and quantization.lower() in f.lower()
+    ]
+
     if not matching_files:
-        # Fallback logic
         available = [f for f in files if f.endswith(".gguf")]
         if not available:
             raise ModelNotFoundError(f"No GGUF files found for {model_id}")
@@ -695,141 +722,84 @@ def download_model_with_progress(
         logger.warning(f"Quantization {quantization} not found, using {filename}")
     else:
         filename = matching_files[0]
-    
-    logger.info(f"Downloading {filename} from {model_id}")
-    
-    # Get file size from HuggingFace API
-    try:
-        api = HfApi()
-        file_info = api.model_info(model_id, files_metadata=True)
-        file_size = 0
-        for sibling in file_info.siblings:
-            if sibling.rfilename == filename:
-                file_size = sibling.size or 0
-                break
-        
-        logger.info(f"File size: {file_size / (1024**3):.2f} GB")
-    except Exception as e:
-        logger.warning(f"Could not get file size: {e}")
-        file_size = 0
-    
-    # Prime progress with known total size so UI can show totals immediately
-    if progress_callback and file_size > 0:
-        progress_callback(0, file_size)
 
-    # Start download in background and monitor progress
-    download_complete = threading.Event()
-    download_error = None
-    downloaded_path = None
-    
-    def download_thread():
-        nonlocal download_error, downloaded_path
-        try:
-            # Disable HF progress bars
-            import os
-            os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
-            
-            downloaded_path = hf_hub_download(
-                repo_id=model_id,
-                filename=filename,
-                cache_dir=str(cache_dir),
-                resume_download=True,
-                force_download=force_download,
-            )
-            download_complete.set()
-        except Exception as e:
-            download_error = e
-            download_complete.set()
-    
-    # Start download thread
-    dl_thread = threading.Thread(target=download_thread, daemon=True)
-    dl_thread.start()
-    
-    # Monitor progress by checking file size
-    if progress_callback and file_size > 0:
-        # HuggingFace downloads to: cache_dir/models--org--name/blobs/<hash>
-        # Then creates a symlink in: cache_dir/models--org--name/snapshots/<commit>/<filename>
-        
-        # Wait a bit for download to start
-        time.sleep(1)
-        
-        # Track the actual downloading file
-        monitored_file = None
-        last_size = 0
-        
-        while not download_complete.is_set():
-            try:
-                # If we haven't found the file yet, search for it
-                if not monitored_file or not monitored_file.exists():
-                    cache_name = "models--" + model_id.replace("/", "--")
-                    model_cache_dir = cache_dir / cache_name / "blobs"
-                    
-                    if model_cache_dir.exists():
-                        # Find files that are actively being written to
-                        blob_files = [f for f in model_cache_dir.glob("*") if f.is_file()]
-                        
-                        # Find the file that matches our expected size range
-                        # (should be growing and less than or equal to file_size)
-                        for blob_file in blob_files:
-                            try:
-                                current_size = blob_file.stat().st_size
-                                # Only consider files that are smaller than expected size
-                                # and larger than 1MB (to avoid temp files)
-                                if current_size > 1024 * 1024 and current_size <= file_size:
-                                    # Check if file is growing
-                                    time.sleep(0.1)
-                                    new_size = blob_file.stat().st_size
-                                    if new_size > current_size or current_size == file_size:
-                                        monitored_file = blob_file
-                                        last_size = current_size
-                                        break
-                            except Exception:
-                                continue
-                
-                # Report progress for the monitored file
-                if monitored_file and monitored_file.exists():
-                    try:
-                        current_size = monitored_file.stat().st_size
-                        
-                        # Only report if size changed or we're at 100%
-                        if current_size != last_size or current_size == file_size:
-                            # Ensure we don't report more than 100%
-                            reported_size = min(current_size, file_size)
-                            progress_callback(reported_size, file_size)
-                            last_size = current_size
-                            
-                            # If we've reached the expected size, we're done
-                            if current_size >= file_size:
-                                break
-                    except Exception as e:
-                        logger.debug(f"Error reading file size: {e}")
-                
-                # Check every 500ms
-                time.sleep(0.5)
-            except Exception as e:
-                logger.debug(f"Error monitoring progress: {e}")
-                time.sleep(0.5)
-    
-    # Wait for download to complete
-    download_complete.wait()
-    
-    if download_error:
-        raise ModelNotFoundError(f"Failed to download {model_id}: {download_error}") from download_error
-    
-    if not downloaded_path:
-        raise ModelNotFoundError(f"Download completed but path not found")
-    
-    # Final progress update
-    if progress_callback and file_size > 0:
+    logger.info(f"Downloading {filename} from {model_id}")
+
+    # ------------------------------------------------------------------
+    # 3.  Build a progress-aware tqdm subclass.
+    #
+    # hf_hub_download accepts an official ``tqdm_class`` kwarg that is
+    # forwarded to ``_get_progress_bar_context``.  The context manager
+    # instantiates our subclass, calls update() on every downloaded
+    # chunk, and renders the terminal bar from the same instance.
+    # So terminal % and callback % are byte-for-byte identical.
+    # ------------------------------------------------------------------
+    tqdm_class_to_use: type = _hf_tqdm  # default (no callback)
+
+    if progress_callback:
+        _cb = progress_callback  # avoid late-binding closure issues
+
+        class _ProgressTqdm(_hf_tqdm):
+            """
+            Official tqdm_class replacement for hf_hub_download.
+
+            hf_hub_download creates this instance via _get_progress_bar_context
+            and calls update(len(chunk)) for every HTTP response chunk.
+            self.n after super().update() is the exact cumulative bytes
+            downloaded — the same value the terminal bar displays.
+            """
+
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                # Fire immediately on creation so the UI jumps to the resumed
+                # progress (e.g. 77%) even before the first new chunk arrives.
+                if self.total and self.total > 0:
+                    _cb(int(self.n), int(self.total))
+
+            def update(self, n: int = 1) -> bool | None:  # type: ignore[override]
+                result = super().update(n)
+                # self.n  = cumulative bytes downloaded so far (post-update)
+                # self.total = total file size in bytes
+                if self.total and self.total > 0:
+                    _cb(int(self.n), int(self.total))
+                return result
+
+        tqdm_class_to_use = _ProgressTqdm
+
+    # ------------------------------------------------------------------
+    # 4.  Run the download.
+    # ------------------------------------------------------------------
+    model_path = _hf_hub_download(
+        repo_id=model_id,
+        filename=filename,
+        cache_dir=str(cache_dir),
+        force_download=force_download,
+        tqdm_class=tqdm_class_to_use,
+    )
+
+    downloaded_file = Path(model_path)
+
+    # ------------------------------------------------------------------
+    # 5.  Emit a guaranteed 100 % callback.
+    #
+    # tqdm may leave self.n slightly below self.total due to integer
+    # rounding on the last chunk.  A final callback with the real file
+    # size guarantees the UI always reaches exactly 100 %.
+    # ------------------------------------------------------------------
+    if progress_callback:
+        file_size = downloaded_file.stat().st_size
         progress_callback(file_size, file_size)
-    
-    # Save metadata for the downloaded model
+
+    # ------------------------------------------------------------------
+    # 6.  Post-download bookkeeping.
+    # ------------------------------------------------------------------
     from oprel.downloader.metadata import save_model_metadata
-    save_model_metadata(cache_dir, model_id, quantization, Path(downloaded_path))
-    
-    # Check for mmproj if it's a vision/OCR model
+
+    save_model_metadata(cache_dir, model_id, quantization, downloaded_file)
+
     if _is_vision_model(model_id):
-        _ensure_mmproj_downloaded(model_id, Path(downloaded_path), cache_dir, force_download)
-    
+        _ensure_mmproj_downloaded(model_id, downloaded_file, cache_dir, force_download)
+
     logger.info(f"✓ Downloaded {filename}")
-    return Path(downloaded_path)
+    return downloaded_file
+

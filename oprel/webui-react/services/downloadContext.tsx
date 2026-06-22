@@ -1,6 +1,9 @@
 "use client"
 
-import { createContext, useContext, useState, useCallback, useEffect, ReactNode } from "react"
+import { createContext, useContext, useState, useCallback, useEffect, useRef, ReactNode } from "react"
+import { API } from "@/services/api"
+import { useToast } from "@/hooks/use-toast"
+import { useApp } from "@/services/context"
 
 export interface DownloadProgress {
   modelId: string
@@ -13,6 +16,7 @@ export interface DownloadProgress {
   timeLeft: string // formatted time
   status: "ongoing" | "completed" | "paused" | "error"
   error?: string
+  downloadId?: string
 }
 
 interface DownloadContextType {
@@ -33,6 +37,109 @@ const DownloadContext = createContext<DownloadContextType | undefined>(undefined
 export function DownloadProvider({ children }: { children: ReactNode }) {
   const [downloads, setDownloads] = useState<DownloadProgress[]>([])
   const [dialogOpen, setDialogOpen] = useState(false)
+  const activeStreams = useRef<Record<string, () => void>>({})
+  const { toast } = useToast()
+
+  let refreshModelsGlobal: () => Promise<void> = async () => {};
+  try {
+    const app = useApp();
+    if (app) {
+      refreshModelsGlobal = app.refreshModels;
+    }
+  } catch (e) {
+    console.warn("DownloadProvider: AppContext not available");
+  }
+
+  const formatTime = (seconds: number) => {
+    if (seconds < 60) return `${Math.ceil(seconds)}s`
+    const mins = Math.floor(seconds / 60)
+    const secs = Math.ceil(seconds % 60)
+    return `${mins}:${secs.toString().padStart(2, '0')}`
+  }
+
+  const startStreaming = useCallback((modelId: string, downloadId: string, modelName: string, quantization: string) => {
+    if (activeStreams.current[modelId]) return;
+
+    console.log(`Starting SSE progress stream for ${modelId} (${downloadId})`);
+    const cleanup = API.streamDownloadProgress(
+      downloadId,
+      (progress) => {
+        setDownloads((prev) =>
+          prev.map((d) =>
+            d.modelId === modelId
+              ? {
+                  ...d,
+                  progress: progress.progress,
+                  downloaded: progress.downloaded,
+                  total: progress.total,
+                  speed: progress.speed,
+                  timeLeft: formatTime(progress.eta),
+                  status: "ongoing",
+                }
+              : d
+          )
+        )
+      },
+      () => {
+        setDownloads((prev) =>
+          prev.map((d) =>
+            d.modelId === modelId
+              ? {
+                  ...d,
+                  status: "completed",
+                  progress: 100,
+                  timeLeft: "0s",
+                }
+              : d
+          )
+        )
+        toast({
+          title: "Download Complete",
+          description: `${modelName} (${quantization}) is ready to use`,
+        })
+        refreshModelsGlobal();
+        
+        if (activeStreams.current[modelId]) {
+          activeStreams.current[modelId]()
+          delete activeStreams.current[modelId]
+        }
+      },
+      (error) => {
+        const isRestartRequired = error.includes("restart the server")
+        setDownloads((prev) =>
+          prev.map((d) =>
+            d.modelId === modelId
+              ? {
+                  ...d,
+                  status: isRestartRequired ? "ongoing" : "error",
+                  error: error,
+                }
+              : d
+          )
+        )
+        if (isRestartRequired) {
+          toast({
+            title: "Server Restart Required",
+            description: "Download is running in background. Restart server for real-time progress: pkill -f oprel.server.daemon && oprel start",
+            variant: "default",
+            duration: 10000,
+          })
+        } else {
+          toast({
+            title: "Download Failed",
+            description: error,
+            variant: "destructive",
+          })
+          if (activeStreams.current[modelId]) {
+            activeStreams.current[modelId]()
+            delete activeStreams.current[modelId]
+          }
+        }
+      }
+    )
+
+    activeStreams.current[modelId] = cleanup
+  }, [toast, refreshModelsGlobal])
 
   // Load ongoing downloads on mount
   useEffect(() => {
@@ -41,9 +148,8 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
         const response = await fetch('/api/downloads')
         if (response.ok) {
           const data = await response.json()
-          // Convert backend format to frontend format
           const ongoingDownloads = data.downloads
-            .filter((d: any) => d.status === 'downloading')
+            .filter((d: any) => d.status === 'downloading' || d.status === 'paused')
             .map((d: any) => ({
               modelId: `${d.model_id}-${d.quantization}`,
               modelName: d.model_id.split('/').pop() || d.model_id,
@@ -53,11 +159,17 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
               total: d.total,
               speed: d.speed,
               timeLeft: formatTime(d.eta),
-              status: 'ongoing' as const,
+              status: d.status === 'paused' ? ('paused' as const) : ('ongoing' as const),
+              downloadId: d.download_id,
             }))
           
           if (ongoingDownloads.length > 0) {
             setDownloads(ongoingDownloads)
+            ongoingDownloads.forEach((d: any) => {
+              if (d.status === 'ongoing' && d.downloadId) {
+                startStreaming(d.modelId, d.downloadId, d.modelName, d.quantization)
+              }
+            })
           }
         }
       } catch (error) {
@@ -66,25 +178,26 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
     }
     
     loadOngoingDownloads()
-  }, [])
+  }, [startStreaming])
 
-  const formatTime = (seconds: number) => {
-    if (seconds < 60) return `${Math.ceil(seconds)}s`
-    const mins = Math.floor(seconds / 60)
-    const secs = Math.ceil(seconds % 60)
-    return `${mins}:${secs.toString().padStart(2, '0')}`
-  }
+  useEffect(() => {
+    return () => {
+      Object.values(activeStreams.current).forEach((cleanup) => cleanup())
+    }
+  }, [])
 
   const addDownload = useCallback((download: DownloadProgress) => {
     setDownloads((prev) => {
-      // Check if already exists
       const exists = prev.find((d) => d.modelId === download.modelId)
       if (exists) {
         return prev.map((d) => (d.modelId === download.modelId ? download : d))
       }
       return [...prev, download]
     })
-  }, [])
+    if (download.status === "ongoing" && download.downloadId) {
+      startStreaming(download.modelId, download.downloadId, download.modelName, download.quantization)
+    }
+  }, [startStreaming])
 
   const updateDownload = useCallback((modelId: string, updates: Partial<DownloadProgress>) => {
     setDownloads((prev) =>
@@ -96,17 +209,47 @@ export function DownloadProvider({ children }: { children: ReactNode }) {
     setDownloads((prev) => prev.filter((d) => d.modelId !== modelId))
   }, [])
 
-  const pauseDownload = useCallback((modelId: string) => {
-    updateDownload(modelId, { status: "paused" })
-  }, [updateDownload])
+  const pauseDownload = useCallback(async (modelId: string) => {
+    setDownloads((prev) => {
+      const download = prev.find((d) => d.modelId === modelId)
+      if (download && download.downloadId) {
+        API.pauseDownload(download.downloadId).catch(console.error)
+      }
+      if (activeStreams.current[modelId]) {
+        activeStreams.current[modelId]()
+        delete activeStreams.current[modelId]
+      }
+      return prev.map((d) => (d.modelId === modelId ? { ...d, status: "paused" as const, speed: 0 } : d))
+    })
+  }, [])
 
-  const resumeDownload = useCallback((modelId: string) => {
-    updateDownload(modelId, { status: "ongoing" })
-  }, [updateDownload])
+  const resumeDownload = useCallback(async (modelId: string) => {
+    setDownloads((prev) => {
+      const download = prev.find((d) => d.modelId === modelId)
+      if (download && download.downloadId) {
+        API.resumeDownload(download.downloadId)
+          .then(() => {
+            startStreaming(modelId, download.downloadId!, download.modelName, download.quantization)
+          })
+          .catch(console.error)
+      }
+      return prev.map((d) => (d.modelId === modelId ? { ...d, status: "ongoing" as const } : d))
+    })
+  }, [startStreaming])
 
-  const cancelDownload = useCallback((modelId: string) => {
-    removeDownload(modelId)
-  }, [removeDownload])
+  const cancelDownload = useCallback(async (modelId: string) => {
+    setDownloads((prev) => {
+      const download = prev.find((d) => d.modelId === modelId)
+      if (download && download.downloadId) {
+        API.cancelDownload(download.downloadId).catch(console.error)
+      }
+      if (activeStreams.current[modelId]) {
+        activeStreams.current[modelId]()
+        delete activeStreams.current[modelId]
+      }
+      return prev.filter((d) => d.modelId !== modelId)
+    })
+  }, [])
 
   const getOngoingCount = useCallback(() => {
     return downloads.filter((d) => d.status === "ongoing").length

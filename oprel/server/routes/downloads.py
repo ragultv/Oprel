@@ -53,3 +53,34 @@ async def get_download(download_id: str):
         raise HTTPException(status_code=404, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/downloads/{download_id}/pause")
+async def pause_download_endpoint(download_id: str):
+    try:
+        return download_service.pause_download(download_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/downloads/{download_id}/resume")
+async def resume_download_endpoint(download_id: str):
+    try:
+        return download_service.resume_download(download_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/downloads/{download_id}/cancel")
+async def cancel_download_endpoint(download_id: str):
+    try:
+        return download_service.cancel_download(download_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+

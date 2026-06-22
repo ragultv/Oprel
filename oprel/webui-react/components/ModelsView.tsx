@@ -105,7 +105,7 @@ function StatCard({ icon, label, value }: { icon: React.ReactNode; label: string
 
 function ModelDetailPanel({ model }: { model: AIModel }) {
   const { setActiveModelId, refreshModels, setIsModelLoading, createConversation } = useApp()
-  const { addDownload, updateDownload, setDialogOpen } = useDownloads()
+  const { downloads, addDownload, updateDownload, setDialogOpen } = useDownloads()
   const router = useRouter()
   const { toast } = useToast()
   const [loading, setLoading] = useState(false)
@@ -129,10 +129,12 @@ function ModelDetailPanel({ model }: { model: AIModel }) {
     }
   }
 
-  // Fetch local quantizations when model changes
+  const downloadsKey = downloads.map((d) => `${d.modelId}-${d.status}`).join(",")
+
+  // Fetch local quantizations when model changes or downloads state updates
   useEffect(() => {
     refreshLocalQuants()
-  }, [model.id, model.modelRepoId])
+  }, [model.id, model.modelRepoId, downloadsKey])
 
   const handleDownload = async () => {
     if (!selectedQuantization) {
@@ -164,6 +166,7 @@ function ModelDetailPanel({ model }: { model: AIModel }) {
         speed: 0,
         timeLeft: "Calculating...",
         status: "ongoing",
+        downloadId: downloadId,
       })
       
       // Open the download dialog
@@ -175,77 +178,6 @@ function ModelDetailPanel({ model }: { model: AIModel }) {
         description: `${model.name} (${selectedQuantization}) is now downloading`,
       })
       
-      // Stream progress updates via SSE
-      const cleanup = API.streamDownloadProgress(
-        downloadId,
-        (progress) => {
-          // Update download manager with real progress
-          const formatTime = (seconds: number) => {
-            if (seconds < 60) return `${Math.ceil(seconds)}s`
-            const mins = Math.floor(seconds / 60)
-            const secs = Math.ceil(seconds % 60)
-            return `${mins}:${secs.toString().padStart(2, '0')}`
-          }
-          
-          updateDownload(displayId, {
-            progress: progress.progress,
-            downloaded: progress.downloaded,
-            total: progress.total,
-            speed: progress.speed,
-            timeLeft: formatTime(progress.eta),
-            status: progress.status === "completed" ? "completed" : "ongoing",
-          })
-        },
-        () => {
-          // Download completed — refresh local quants immediately so LOCAL badge appears
-          updateDownload(displayId, {
-            status: "completed",
-            progress: 100,
-            timeLeft: "0s",
-          })
-          toast({
-            title: "Download Complete",
-            description: `${model.name} (${selectedQuantization}) is ready to use`,
-          })
-          refreshLocalQuants()   // ← update LOCAL badge without full refresh
-          refreshModels()
-          setLoading(false)
-        },
-        (error) => {
-          // Download failed or SSE connection error
-          if (error.includes("restart the server")) {
-            // SSE endpoint not available - server needs restart
-            toast({
-              title: "Server Restart Required",
-              description: "Download is running in background. Restart server for real-time progress: pkill -f oprel.server.daemon && oprel start",
-              variant: "default",
-              duration: 10000,
-            })
-            // Keep the download in "ongoing" state since it's actually downloading
-            updateDownload(displayId, {
-              status: "ongoing",
-              timeLeft: "Calculating...",
-            })
-            setLoading(false)
-          } else {
-            // Actual download error
-            updateDownload(displayId, {
-              status: "error",
-              error: error,
-            })
-            toast({
-              title: "Download Failed",
-              description: error,
-              variant: "destructive",
-            })
-            setLoading(false)
-          }
-        }
-      )
-      
-      // Store cleanup function for component unmount
-      return () => cleanup()
-      
     } catch (error) {
       console.error("Failed to start download:", error)
       toast({
@@ -253,6 +185,7 @@ function ModelDetailPanel({ model }: { model: AIModel }) {
         description: error instanceof Error ? error.message : "Unknown error",
         variant: "destructive",
       })
+    } finally {
       setLoading(false)
     }
   }
@@ -275,48 +208,20 @@ function ModelDetailPanel({ model }: { model: AIModel }) {
         speed: 0,
         timeLeft: "Calculating...",
         status: "ongoing",
+        downloadId: response.download_id,
       })
       setDialogOpen(true)
-
-      API.streamDownloadProgress(
-        response.download_id,
-        (progress) => {
-          const formatTime = (seconds: number) => {
-            if (seconds < 60) return `${Math.ceil(seconds)}s`
-            const mins = Math.floor(seconds / 60)
-            const secs = Math.ceil(seconds % 60)
-            return `${mins}:${secs.toString().padStart(2, '0')}`
-          }
-          updateDownload(displayId, {
-            progress: progress.progress,
-            downloaded: progress.downloaded,
-            total: progress.total,
-            speed: progress.speed,
-            timeLeft: formatTime(progress.eta),
-            status: progress.status === "completed" ? "completed" : "ongoing",
-          })
-        },
-        () => {
-          updateDownload(displayId, { status: "completed", progress: 100, timeLeft: "0s" })
-          toast({ title: "Download Complete", description: `${model.name} is ready` })
-          refreshModels()
-          setLoading(false)
-        },
-        (streamError) => {
-          updateDownload(displayId, { status: "error", error: streamError })
-          toast({ title: "Download Failed", description: streamError, variant: "destructive" })
-          setLoading(false)
-        }
-      )
     } catch (error) {
       toast({
         title: "Failed to Start Download",
         description: error instanceof Error ? error.message : "Unknown error",
         variant: "destructive",
       })
+    } finally {
       setLoading(false)
     }
   }
+
 
   const handleLoad = async () => {
     setLoading(true)
