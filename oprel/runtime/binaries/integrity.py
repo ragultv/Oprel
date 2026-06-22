@@ -5,7 +5,10 @@ This module provides the foundation for future checksum verification of
 downloaded runtime binaries.  It defines:
 
 - ``BinaryIntegrityEntry`` – a typed description of the expected integrity
-  metadata for a single (backend, version, platform, accelerator) tuple.
+  metadata for a single (backend, version, platform, accelerator, artifact)
+  tuple.  The ``artifact`` field is optional and defaults to ``None`` for the
+  main binary archive; ``"dll"`` can be used to represent the separate
+  Windows CUDA runtime library archive.
 - ``BINARY_INTEGRITY_MANIFEST`` – a placeholder mapping that is intentionally
   empty today.  Future PRs will populate it with real digests.
 - ``get_integrity_entry()`` – a lookup helper that returns ``None`` when no
@@ -15,8 +18,7 @@ downloaded runtime binaries.  It defines:
 - ``verify_sha256()`` – compares a file's digest to an expected value and
   raises ``IntegrityMismatchError`` on mismatch.
 
-None of these helpers are wired into the installer or downloader yet.
-They perform no network access and do not modify runtime behavior.
+These helpers perform no network access and do not modify runtime behavior.
 """
 
 from __future__ import annotations
@@ -24,7 +26,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 from oprel.core.exceptions import OprelError
 
@@ -69,12 +71,18 @@ class BinaryIntegrityEntry:
     ``docs/external/binary_provenance.md`` §5.  All fields except ``backend``,
     ``version``, and ``platform`` are optional so that entries can be added
     incrementally.
+
+    The optional ``artifact`` field distinguishes archives for the same
+    platform/accelerator combination.  ``None`` (the default) represents the
+    main binary archive; ``"dll"`` represents the separate Windows CUDA
+    runtime library archive downloaded from ``dll_url``.
     """
 
     backend: str
     version: str
     platform: str
     accelerator: Optional[str] = None
+    artifact: Optional[str] = None
     url: Optional[str] = None
     sha256: Optional[str] = None
     size: Optional[int] = None
@@ -88,9 +96,12 @@ class BinaryIntegrityEntry:
 # sourced from upstream release notes.  Keeping it empty ensures that
 # get_integrity_entry() always returns None today, so callers can safely
 # skip verification without changing runtime behavior.
-BINARY_INTEGRITY_MANIFEST: dict[
-    tuple[str, str, str, Optional[str]], BinaryIntegrityEntry
-] = {}
+IntegrityManifestKey = Union[
+    tuple[str, str, str, Optional[str]],
+    tuple[str, str, str, Optional[str], Optional[str]],
+]
+
+BINARY_INTEGRITY_MANIFEST: dict[IntegrityManifestKey, BinaryIntegrityEntry] = {}
 
 
 def get_integrity_entry(
@@ -98,14 +109,36 @@ def get_integrity_entry(
     version: str,
     platform: str,
     accelerator: Optional[str] = None,
+    artifact: Optional[str] = None,
 ) -> Optional[BinaryIntegrityEntry]:
-    """Look up an integrity entry for a (backend, version, platform, accelerator) tuple.
+    """Look up an integrity entry for a downloadable artifact.
+
+    The lookup key is ``(backend, version, platform, accelerator)`` for the
+    default/main archive (``artifact`` is ``None``).  When ``artifact`` is
+    provided — for example ``"dll"`` for the Windows CUDA runtime library
+    archive — the key includes the artifact value:
+    ``(backend, version, platform, accelerator, artifact)``.
+
+    Keeping the main archive on the legacy 4-tuple key preserves backward
+    compatibility with existing manifest entries.  DLL archive entries use a
+    5-tuple key so they cannot accidentally reuse the main archive checksum.
 
     Returns ``None`` when no entry exists in the manifest.  This allows
     callers to conditionally verify only when a digest is known.
     """
+    if artifact is not None:
+        return BINARY_INTEGRITY_MANIFEST.get(
+            (backend, version, platform, accelerator, artifact)
+        )
+
+    # Default/main archive: support both the legacy 4-tuple key and an
+    # explicit 5-tuple key with artifact=None.
+    key = (backend, version, platform, accelerator)
+    entry = BINARY_INTEGRITY_MANIFEST.get(key)
+    if entry is not None:
+        return entry
     return BINARY_INTEGRITY_MANIFEST.get(
-        (backend, version, platform, accelerator)
+        (backend, version, platform, accelerator, None)
     )
 
 
