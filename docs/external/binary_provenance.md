@@ -101,7 +101,7 @@ A lightweight, fail-closed verification layer would give operators confidence th
 ### Core principles
 
 1. **Publish a SHA256 manifest alongside the registry.** Each entry in the registry should include the expected SHA256 digest of the downloaded archive (and, optionally, the extracted binary).
-2. **Per-platform, per-version checksums.** Because each platform downloads a different archive, the manifest must be keyed by `(backend, version, platform, accelerator)`.
+2. **Per-platform, per-version, per-artifact checksums.** Because each platform downloads a different archive, the manifest must be keyed by `(backend, version, platform, accelerator)`.  When a platform also downloads a separate artifact — for example, the Windows CUDA runtime library archive referenced by `dll_url` — an optional `artifact` field (e.g. `"dll"`) distinguishes that archive from the main binary archive.
 3. **Fail closed on mismatch.** If the computed digest does not match the manifest, delete the partial download and raise a clear error. Do not fall back to using the file.
 4. **Optional signature verification later.** Once checksums are in place, the manifest itself can be signed (for example, with Sigstore or a project signing key) to protect against manifest tampering.
 5. **Clear error messages.** Users should see exactly which file failed, what digest was expected, and what was received, plus instructions on how to skip downloads if they are managing binaries manually.
@@ -116,6 +116,7 @@ The registry could be extended so that each platform entry includes an integrity
   "version": "b9616",
   "platform": "Linux-x86_64",
   "accelerator": "cpu",
+  "artifact": null,
   "url": "https://github.com/ggml-org/llama.cpp/releases/download/b9616/llama-b9616-bin-ubuntu-x64.tar.gz",
   "sha256": "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
   "size": 12345678
@@ -128,6 +129,7 @@ Fields:
 - `version` — the upstream build or tag.
 - `platform` — the platform key used by the registry, for example `Linux-x86_64`.
 - `accelerator` — `cpu`, `cuda`, `vulkan`, `metal`, or `rocm`.
+- `artifact` — optional artifact qualifier.  `null` (or omitted) represents the main binary archive; `"dll"` represents the separate Windows CUDA runtime library archive.
 - `url` — the HTTPS download URL.
 - `sha256` — the expected SHA256 digest of the archive.
 - `size` — optional byte size for an early sanity check.
@@ -150,13 +152,13 @@ If upstream projects publish per-binary checksums in addition to archive checksu
 
 A lightweight manifest and helper module — `oprel/runtime/binaries/integrity.py` — has been added as a first code-side step toward the model above. It provides:
 
-- A `BinaryIntegrityEntry` dataclass matching the manifest shape described here.
+- A `BinaryIntegrityEntry` dataclass matching the manifest shape described here, including an optional `artifact` field for separate archives such as the Windows CUDA DLL archive.
 - An empty `BINARY_INTEGRITY_MANIFEST` placeholder (no digests populated yet).
-- `get_integrity_entry()` lookup that returns `None` when no entry exists.
+- `get_integrity_entry()` lookup that returns `None` when no entry exists, with backward-compatible 4-tuple keys for the main archive and 5-tuple keys for artifact-qualified archives.
 - `validate_sha256_format()` (case-insensitive), `compute_sha256()`, and `verify_sha256()` helpers.
 - An `IntegrityMismatchError` exception for clear failure reporting.
 
-None of these are wired into the installer or downloader yet. The manifest is intentionally empty so that runtime behavior is unchanged. Future PRs will populate the manifest with real digests and connect verification to the download pipeline.
+The installer optionally verifies the main binary archive and, on the Windows CUDA path, the separate DLL archive before extraction. The manifest remains intentionally empty, so runtime behavior is unchanged until real digests are populated.
 
 ---
 

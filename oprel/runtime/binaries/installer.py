@@ -139,14 +139,19 @@ def _verify_download_integrity(
     version: str,
     platform: str,
     accelerator: str,
+    artifact: Optional[str] = None,
 ) -> None:
     """Optionally verify a downloaded archive against the integrity manifest.
 
     Looks up an integrity entry for (*backend*, *version*, *platform*,
-    *accelerator*).  If an entry exists and carries a ``sha256`` digest,
-    the archive is verified in place.  When no entry exists or the entry
-    has no ``sha256``, this is a no-op so that current runtime behaviour
+    *accelerator*, *artifact*).  If an entry exists and carries a ``sha256``
+    digest, the archive is verified in place.  When no entry exists or the
+    entry has no ``sha256``, this is a no-op so that current runtime behaviour
     is unchanged while the manifest is empty.
+
+    The optional *artifact* argument distinguishes the main binary archive
+    (``artifact=None``) from the separate Windows CUDA DLL archive
+    (``artifact="dll"``).
 
     Args:
         archive_path: Path to the downloaded archive on disk.
@@ -155,6 +160,8 @@ def _verify_download_integrity(
         platform: Base platform key (e.g. ``"Linux-x86_64"``).
         accelerator: Accelerator / gpu_type from the registry entry
             (e.g. ``"cuda"``, ``"cpu"``, ``"vulkan"``).
+        artifact: Optional artifact qualifier.  ``"dll"`` for the Windows
+            CUDA runtime library archive; ``None`` for the main archive.
 
     Raises:
         IntegrityMismatchError: when the computed digest does not match
@@ -162,12 +169,14 @@ def _verify_download_integrity(
             wraps this in ``BinaryNotFoundError`` with the original error
             preserved as ``__cause__``.
     """
-    entry = get_integrity_entry(backend, version, platform, accelerator)
+    entry = get_integrity_entry(backend, version, platform, accelerator, artifact)
     if entry is None or not entry.sha256:
         return
+    label = f"{platform}/{accelerator}"
+    if artifact:
+        label += f" ({artifact})"
     logger.debug(
-        f"Verifying archive checksum for {backend} {version} "
-        f"({platform}/{accelerator})"
+        f"Verifying archive checksum for {backend} {version} ({label})"
     )
     verify_sha256(archive_path, entry.sha256)
 
@@ -338,6 +347,17 @@ def ensure_binary(
                 tmp_dll_path = Path(tmp_dll.name)
             
             _safe_download(dll_url, tmp_dll_path, config)
+
+            # Optionally verify the separate DLL archive checksum before extraction.
+            _verify_download_integrity(
+                tmp_dll_path,
+                backend,
+                resolved_version,
+                base_platform_key,
+                gpu_type,
+                artifact="dll",
+            )
+
             # DLL zip usually has libs in specific folder, extract flat
             _extract_zip(tmp_dll_path, actual_binary_dir, "non-existent-file-to-force-extract-all")
             

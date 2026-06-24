@@ -22,9 +22,11 @@ from oprel.runtime.binaries.installer import _verify_download_integrity
 from oprel.runtime.binaries.registry import resolve_version
 
 
-def _make_archive(tmp_path: Path, content: bytes = b"fake archive") -> Path:
+def _make_archive(
+    tmp_path: Path, content: bytes = b"fake archive", name: str = "archive.tar.gz"
+) -> Path:
     """Create a small fake archive file and return its path."""
-    p = tmp_path / "archive.tar.gz"
+    p = tmp_path / name
     p.write_bytes(content)
     return p
 
@@ -274,3 +276,301 @@ class TestVerifyDownloadIntegrityWithResolvedVersion:
         _verify_download_integrity(
             archive, "llama.cpp", "latest", "Linux-x86_64", "cpu"
         )
+
+
+# ---------------------------------------------------------------------------
+# DLL archive verification
+# ---------------------------------------------------------------------------
+
+
+class TestVerifyDllDownloadIntegrity:
+    """Tests for the optional SHA256 verification of the separate DLL archive.
+
+    The Windows CUDA path downloads a second archive from ``dll_url``.  These
+    tests exercise the helper-level verification only: no network, no real
+    downloads, no extraction.
+    """
+
+    def test_dll_no_manifest_entry_is_noop(self, tmp_path, monkeypatch):
+        """Empty manifest -> DLL verification is skipped."""
+        monkeypatch.setattr(
+            "oprel.runtime.binaries.integrity.BINARY_INTEGRITY_MANIFEST",
+            {},
+        )
+        archive = _make_archive(tmp_path)
+        _verify_download_integrity(
+            archive,
+            "llama.cpp",
+            "b9616",
+            "Windows-AMD64",
+            "cuda",
+            artifact="dll",
+        )
+
+    def test_dll_entry_without_sha256_is_noop(self, tmp_path, monkeypatch):
+        """DLL entry exists but sha256 is None -> no verification."""
+        entry = BinaryIntegrityEntry(
+            backend="llama.cpp",
+            version="b9616",
+            platform="Windows-AMD64",
+            accelerator="cuda",
+            artifact="dll",
+        )
+        monkeypatch.setattr(
+            "oprel.runtime.binaries.integrity.BINARY_INTEGRITY_MANIFEST",
+            {("llama.cpp", "b9616", "Windows-AMD64", "cuda", "dll"): entry},
+        )
+        archive = _make_archive(tmp_path)
+        _verify_download_integrity(
+            archive,
+            "llama.cpp",
+            "b9616",
+            "Windows-AMD64",
+            "cuda",
+            artifact="dll",
+        )
+
+    def test_dll_matching_sha256_passes(self, tmp_path, monkeypatch):
+        """DLL entry with correct sha256 -> verifies without error."""
+        content = b"dll archive content"
+        archive = _make_archive(tmp_path, content)
+        digest = hashlib.sha256(content).hexdigest()
+
+        entry = BinaryIntegrityEntry(
+            backend="llama.cpp",
+            version="b9616",
+            platform="Windows-AMD64",
+            accelerator="cuda",
+            artifact="dll",
+            sha256=digest,
+        )
+        monkeypatch.setattr(
+            "oprel.runtime.binaries.integrity.BINARY_INTEGRITY_MANIFEST",
+            {("llama.cpp", "b9616", "Windows-AMD64", "cuda", "dll"): entry},
+        )
+
+        _verify_download_integrity(
+            archive,
+            "llama.cpp",
+            "b9616",
+            "Windows-AMD64",
+            "cuda",
+            artifact="dll",
+        )
+
+    def test_dll_mismatched_sha256_raises(self, tmp_path, monkeypatch):
+        """DLL entry with wrong sha256 -> IntegrityMismatchError."""
+        archive = _make_archive(tmp_path, b"real dll content")
+        wrong_digest = "0" * 64
+
+        entry = BinaryIntegrityEntry(
+            backend="llama.cpp",
+            version="b9616",
+            platform="Windows-AMD64",
+            accelerator="cuda",
+            artifact="dll",
+            sha256=wrong_digest,
+        )
+        monkeypatch.setattr(
+            "oprel.runtime.binaries.integrity.BINARY_INTEGRITY_MANIFEST",
+            {("llama.cpp", "b9616", "Windows-AMD64", "cuda", "dll"): entry},
+        )
+
+        with pytest.raises(IntegrityMismatchError) as exc_info:
+            _verify_download_integrity(
+                archive,
+                "llama.cpp",
+                "b9616",
+                "Windows-AMD64",
+                "cuda",
+                artifact="dll",
+            )
+        assert exc_info.value.expected == wrong_digest
+        assert exc_info.value.actual == hashlib.sha256(b"real dll content").hexdigest()
+
+    def test_dll_mismatch_raises_before_extraction(self, tmp_path, monkeypatch):
+        """On DLL mismatch, the archive file is left intact."""
+        archive = _make_archive(tmp_path, b"corrupt dll archive")
+        entry = BinaryIntegrityEntry(
+            backend="stable-diffusion.cpp",
+            version="master-647-72e512a",
+            platform="Windows-AMD64",
+            accelerator="cuda",
+            artifact="dll",
+            sha256="f" * 64,
+        )
+        monkeypatch.setattr(
+            "oprel.runtime.binaries.integrity.BINARY_INTEGRITY_MANIFEST",
+            {
+                (
+                    "stable-diffusion.cpp",
+                    "master-647-72e512a",
+                    "Windows-AMD64",
+                    "cuda",
+                    "dll",
+                ): entry
+            },
+        )
+
+        with pytest.raises(IntegrityMismatchError):
+            _verify_download_integrity(
+                archive,
+                "stable-diffusion.cpp",
+                "master-647-72e512a",
+                "Windows-AMD64",
+                "cuda",
+                artifact="dll",
+            )
+        # Archive should still exist unchanged — no extraction happened.
+        assert archive.exists()
+        assert archive.read_bytes() == b"corrupt dll archive"
+
+    def test_dll_lookup_does_not_reuse_main_archive_entry(
+        self, tmp_path, monkeypatch
+    ):
+        """artifact='dll' must use the 5-tuple entry, not the 4-tuple main entry."""
+        main_content = b"main archive"
+        dll_content = b"dll archive"
+        main_archive = _make_archive(tmp_path, main_content, name="main.tar.gz")
+        dll_archive = _make_archive(tmp_path, dll_content, name="dll.tar.gz")
+
+        main_digest = hashlib.sha256(main_content).hexdigest()
+        dll_digest = hashlib.sha256(dll_content).hexdigest()
+
+        entries = {
+            ("llama.cpp", "b9616", "Windows-AMD64", "cuda"): BinaryIntegrityEntry(
+                backend="llama.cpp",
+                version="b9616",
+                platform="Windows-AMD64",
+                accelerator="cuda",
+                sha256=main_digest,
+            ),
+            (
+                "llama.cpp",
+                "b9616",
+                "Windows-AMD64",
+                "cuda",
+                "dll",
+            ): BinaryIntegrityEntry(
+                backend="llama.cpp",
+                version="b9616",
+                platform="Windows-AMD64",
+                accelerator="cuda",
+                artifact="dll",
+                sha256=dll_digest,
+            ),
+        }
+        monkeypatch.setattr(
+            "oprel.runtime.binaries.integrity.BINARY_INTEGRITY_MANIFEST",
+            entries,
+        )
+
+        # Main archive uses the 4-tuple entry.
+        _verify_download_integrity(
+            main_archive,
+            "llama.cpp",
+            "b9616",
+            "Windows-AMD64",
+            "cuda",
+        )
+
+        # DLL archive uses the 5-tuple entry with the DLL digest.
+        _verify_download_integrity(
+            dll_archive,
+            "llama.cpp",
+            "b9616",
+            "Windows-AMD64",
+            "cuda",
+            artifact="dll",
+        )
+
+    def test_dll_lookup_misses_when_only_main_entry_exists(
+        self, tmp_path, monkeypatch
+    ):
+        """artifact='dll' must not fall back to the main archive entry."""
+        dll_content = b"dll archive"
+        dll_archive = _make_archive(tmp_path, dll_content)
+
+        # Only a main archive entry exists for this platform/accelerator.
+        main_digest = hashlib.sha256(b"main archive").hexdigest()
+        entries = {
+            ("llama.cpp", "b9616", "Windows-AMD64", "cuda"): BinaryIntegrityEntry(
+                backend="llama.cpp",
+                version="b9616",
+                platform="Windows-AMD64",
+                accelerator="cuda",
+                sha256=main_digest,
+            ),
+        }
+        monkeypatch.setattr(
+            "oprel.runtime.binaries.integrity.BINARY_INTEGRITY_MANIFEST",
+            entries,
+        )
+
+        # No 5-tuple DLL entry exists, so verification is skipped even though
+        # a main archive entry is present.  If artifact='dll' fell back to the
+        # 4-tuple key, this would raise on the DLL content.
+        _verify_download_integrity(
+            dll_archive,
+            "llama.cpp",
+            "b9616",
+            "Windows-AMD64",
+            "cuda",
+            artifact="dll",
+        )
+
+
+class TestEnsureBinaryDllVerification:
+    """Installer-level test that the DLL archive path calls verification."""
+
+    def test_ensure_binary_verifies_dll_archive_before_extraction(
+        self, tmp_path, monkeypatch
+    ):
+        """The Windows CUDA DLL download triggers verification before extract."""
+        from oprel.runtime.binaries import installer as installer_module
+        import zipfile
+
+        binary_dir = tmp_path / "bin"
+        main_zip = tmp_path / "main.zip"
+        dll_zip = tmp_path / "dll.zip"
+
+        # Create minimal real zip archives for local "download".
+        with zipfile.ZipFile(main_zip, "w") as zf:
+            zf.writestr("llama-server.exe", b"fake binary")
+
+        with zipfile.ZipFile(dll_zip, "w") as zf:
+            zf.writestr("cuda_fake.dll", b"fake dll")
+
+        def fake_safe_download(url, dest_path, config=None):
+            if "dll" in url:
+                dest_path.write_bytes(dll_zip.read_bytes())
+            else:
+                dest_path.write_bytes(main_zip.read_bytes())
+
+        monkeypatch.setattr(installer_module, "_safe_download", fake_safe_download)
+
+        verify_calls = []
+
+        def fake_verify(
+            archive_path, backend, version, platform, accelerator, artifact=None
+        ):
+            verify_calls.append((str(archive_path), artifact))
+
+        monkeypatch.setattr(
+            installer_module, "_verify_download_integrity", fake_verify
+        )
+
+        # Force the Windows CUDA code path regardless of the host running the test.
+        monkeypatch.setattr(installer_module.platform, "system", lambda: "Windows")
+        monkeypatch.setattr(installer_module.platform, "machine", lambda: "AMD64")
+        monkeypatch.setattr(installer_module, "detect_gpu", lambda: {"gpu_type": "cuda"})
+        monkeypatch.setattr(installer_module, "_has_vulkan_runtime", lambda: False)
+
+        result = installer_module.ensure_binary(
+            "llama.cpp", "b9616", binary_dir, force_download=True
+        )
+
+        assert len(verify_calls) == 2
+        assert verify_calls[0][1] is None  # main binary archive
+        assert verify_calls[1][1] == "dll"  # separate DLL archive
+        assert result.exists()
