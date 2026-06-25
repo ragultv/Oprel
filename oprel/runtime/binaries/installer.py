@@ -16,7 +16,12 @@ from typing import Optional
 
 from oprel.core.config import Config
 from oprel.core.exceptions import BinaryNotFoundError, UnsupportedPlatformError
-from oprel.runtime.binaries.integrity import get_integrity_entry, verify_sha256
+from oprel.runtime.binaries.integrity import (
+    SizeMismatchError,
+    get_integrity_entry,
+    verify_sha256,
+    verify_size,
+)
 from oprel.runtime.binaries.registry import (
     get_binary_info,
     get_optimal_platform_key,
@@ -144,10 +149,12 @@ def _verify_download_integrity(
     """Optionally verify a downloaded archive against the integrity manifest.
 
     Looks up an integrity entry for (*backend*, *version*, *platform*,
-    *accelerator*, *artifact*).  If an entry exists and carries a ``sha256``
-    digest, the archive is verified in place.  When no entry exists or the
-    entry has no ``sha256``, this is a no-op so that current runtime behaviour
-    is unchanged while the manifest is empty.
+    *accelerator*, *artifact*).  If an entry exists and carries a ``size``
+    value, the archive's byte size is checked first.  If the entry also
+    carries a ``sha256`` digest, the archive is verified in place after the
+    size check.  When no entry exists, or the entry has neither ``size`` nor
+    ``sha256``, this is a no-op so that current runtime behaviour is unchanged
+    while the manifest is empty.
 
     The optional *artifact* argument distinguishes the main binary archive
     (``artifact=None``) from the separate Windows CUDA DLL archive
@@ -164,21 +171,28 @@ def _verify_download_integrity(
             CUDA runtime library archive; ``None`` for the main archive.
 
     Raises:
+        SizeMismatchError: when the archive size does not match the expected
+            value.  The caller's existing exception handling wraps this in
+            ``BinaryNotFoundError`` with the original error preserved as
+            ``__cause__``.
         IntegrityMismatchError: when the computed digest does not match
             the expected value.  The caller's existing exception handling
             wraps this in ``BinaryNotFoundError`` with the original error
             preserved as ``__cause__``.
     """
     entry = get_integrity_entry(backend, version, platform, accelerator, artifact)
-    if entry is None or not entry.sha256:
+    if entry is None:
         return
     label = f"{platform}/{accelerator}"
     if artifact:
         label += f" ({artifact})"
     logger.debug(
-        f"Verifying archive checksum for {backend} {version} ({label})"
+        f"Verifying archive integrity for {backend} {version} ({label})"
     )
-    verify_sha256(archive_path, entry.sha256)
+    if entry.size is not None:
+        verify_size(archive_path, entry.size)
+    if entry.sha256:
+        verify_sha256(archive_path, entry.sha256)
 
 
 def ensure_binary(
