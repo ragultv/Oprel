@@ -16,10 +16,12 @@ from oprel.runtime.binaries.integrity import (
     BinaryIntegrityEntry,
     IntegrityError,
     IntegrityMismatchError,
+    SizeMismatchError,
     compute_sha256,
     get_integrity_entry,
     validate_sha256_format,
     verify_sha256,
+    verify_size,
 )
 
 # SHA256 of an empty byte string — a known valid 64-char hex digest.
@@ -158,6 +160,48 @@ class TestVerifySha256:
         wrong_upper = ("0" * 64).upper()
         with pytest.raises(IntegrityMismatchError):
             verify_sha256(f, wrong_upper)
+
+
+# ---------------------------------------------------------------------------
+# verify_size
+# ---------------------------------------------------------------------------
+
+
+class TestVerifySize:
+    def test_matching_size_returns_true(self, tmp_path):
+        f = tmp_path / "match_size.bin"
+        f.write_bytes(b"exactly ten")
+        assert verify_size(f, 11) is True
+
+    def test_mismatching_size_raises(self, tmp_path):
+        f = tmp_path / "mismatch_size.bin"
+        f.write_bytes(b"hello")
+        with pytest.raises(SizeMismatchError) as exc_info:
+            verify_size(f, 42)
+        assert exc_info.value.path == str(f)
+        assert exc_info.value.expected == 42
+        assert exc_info.value.actual == 5
+        assert "expected 42 bytes, got 5 bytes" in str(exc_info.value)
+
+    def test_mismatch_is_integrity_error(self, tmp_path):
+        """SizeMismatchError must be a subclass of IntegrityError."""
+        f = tmp_path / "subclass_size.bin"
+        f.write_bytes(b"content")
+        with pytest.raises(IntegrityError):
+            verify_size(f, 999)
+
+    def test_missing_file_raises(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            verify_size(tmp_path / "nope.bin", 10)
+
+    def test_directory_raises(self, tmp_path):
+        with pytest.raises(IsADirectoryError):
+            verify_size(tmp_path, 10)
+
+    def test_accepts_string_path(self, tmp_path):
+        f = tmp_path / "str_path_size.bin"
+        f.write_bytes(b"test")
+        assert verify_size(str(f), 4) is True
 
 
 # ---------------------------------------------------------------------------

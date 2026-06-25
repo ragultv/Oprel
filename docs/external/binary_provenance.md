@@ -155,10 +155,10 @@ A lightweight manifest and helper module — `oprel/runtime/binaries/integrity.p
 - A `BinaryIntegrityEntry` dataclass matching the manifest shape described here, including an optional `artifact` field for separate archives such as the Windows CUDA DLL archive.
 - An empty `BINARY_INTEGRITY_MANIFEST` placeholder (no digests populated yet).
 - `get_integrity_entry()` lookup that returns `None` when no entry exists, with backward-compatible 4-tuple keys for the main archive and 5-tuple keys for artifact-qualified archives.
-- `validate_sha256_format()` (case-insensitive), `compute_sha256()`, and `verify_sha256()` helpers.
-- An `IntegrityMismatchError` exception for clear failure reporting.
+- `validate_sha256_format()` (case-insensitive), `compute_sha256()`, `verify_sha256()`, and `verify_size()` helpers.
+- An `IntegrityMismatchError` exception and a `SizeMismatchError` exception for clear failure reporting.
 
-The installer optionally verifies the main binary archive and, on the Windows CUDA path, the separate DLL archive before extraction. The manifest remains intentionally empty, so runtime behavior is unchanged until real digests are populated.
+The installer optionally verifies the main binary archive and, on the Windows CUDA path, the separate DLL archive before extraction. When a manifest entry includes an optional `size`, the file size is checked before SHA256 verification. The manifest remains intentionally empty, so runtime behavior is unchanged until real digests are populated.
 
 ---
 
