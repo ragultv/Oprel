@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import time as time_module
 import uuid
@@ -244,14 +245,10 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
 
     if params.thinking:
         if params.max_tokens < 8192:
-            params = GenerateParams(
-                **{**params.__dict__, "max_tokens": 8192}
-            )
+            params = dataclasses.replace(params, max_tokens=8192)
     else:
         if params.max_tokens > 2048:
-            params = GenerateParams(
-                **{**params.__dict__, "max_tokens": 2048}
-            )
+            params = dataclasses.replace(params, max_tokens=2048)
 
     context_text = ""
     if params.rag:
@@ -295,10 +292,67 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
         except Exception as exc:
             logger.error(f"RAG search failed: {exc}")
 
+    # --- AUTO SKILL MATCHING ---
+    # Always attempt skill matching, but only override the system_prompt when
+    # it is safe to do so (None, empty, or the user's generic global setting).
+    # Explicit functional prompts (title generator, selected skills) are preserved.
+    effective_system_prompt = params.system_prompt
+
+    try:
+        from oprel.server.services.skill_matcher import (
+            match_skill_for_prompt,
+            _is_overridable_system_prompt,
+        )
+
+        if _is_overridable_system_prompt(params.system_prompt):
+            # Get the text portion of the prompt (handles multimodal / list prompts)
+            prompt_text_for_matching = (
+                params.prompt
+                if isinstance(params.prompt, str)
+                else " ".join(
+                    part.get("text", "")
+                    for part in params.prompt
+                    if isinstance(part, dict) and part.get("type") == "text"
+                )
+            )
+
+            matched_skill = match_skill_for_prompt(prompt_text_for_matching)
+
+            if matched_skill:
+                effective_system_prompt = matched_skill.get("system_prompt")
+                logger.info(
+                    f"[SkillMatcher] Auto-matched skill '{matched_skill.get('name')}' "
+                    f"(id={matched_skill.get('id')}) for prompt: "
+                    f"'{prompt_text_for_matching[:80]}...'"
+                )
+
+                # Apply skill's parameter overrides if present.
+                # Use dataclasses.replace() — never mutate a frozen dataclass directly.
+                skill_max_tokens = matched_skill.get("max_tokens")
+                skill_temperature = matched_skill.get("temperature")
+
+                override_kwargs: dict = {}
+                if skill_max_tokens is not None:
+                    override_kwargs["max_tokens"] = int(skill_max_tokens)
+                if skill_temperature is not None:
+                    override_kwargs["temperature"] = float(skill_temperature)
+
+                if override_kwargs:
+                    params = dataclasses.replace(params, **override_kwargs)
+
+    except Exception as e:
+        # Never let skill matching break generation — degrade gracefully.
+        logger.warning(
+            f"[SkillMatcher] Skill matching failed, continuing without skill: {e}"
+        )
+        effective_system_prompt = params.system_prompt
+    # --- END AUTO SKILL MATCHING ---
+
+
     full_prompt = build_chat_prompt(
         resolved_model_id,
         history,
-        params.system_prompt,
+        effective_system_prompt,
         text_prompt,
         thinking=params.thinking,
     )
@@ -460,6 +514,8 @@ async def get_embeddings(params: EmbeddingParams) -> EmbeddingResult:
                     continue
                 raise
         else:
+            # last_exc is always set here (every iteration hit continue and assigned it)
+            assert last_exc is not None
             raise last_exc
 
         res = resp.json()
@@ -504,6 +560,7 @@ async def get_embeddings(params: EmbeddingParams) -> EmbeddingResult:
                     break
                 start += chunk_size - overlap
 
+            chunk_vecs: list[list[float]] = []
             try:
                 chunk_vecs = [await embed_chunk(hc, c) for c in chunks]
                 break

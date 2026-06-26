@@ -187,6 +187,12 @@ def init_db():
     except Exception:
         pass  # column already exists
 
+    try:
+        cursor.execute("ALTER TABLE skills ADD COLUMN keywords TEXT DEFAULT ''")
+        conn.commit()
+    except Exception:
+        pass  # column already exists
+
     # Fix diagrams skill prompt for existing databases to prevent Mermaid parse errors
     cursor.execute("""
         UPDATE skills 
@@ -647,8 +653,8 @@ def upsert_skill(s: dict) -> dict:
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute("""
-        INSERT INTO skills (id, name, description, system_prompt, category, icon, temperature, max_tokens, output_schema, is_premium, enabled)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO skills (id, name, description, system_prompt, category, icon, temperature, max_tokens, output_schema, is_premium, enabled, keywords)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             name = excluded.name,
             description = excluded.description,
@@ -659,11 +665,13 @@ def upsert_skill(s: dict) -> dict:
             max_tokens = excluded.max_tokens,
             output_schema = excluded.output_schema,
             is_premium = excluded.is_premium,
-            enabled = excluded.enabled
+            enabled = excluded.enabled,
+            keywords = excluded.keywords
     """, (
         s["id"], s["name"], s.get("description", ""), s["system_prompt"], s["category"], s["icon"],
         s.get("temperature"), s.get("max_tokens"), s.get("output_schema"),
-        1 if s.get("is_premium") else 0, 1 if s.get("enabled", True) else 0
+        1 if s.get("is_premium") else 0, 1 if s.get("enabled", True) else 0,
+        s.get("keywords", "") or ""
     ))
     conn.commit()
     conn.close()
@@ -677,6 +685,28 @@ def delete_skill(skill_id: str):
     cursor.execute("DELETE FROM skills WHERE id = ?", (skill_id,))
     conn.commit()
     conn.close()
+
+
+def update_skill(skill_id: str, **fields) -> bool:
+    """Update one or more fields of a skill by ID. Returns True if the row was found."""
+    allowed = {
+        "name", "description", "system_prompt", "category", "icon",
+        "temperature", "max_tokens", "output_schema", "keywords",
+        "enabled", "is_premium",
+    }
+    updates = {k: v for k, v in fields.items() if k in allowed}
+    if not updates:
+        return False
+
+    conn = get_db()
+    cursor = conn.cursor()
+    set_clause = ", ".join(f"{k} = ?" for k in updates)
+    values = list(updates.values()) + [skill_id]
+    cursor.execute(f"UPDATE skills SET {set_clause} WHERE id = ?", values)
+    conn.commit()
+    affected = cursor.rowcount > 0
+    conn.close()
+    return affected
 
 
 # ── OCR CRUD ──────────────────────────────────────────────────────────────────
