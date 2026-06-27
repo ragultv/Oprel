@@ -17,6 +17,7 @@ import pytest
 from oprel.runtime.binaries.integrity import (
     BinaryIntegrityEntry,
     IntegrityMismatchError,
+    SizeMismatchError,
 )
 from oprel.runtime.binaries.installer import _verify_download_integrity
 from oprel.runtime.binaries.registry import resolve_version
@@ -200,6 +201,127 @@ class TestVerifyDownloadIntegrityEnforcement:
         _verify_download_integrity(
             archive, "llama.cpp", "b9616", "Windows-AMD64", "cuda"
         )
+
+
+# ---------------------------------------------------------------------------
+# Size validation
+# ---------------------------------------------------------------------------
+
+
+class TestVerifyDownloadIntegritySize:
+    def test_entry_with_matching_size_and_no_sha256_passes(self, tmp_path, monkeypatch):
+        """Entry with matching size but no sha256 -> passes."""
+        content = b"size only archive"
+        archive = _make_archive(tmp_path, content)
+
+        entry = BinaryIntegrityEntry(
+            backend="llama.cpp",
+            version="b9616",
+            platform="Linux-x86_64",
+            accelerator="cpu",
+            size=len(content),
+        )
+        monkeypatch.setattr(
+            "oprel.runtime.binaries.integrity.BINARY_INTEGRITY_MANIFEST",
+            {("llama.cpp", "b9616", "Linux-x86_64", "cpu"): entry},
+        )
+
+        _verify_download_integrity(
+            archive, "llama.cpp", "b9616", "Linux-x86_64", "cpu"
+        )
+
+    def test_entry_with_neither_size_nor_sha256_is_noop(self, tmp_path, monkeypatch):
+        """Entry exists but has no size or sha256 -> no verification."""
+        entry = BinaryIntegrityEntry(
+            backend="llama.cpp",
+            version="b9616",
+            platform="Linux-x86_64",
+            accelerator="cpu",
+        )
+        monkeypatch.setattr(
+            "oprel.runtime.binaries.integrity.BINARY_INTEGRITY_MANIFEST",
+            {("llama.cpp", "b9616", "Linux-x86_64", "cpu"): entry},
+        )
+
+        archive = _make_archive(tmp_path, b"any content")
+        _verify_download_integrity(
+            archive, "llama.cpp", "b9616", "Linux-x86_64", "cpu"
+        )
+
+    def test_entry_with_mismatching_size_raises(self, tmp_path, monkeypatch):
+        """Entry with wrong size -> SizeMismatchError before SHA256 check."""
+        content = b"size mismatch archive"
+        archive = _make_archive(tmp_path, content)
+
+        entry = BinaryIntegrityEntry(
+            backend="llama.cpp",
+            version="b9616",
+            platform="Linux-x86_64",
+            accelerator="cpu",
+            size=len(content) + 1,
+            sha256="0" * 64,
+        )
+        monkeypatch.setattr(
+            "oprel.runtime.binaries.integrity.BINARY_INTEGRITY_MANIFEST",
+            {("llama.cpp", "b9616", "Linux-x86_64", "cpu"): entry},
+        )
+
+        with pytest.raises(SizeMismatchError) as exc_info:
+            _verify_download_integrity(
+                archive, "llama.cpp", "b9616", "Linux-x86_64", "cpu"
+            )
+        assert exc_info.value.path == str(archive)
+        assert exc_info.value.expected == len(content) + 1
+        assert exc_info.value.actual == len(content)
+
+    def test_entry_with_matching_size_and_matching_sha256_passes(self, tmp_path, monkeypatch):
+        """Entry with matching size and matching sha256 -> passes."""
+        content = b"size and sha256 archive"
+        archive = _make_archive(tmp_path, content)
+        digest = hashlib.sha256(content).hexdigest()
+
+        entry = BinaryIntegrityEntry(
+            backend="llama.cpp",
+            version="b9616",
+            platform="Linux-x86_64",
+            accelerator="cpu",
+            size=len(content),
+            sha256=digest,
+        )
+        monkeypatch.setattr(
+            "oprel.runtime.binaries.integrity.BINARY_INTEGRITY_MANIFEST",
+            {("llama.cpp", "b9616", "Linux-x86_64", "cpu"): entry},
+        )
+
+        _verify_download_integrity(
+            archive, "llama.cpp", "b9616", "Linux-x86_64", "cpu"
+        )
+
+    def test_entry_with_matching_size_and_mismatching_sha256_raises(self, tmp_path, monkeypatch):
+        """Size passes but sha256 mismatches -> IntegrityMismatchError."""
+        content = b"size matches sha256 fails"
+        archive = _make_archive(tmp_path, content)
+        wrong_digest = "0" * 64
+
+        entry = BinaryIntegrityEntry(
+            backend="llama.cpp",
+            version="b9616",
+            platform="Linux-x86_64",
+            accelerator="cpu",
+            size=len(content),
+            sha256=wrong_digest,
+        )
+        monkeypatch.setattr(
+            "oprel.runtime.binaries.integrity.BINARY_INTEGRITY_MANIFEST",
+            {("llama.cpp", "b9616", "Linux-x86_64", "cpu"): entry},
+        )
+
+        with pytest.raises(IntegrityMismatchError) as exc_info:
+            _verify_download_integrity(
+                archive, "llama.cpp", "b9616", "Linux-x86_64", "cpu"
+            )
+        assert exc_info.value.expected == wrong_digest
+        assert exc_info.value.actual == hashlib.sha256(content).hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -518,6 +640,66 @@ class TestVerifyDllDownloadIntegrity:
             "cuda",
             artifact="dll",
         )
+
+
+class TestVerifyDllDownloadIntegritySize:
+    def test_dll_matching_size_passes(self, tmp_path, monkeypatch):
+        """DLL entry with matching size and no sha256 -> passes."""
+        content = b"dll size archive"
+        archive = _make_archive(tmp_path, content)
+
+        entry = BinaryIntegrityEntry(
+            backend="llama.cpp",
+            version="b9616",
+            platform="Windows-AMD64",
+            accelerator="cuda",
+            artifact="dll",
+            size=len(content),
+        )
+        monkeypatch.setattr(
+            "oprel.runtime.binaries.integrity.BINARY_INTEGRITY_MANIFEST",
+            {("llama.cpp", "b9616", "Windows-AMD64", "cuda", "dll"): entry},
+        )
+
+        _verify_download_integrity(
+            archive,
+            "llama.cpp",
+            "b9616",
+            "Windows-AMD64",
+            "cuda",
+            artifact="dll",
+        )
+
+    def test_dll_mismatching_size_raises(self, tmp_path, monkeypatch):
+        """DLL entry with wrong size -> SizeMismatchError."""
+        content = b"dll size mismatch archive"
+        archive = _make_archive(tmp_path, content)
+
+        entry = BinaryIntegrityEntry(
+            backend="llama.cpp",
+            version="b9616",
+            platform="Windows-AMD64",
+            accelerator="cuda",
+            artifact="dll",
+            size=len(content) + 10,
+        )
+        monkeypatch.setattr(
+            "oprel.runtime.binaries.integrity.BINARY_INTEGRITY_MANIFEST",
+            {("llama.cpp", "b9616", "Windows-AMD64", "cuda", "dll"): entry},
+        )
+
+        with pytest.raises(SizeMismatchError) as exc_info:
+            _verify_download_integrity(
+                archive,
+                "llama.cpp",
+                "b9616",
+                "Windows-AMD64",
+                "cuda",
+                artifact="dll",
+            )
+        assert exc_info.value.path == str(archive)
+        assert exc_info.value.expected == len(content) + 10
+        assert exc_info.value.actual == len(content)
 
 
 class TestEnsureBinaryDllVerification:

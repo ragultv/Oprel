@@ -17,6 +17,8 @@ downloaded runtime binaries.  It defines:
 - ``compute_sha256()`` – hashes a local file on disk.
 - ``verify_sha256()`` – compares a file's digest to an expected value and
   raises ``IntegrityMismatchError`` on mismatch.
+- ``verify_size()`` – compares a file's byte size to an expected value and
+  raises ``SizeMismatchError`` on mismatch.
 
 These helpers perform no network access and do not modify runtime behavior.
 """
@@ -55,6 +57,25 @@ class IntegrityMismatchError(IntegrityError):
         super().__init__(
             f"SHA256 mismatch for {self.path}: "
             f"expected {expected}, got {actual}"
+        )
+
+
+class SizeMismatchError(IntegrityError):
+    """Raised when a file's byte size does not match the expected value.
+
+    Attributes:
+        path: The file that was checked.
+        expected: The expected size in bytes.
+        actual: The actual size in bytes.
+    """
+
+    def __init__(self, path: str | Path, expected: int, actual: int) -> None:
+        self.path = str(path)
+        self.expected = expected
+        self.actual = actual
+        super().__init__(
+            f"Size mismatch for {self.path}: "
+            f"expected {expected} bytes, got {actual} bytes"
         )
 
 
@@ -215,4 +236,26 @@ def verify_sha256(path: str | Path, expected_sha256: str) -> bool:
     actual = compute_sha256(path)
     if actual != expected:
         raise IntegrityMismatchError(path, expected, actual)
+    return True
+
+
+def verify_size(path: str | Path, expected_size: int) -> bool:
+    """Verify that the byte size of *path* matches *expected_size*.
+
+    Returns ``True`` when the sizes match.
+
+    Raises:
+        SizeMismatchError: when the actual size does not match.
+        FileNotFoundError: when *path* does not exist.
+        IsADirectoryError: when *path* is a directory.
+    """
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"File not found: {p}")
+    if p.is_dir():
+        raise IsADirectoryError(f"Path is a directory, not a file: {p}")
+
+    actual_size = p.stat().st_size
+    if actual_size != expected_size:
+        raise SizeMismatchError(path, expected_size, actual_size)
     return True
