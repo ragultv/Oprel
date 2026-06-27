@@ -99,3 +99,14 @@ class VRAMError(MemoryError):
         super().__init__(message)
         self.vram_required_mb = vram_required_mb
         self.vram_available_mb = vram_available_mb
+
+
+class DownloadPausedException(OprelError):
+    """Raised when a download is paused by the user"""
+    pass
+
+
+class DownloadCancelledException(OprelError):
+    """Raised when a download is cancelled by the user"""
+    pass
+
