@@ -756,3 +756,278 @@ class TestEnsureBinaryDllVerification:
         assert verify_calls[0][1] is None  # main binary archive
         assert verify_calls[1][1] == "dll"  # separate DLL archive
         assert result.exists()
+
+
+# ---------------------------------------------------------------------------
+# Temporary archive cleanup on failure
+# ---------------------------------------------------------------------------
+
+
+class TestEnsureBinaryTempfileCleanup:
+    """Temporary archives must be removed on verification failure.
+
+    ensure_binary() creates temp files with NamedTemporaryFile(delete=False).
+    On failure the exception handler must unlink them before re-raising.
+    """
+
+    def test_main_archive_integrity_failure_cleans_tmp_path(
+        self, tmp_path, monkeypatch
+    ):
+        """When main archive verification fails, the temp main file is removed."""
+        import zipfile
+
+        from oprel.core.exceptions import BinaryNotFoundError
+        from oprel.runtime.binaries import installer as installer_module
+        from oprel.runtime.binaries.integrity import IntegrityMismatchError
+
+        binary_dir = tmp_path / "bin"
+        main_zip = tmp_path / "main.zip"
+
+        with zipfile.ZipFile(main_zip, "w") as zf:
+            zf.writestr("llama-server", b"fake binary")
+
+        def fake_safe_download(url, dest_path, config=None):
+            dest_path.write_bytes(main_zip.read_bytes())
+
+        monkeypatch.setattr(installer_module, "_safe_download", fake_safe_download)
+        monkeypatch.setattr(installer_module.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(installer_module.platform, "machine", lambda: "x86_64")
+        monkeypatch.setattr(installer_module, "detect_gpu", lambda: None)
+        monkeypatch.setattr(installer_module, "_has_vulkan_runtime", lambda: False)
+
+        # Capture the temp path and raise on main verification.
+        captured_paths = {}
+
+        def fake_verify(
+            archive_path, backend, version, platform, accelerator, artifact=None
+        ):
+            captured_paths["main"] = Path(archive_path)
+            if artifact is None:
+                raise IntegrityMismatchError(archive_path, "0" * 64, "1" * 64)
+
+        monkeypatch.setattr(
+            installer_module, "_verify_download_integrity", fake_verify
+        )
+
+        with pytest.raises(BinaryNotFoundError) as exc_info:
+            installer_module.ensure_binary(
+                "llama.cpp", "b9616", binary_dir, force_download=True
+            )
+
+        # Temp main archive should be cleaned up.
+        assert not captured_paths["main"].exists(), (
+            "Main temp file should be cleaned up after integrity failure"
+        )
+        # Cause chain preserved.
+        assert isinstance(exc_info.value.__cause__, IntegrityMismatchError)
+
+    def test_dll_integrity_failure_cleans_tmp_dll_path(
+        self, tmp_path, monkeypatch
+    ):
+        """When DLL verification fails, the temp DLL file is removed."""
+        import zipfile
+
+        from oprel.core.exceptions import BinaryNotFoundError
+        from oprel.runtime.binaries import installer as installer_module
+        from oprel.runtime.binaries.integrity import IntegrityMismatchError
+
+        binary_dir = tmp_path / "bin"
+        main_zip = tmp_path / "main.zip"
+        dll_zip = tmp_path / "dll.zip"
+
+        with zipfile.ZipFile(main_zip, "w") as zf:
+            zf.writestr("llama-server.exe", b"fake binary")
+        with zipfile.ZipFile(dll_zip, "w") as zf:
+            zf.writestr("cuda_fake.dll", b"fake dll")
+
+        fake_info = {
+            "url": "https://fake.local/main.zip",
+            "dll_url": "https://fake.local/dll.zip",
+            "archive_type": "zip",
+            "binary_name": "llama-server.exe",
+            "gpu_type": "cuda",
+        }
+
+        def fake_safe_download(url, dest_path, config=None):
+            if url == fake_info["dll_url"]:
+                dest_path.write_bytes(dll_zip.read_bytes())
+            elif url == fake_info["url"]:
+                dest_path.write_bytes(main_zip.read_bytes())
+            else:
+                raise AssertionError(f"unexpected download URL: {url}")
+
+        monkeypatch.setattr(installer_module, "_safe_download", fake_safe_download)
+        monkeypatch.setattr(installer_module, "get_binary_info", lambda *a, **k: fake_info)
+        monkeypatch.setattr(installer_module, "resolve_version", lambda *a, **k: "b9616")
+        monkeypatch.setattr(installer_module.platform, "system", lambda: "Windows")
+        monkeypatch.setattr(installer_module.platform, "machine", lambda: "AMD64")
+        monkeypatch.setattr(
+            installer_module, "detect_gpu", lambda: {"gpu_type": "cuda"}
+        )
+        monkeypatch.setattr(installer_module, "_has_vulkan_runtime", lambda: False)
+
+        # Capture temp paths and raise on DLL verification.
+        captured_paths = {}
+
+        def fake_verify(
+            archive_path, backend, version, platform, accelerator, artifact=None
+        ):
+            p = Path(archive_path)
+            if artifact == "dll":
+                captured_paths["dll"] = p
+                raise IntegrityMismatchError(archive_path, "0" * 64, "1" * 64)
+            else:
+                captured_paths["main"] = p
+
+        monkeypatch.setattr(
+            installer_module, "_verify_download_integrity", fake_verify
+        )
+
+        with pytest.raises(BinaryNotFoundError) as exc_info:
+            installer_module.ensure_binary(
+                "llama.cpp", "b9616", binary_dir, force_download=True
+            )
+
+        # DLL temp archive should be cleaned up.
+        assert not captured_paths["dll"].exists(), (
+            "DLL temp file should be cleaned up after integrity failure"
+        )
+        # Main temp was already cleaned on the success path before DLL download.
+        assert not captured_paths.get("main", tmp_path).exists()
+        # Cause chain preserved.
+        assert isinstance(exc_info.value.__cause__, IntegrityMismatchError)
+
+    def test_dll_size_mismatch_cleans_tmp_dll_path(
+        self, tmp_path, monkeypatch
+    ):
+        """When DLL size verification fails, the temp DLL file is removed."""
+        import zipfile
+
+        from oprel.core.exceptions import BinaryNotFoundError
+        from oprel.runtime.binaries import installer as installer_module
+        from oprel.runtime.binaries.integrity import SizeMismatchError
+
+        binary_dir = tmp_path / "bin"
+        main_zip = tmp_path / "main.zip"
+        dll_zip = tmp_path / "dll.zip"
+
+        with zipfile.ZipFile(main_zip, "w") as zf:
+            zf.writestr("llama-server.exe", b"fake binary")
+        with zipfile.ZipFile(dll_zip, "w") as zf:
+            zf.writestr("cuda_fake.dll", b"fake dll")
+
+        fake_info = {
+            "url": "https://fake.local/main.zip",
+            "dll_url": "https://fake.local/dll.zip",
+            "archive_type": "zip",
+            "binary_name": "llama-server.exe",
+            "gpu_type": "cuda",
+        }
+
+        def fake_safe_download(url, dest_path, config=None):
+            if url == fake_info["dll_url"]:
+                dest_path.write_bytes(dll_zip.read_bytes())
+            elif url == fake_info["url"]:
+                dest_path.write_bytes(main_zip.read_bytes())
+            else:
+                raise AssertionError(f"unexpected download URL: {url}")
+
+        monkeypatch.setattr(installer_module, "_safe_download", fake_safe_download)
+        monkeypatch.setattr(installer_module, "get_binary_info", lambda *a, **k: fake_info)
+        monkeypatch.setattr(installer_module, "resolve_version", lambda *a, **k: "b9616")
+        monkeypatch.setattr(installer_module.platform, "system", lambda: "Windows")
+        monkeypatch.setattr(installer_module.platform, "machine", lambda: "AMD64")
+        monkeypatch.setattr(
+            installer_module, "detect_gpu", lambda: {"gpu_type": "cuda"}
+        )
+        monkeypatch.setattr(installer_module, "_has_vulkan_runtime", lambda: False)
+
+        captured_paths = {}
+
+        def fake_verify(
+            archive_path, backend, version, platform, accelerator, artifact=None
+        ):
+            p = Path(archive_path)
+            if artifact == "dll":
+                captured_paths["dll"] = p
+                raise SizeMismatchError(archive_path, 999, p.stat().st_size)
+            else:
+                captured_paths["main"] = p
+
+        monkeypatch.setattr(
+            installer_module, "_verify_download_integrity", fake_verify
+        )
+
+        with pytest.raises(BinaryNotFoundError) as exc_info:
+            installer_module.ensure_binary(
+                "llama.cpp", "b9616", binary_dir, force_download=True
+            )
+
+        assert not captured_paths["dll"].exists(), (
+            "DLL temp file should be cleaned up after size mismatch"
+        )
+        assert isinstance(exc_info.value.__cause__, SizeMismatchError)
+
+    def test_no_manifest_entry_cleanup_unchanged(
+        self, tmp_path, monkeypatch
+    ):
+        """With no manifest entry, the normal success path still cleans temp files."""
+        import zipfile
+
+        from oprel.runtime.binaries import installer as installer_module
+
+        binary_dir = tmp_path / "bin"
+        main_zip = tmp_path / "main.zip"
+        dll_zip = tmp_path / "dll.zip"
+
+        with zipfile.ZipFile(main_zip, "w") as zf:
+            zf.writestr("llama-server.exe", b"fake binary")
+        with zipfile.ZipFile(dll_zip, "w") as zf:
+            zf.writestr("cuda_fake.dll", b"fake dll")
+
+        fake_info = {
+            "url": "https://fake.local/main.zip",
+            "dll_url": "https://fake.local/dll.zip",
+            "archive_type": "zip",
+            "binary_name": "llama-server.exe",
+            "gpu_type": "cuda",
+        }
+
+        def fake_safe_download(url, dest_path, config=None):
+            if url == fake_info["dll_url"]:
+                dest_path.write_bytes(dll_zip.read_bytes())
+            elif url == fake_info["url"]:
+                dest_path.write_bytes(main_zip.read_bytes())
+            else:
+                raise AssertionError(f"unexpected download URL: {url}")
+
+        monkeypatch.setattr(installer_module, "_safe_download", fake_safe_download)
+        monkeypatch.setattr(installer_module, "get_binary_info", lambda *a, **k: fake_info)
+        monkeypatch.setattr(installer_module, "resolve_version", lambda *a, **k: "b9616")
+        monkeypatch.setattr(installer_module.platform, "system", lambda: "Windows")
+        monkeypatch.setattr(installer_module.platform, "machine", lambda: "AMD64")
+        monkeypatch.setattr(
+            installer_module, "detect_gpu", lambda: {"gpu_type": "cuda"}
+        )
+        monkeypatch.setattr(installer_module, "_has_vulkan_runtime", lambda: False)
+
+        # Track all temp paths passed to verify.
+        seen_paths = []
+
+        def fake_verify(
+            archive_path, backend, version, platform, accelerator, artifact=None
+        ):
+            seen_paths.append(Path(archive_path))
+
+        monkeypatch.setattr(
+            installer_module, "_verify_download_integrity", fake_verify
+        )
+
+        result = installer_module.ensure_binary(
+            "llama.cpp", "b9616", binary_dir, force_download=True
+        )
+
+        # Both temp archives should be cleaned up on success.
+        for p in seen_paths:
+            assert not p.exists(), f"Temp file {p} should be cleaned up on success"
+        assert result.exists()
