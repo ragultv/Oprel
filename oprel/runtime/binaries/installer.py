@@ -403,7 +403,11 @@ def ensure_binary(
         return oprel_binary_path  # Return the oprel-branded binary instead
 
     except Exception as e:
-        # Clean up on failure
+        # Clean up temporary archives on failure.  Both tmp_path (main
+        # archive) and tmp_dll_path (Windows CUDA DLL archive) are created
+        # with NamedTemporaryFile(delete=False), so we must unlink manually.
+        if "tmp_dll_path" in locals() and tmp_dll_path.exists():
+            tmp_dll_path.unlink()
         if "tmp_path" in locals() and tmp_path.exists():
             tmp_path.unlink()
         raise BinaryNotFoundError(f"Failed to download/extract binary: {e}") from e
