@@ -153,22 +153,24 @@ If upstream projects publish per-binary checksums in addition to archive checksu
 A lightweight manifest and helper module — `oprel/runtime/binaries/integrity.py` — has been added as a first code-side step toward the model above. It provides:
 
 - A `BinaryIntegrityEntry` dataclass matching the manifest shape described here, including an optional `artifact` field for separate archives such as the Windows CUDA DLL archive.
-- An empty `BINARY_INTEGRITY_MANIFEST` placeholder (no digests populated yet).
+- A `BINARY_INTEGRITY_MANIFEST` that currently contains one verified entry for the llama.cpp `b9616` Linux-x86_64 CPU main archive.
 - `get_integrity_entry()` lookup that returns `None` when no entry exists, with backward-compatible 4-tuple keys for the main archive and 5-tuple keys for artifact-qualified archives.
 - `validate_sha256_format()` (case-insensitive), `compute_sha256()`, `verify_sha256()`, and `verify_size()` helpers.
 - An `IntegrityMismatchError` exception and a `SizeMismatchError` exception for clear failure reporting.
 
-The installer optionally verifies the main binary archive and, on the Windows CUDA path, the separate DLL archive before extraction. When a manifest entry includes an optional `size`, the file size is checked before SHA256 verification. The manifest remains intentionally empty, so runtime behavior is unchanged until real digests are populated.
+The installer optionally verifies the main binary archive and, on the Windows CUDA path, the separate DLL archive before extraction. When a manifest entry includes an optional `size`, the file size is checked before SHA256 verification. Only the llama.cpp `b9616` Linux-x86_64 CPU entry is populated, so verification remains a no-op for all other archives until additional entries are added.
+
+The first entry is based on the GitHub release asset metadata for `llama-b9616-bin-ubuntu-x64.tar.gz` plus an independently computed local SHA256 that matched that metadata. No separate upstream checksum file was used.
 
 ---
 
 ## 6. Troubleshooting binary integrity verification
 
-Oprel can verify downloaded runtime binaries against an integrity manifest before extraction. The manifest is currently a placeholder, so the verification logic is present but enforcement is not active yet. This section explains how the behavior works once entries are populated.
+Oprel can verify downloaded runtime binaries against an integrity manifest before extraction. The manifest now contains one verified entry, so enforcement is active only for that archive. This section explains how the behavior works for populated and unpopulated entries.
 
-### Why the manifest is currently empty
+### What is currently in the manifest
 
-`BINARY_INTEGRITY_MANIFEST` in `oprel/runtime/binaries/integrity.py` is intentionally empty. Real SHA256 digests for upstream release archives have not been populated yet, so verification is skipped for every download. Keeping the manifest empty preserves current runtime behavior while the verification helpers and installer hooks are added.
+`BINARY_INTEGRITY_MANIFEST` in `oprel/runtime/binaries/integrity.py` currently contains one entry: the llama.cpp `b9616` Linux-x86_64 CPU main archive. That entry was verified against the GitHub release asset metadata digest and independently recomputed with `sha256sum` and Python `hashlib`. All other backend/version/platform/accelerator combinations remain unpopulated, so verification is skipped for those downloads and runtime behavior is unchanged for them.
 
 ### No manifest entry found
 
@@ -200,17 +202,17 @@ Downloaded archives are written to temporary files before extraction. If size or
 
 ### What future PRs may add
 
-- Real manifest entries populated with SHA256 digests (and optionally sizes) sourced from upstream release pages or checksum files.
+- Additional manifest entries for the remaining backend/version/platform/accelerator combinations, populated with SHA256 digests (and optionally sizes) sourced from upstream release asset metadata and independently verified locally.
 - Source/provenance verification, such as Sigstore signatures or signed manifests.
 - Broader platform coverage beyond the currently supported platform/accelerator combinations.
 
-Until those entries are added, the verification layer is dormant and Oprel continues to rely on HTTPS, SSL verification, and upstream release-page integrity as described in section 4.
+Enforcement is currently active only for the llama.cpp `b9616` Linux-x86_64 CPU archive. All other archives remain dormant until their entries are added; for those, Oprel continues to rely on HTTPS, SSL verification, and upstream release-page integrity as described in section 4.
 
 ---
 
 ## 7. Safe Operational Guidance for Users
 
-Until real manifest entries are populated and enforcement becomes active, you can use the following practices to reduce supply-chain risk.
+Enforcement is active for the llama.cpp `b9616` Linux-x86_64 CPU archive. For all other archives, verification remains a no-op, so you can use the following practices to reduce supply-chain risk until those entries are added.
 
 ### Skip automatic downloads in CI and controlled environments
 
@@ -268,4 +270,4 @@ The downloaded binaries are executed as separate processes. Run Oprel under a de
 
 ## 9. Summary
 
-Oprel downloads official upstream release binaries for llama.cpp and stable-diffusion.cpp so users do not have to compile them. Today the trust model relies on HTTPS, SSL certificate verification, and the integrity of the upstream GitHub release pages. Automated checksum and size verification hooks now exist, but remain dormant while the manifest is empty; signature verification is still future work. Adding real digests to the per-platform, per-version manifest and failing closed on mismatch would activate enforcement and improve supply-chain transparency and operator confidence.
+Oprel downloads official upstream release binaries for llama.cpp and stable-diffusion.cpp so users do not have to compile them. Today the trust model relies on HTTPS, SSL certificate verification, and the integrity of the upstream GitHub release pages. Automated checksum and size verification hooks are now in place and enforced for the single verified llama.cpp `b9616` Linux-x86_64 CPU archive; all other archives remain dormant until their entries are added. Signature verification is still future work. Adding real digests to the per-platform, per-version manifest and failing closed on mismatch would extend enforcement to the remaining archives and improve supply-chain transparency and operator confidence.

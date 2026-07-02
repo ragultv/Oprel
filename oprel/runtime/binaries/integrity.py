@@ -9,8 +9,9 @@ downloaded runtime binaries.  It defines:
   tuple.  The ``artifact`` field is optional and defaults to ``None`` for the
   main binary archive; ``"dll"`` can be used to represent the separate
   Windows CUDA runtime library archive.
-- ``BINARY_INTEGRITY_MANIFEST`` – a placeholder mapping that is intentionally
-  empty today.  Future PRs will populate it with real digests.
+- ``BINARY_INTEGRITY_MANIFEST`` – a mapping of verified integrity entries.
+  It currently contains one verified entry for the llama.cpp b9616 Linux
+  x86_64 CPU main archive; additional entries will be added in future PRs.
 - ``get_integrity_entry()`` – a lookup helper that returns ``None`` when no
   entry exists, so callers can gracefully skip verification.
 - ``validate_sha256_format()`` – a pure-string check (64 hex chars, case-insensitive).
@@ -113,16 +114,27 @@ class BinaryIntegrityEntry:
 # Manifest placeholder
 # ---------------------------------------------------------------------------
 
-# Intentionally empty.  Future PRs will populate this with real digests
-# sourced from upstream release notes.  Keeping it empty ensures that
-# get_integrity_entry() always returns None today, so callers can safely
-# skip verification without changing runtime behavior.
+# First verified entry: llama.cpp b9616 Linux-x86_64 CPU main archive.
+# The digest was verified against the GitHub release asset metadata digest
+# and independently recomputed with sha256sum and Python hashlib.  Additional
+# entries will be added in future PRs.
 IntegrityManifestKey = Union[
     tuple[str, str, str, Optional[str]],
     tuple[str, str, str, Optional[str], Optional[str]],
 ]
 
-BINARY_INTEGRITY_MANIFEST: dict[IntegrityManifestKey, BinaryIntegrityEntry] = {}
+BINARY_INTEGRITY_MANIFEST: dict[IntegrityManifestKey, BinaryIntegrityEntry] = {
+    ("llama.cpp", "b9616", "Linux-x86_64", "cpu"): BinaryIntegrityEntry(
+        backend="llama.cpp",
+        version="b9616",
+        platform="Linux-x86_64",
+        accelerator="cpu",
+        artifact=None,
+        url="https://github.com/ggml-org/llama.cpp/releases/download/b9616/llama-b9616-bin-ubuntu-x64.tar.gz",
+        sha256="06a9651dafa495a3d3a83afc88b421d6e37fc433873745f8a991c4f5839c5a6c",
+        size=15493795,
+    ),
+}
 
 
 def get_integrity_entry(

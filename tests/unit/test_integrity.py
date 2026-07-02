@@ -2,8 +2,8 @@
 Unit tests for oprel.runtime.binaries.integrity
 
 These tests are local-only: no network, no binary downloads, no Oprel
-installation required.  They exercise the SHA256 helpers and manifest
-placeholder using temporary files created via the ``tmp_path`` fixture.
+installation required.  They exercise the SHA256 helpers and the
+integrity manifest using temporary files created via the ``tmp_path`` fixture.
 """
 
 import hashlib
@@ -209,24 +209,52 @@ class TestVerifySize:
 # ---------------------------------------------------------------------------
 
 
-class TestManifestPlaceholder:
-    def test_manifest_is_empty(self):
-        assert BINARY_INTEGRITY_MANIFEST == {}
+class TestManifestEntry:
+    def test_manifest_contains_at_least_one_entry(self):
+        assert len(BINARY_INTEGRITY_MANIFEST) >= 1
 
-    def test_get_integrity_entry_returns_none_for_missing(self):
+    def test_manifest_contains_llama_cpp_b9616_linux_x86_64_cpu(self):
+        entry = BINARY_INTEGRITY_MANIFEST.get(
+            ("llama.cpp", "b9616", "Linux-x86_64", "cpu")
+        )
+        assert isinstance(entry, BinaryIntegrityEntry)
+        assert entry.artifact is None
+
+    def test_get_integrity_entry_returns_entry(self):
+        result = get_integrity_entry("llama.cpp", "b9616", "Linux-x86_64", "cpu")
+        assert result is not None
+        assert result.backend == "llama.cpp"
+        assert result.version == "b9616"
+        assert result.platform == "Linux-x86_64"
+        assert result.accelerator == "cpu"
+        assert result.artifact is None
+        assert result.url == (
+            "https://github.com/ggml-org/llama.cpp/releases/download/b9616/"
+            "llama-b9616-bin-ubuntu-x64.tar.gz"
+        )
+        assert result.sha256 == (
+            "06a9651dafa495a3d3a83afc88b421d6e37fc433873745f8a991c4f5839c5a6c"
+        )
+        assert result.size == 15493795
+
+    def test_get_integrity_entry_returns_none_for_unknown_platform(self):
+        result = get_integrity_entry("llama.cpp", "b9616", "Darwin-arm64", "cpu")
+        assert result is None
+
+    def test_get_integrity_entry_returns_none_for_unknown_version(self):
+        result = get_integrity_entry("llama.cpp", "b7822", "Linux-x86_64", "cpu")
+        assert result is None
+
+    def test_get_integrity_entry_returns_none_for_unknown_accelerator(self):
+        result = get_integrity_entry(
+            "llama.cpp", "b9616", "Linux-x86_64", "vulkan"
+        )
+        assert result is None
+
+    def test_get_integrity_entry_without_accelerator_returns_none(self):
+        """The main-archive entry is keyed with accelerator='cpu', not None."""
         result = get_integrity_entry("llama.cpp", "b9616", "Linux-x86_64")
         assert result is None
-
-    def test_get_integrity_entry_returns_none_with_accelerator(self):
-        result = get_integrity_entry("llama.cpp", "b9616", "Windows-AMD64", "cuda")
-        assert result is None
-
-    def test_empty_manifest_does_not_affect_runtime(self):
-        """Looking up any plausible key must not raise or block."""
-        for backend in ("llama.cpp", "stable-diffusion.cpp"):
-            for version in ("b9616", "b7822", "latest"):
-                for platform in ("Linux-x86_64", "Windows-AMD64", "Darwin-arm64"):
-                    assert get_integrity_entry(backend, version, platform) is None
 
 
 # ---------------------------------------------------------------------------
