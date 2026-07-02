@@ -5,8 +5,8 @@ These tests exercise ``_verify_download_integrity`` in isolation — no
 network, no real downloads, no archive extraction.  The integrity manifest
 is monkeypatched with synthetic entries as needed.
 
-The manifest is empty by default, so all no-op paths are tested against the
-real (unpatched) manifest as well as against explicitly-empty patches.
+The manifest contains one real entry by default.  No-op paths are tested
+against explicitly-empty patches or against tuples that have no entry.
 """
 
 import hashlib
@@ -67,11 +67,15 @@ class TestVerifyDownloadIntegrityNoOp:
             archive, "llama.cpp", "b9616", "Linux-x86_64", "cpu"
         )
 
-    def test_empty_manifest_default_is_noop(self, tmp_path):
-        """Without any monkeypatching, the real empty manifest -> no-op."""
+    def test_default_manifest_missing_key_is_noop(self, tmp_path):
+        """Without patching, a key with no real entry -> no-op."""
         archive = _make_archive(tmp_path)
         _verify_download_integrity(
-            archive, "llama.cpp", "b9616", "Linux-x86_64", "cpu"
+            archive,
+            "stable-diffusion.cpp",
+            "master-647-72e512a",
+            "Linux-x86_64",
+            "cpu",
         )
 
     def test_wrong_key_is_noop(self, tmp_path, monkeypatch):

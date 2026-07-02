@@ -153,8 +153,8 @@ def _verify_download_integrity(
     value, the archive's byte size is checked first.  If the entry also
     carries a ``sha256`` digest, the archive is verified in place after the
     size check.  When no entry exists, or the entry has neither ``size`` nor
-    ``sha256``, this is a no-op so that current runtime behaviour is unchanged
-    while the manifest is empty.
+    ``sha256``, this is a no-op so that runtime behaviour is unchanged for
+    archives that are not yet listed in the manifest.
 
     The optional *artifact* argument distinguishes the main binary archive
     (``artifact=None``) from the separate Windows CUDA DLL archive
