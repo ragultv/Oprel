@@ -162,9 +162,55 @@ The installer optionally verifies the main binary archive and, on the Windows CU
 
 ---
 
-## 6. Safe Operational Guidance for Users
+## 6. Troubleshooting binary integrity verification
 
-Until automated checksum verification is implemented, you can use the following practices to reduce supply-chain risk.
+Oprel can verify downloaded runtime binaries against an integrity manifest before extraction. The manifest is currently a placeholder, so the verification logic is present but enforcement is not active yet. This section explains how the behavior works once entries are populated.
+
+### Why the manifest is currently empty
+
+`BINARY_INTEGRITY_MANIFEST` in `oprel/runtime/binaries/integrity.py` is intentionally empty. Real SHA256 digests for upstream release archives have not been populated yet, so verification is skipped for every download. Keeping the manifest empty preserves current runtime behavior while the verification helpers and installer hooks are added.
+
+### No manifest entry found
+
+When `get_integrity_entry()` finds no entry for a given backend, version, platform, accelerator, and optional artifact, `_verify_download_integrity()` returns immediately. The archive is extracted as usual. This is the behavior today for all downloads.
+
+### Manifest entry has size only
+
+If an entry has `size` but no `sha256`, the archive's byte size is checked before extraction. A mismatch raises `SizeMismatchError`, which the installer wraps as a download failure. If the size matches, extraction proceeds without a digest check.
+
+### Manifest entry has sha256 only
+
+If an entry has `sha256` but no `size`, the SHA256 digest is computed and compared before extraction. A mismatch raises `IntegrityMismatchError`, which the installer wraps as a download failure.
+
+### Manifest entry has both size and sha256
+
+Size is checked first as a fast sanity check. If the size matches, SHA256 is computed and compared. Both must pass before extraction.
+
+### Size or SHA256 mismatch
+
+Any mismatch is treated as a download failure. The archive is not extracted, and the installer raises a `BinaryNotFoundError` that preserves the original `SizeMismatchError` or `IntegrityMismatchError` as its cause. The error message includes the expected and actual values so operators can compare them.
+
+### Main archive entries vs artifact-qualified entries
+
+Main binary archive entries use the key `(backend, version, platform, accelerator)`. A separate archive, such as the Windows CUDA runtime library archive downloaded from `dll_url`, uses the artifact qualifier `"dll"` and the key `(backend, version, platform, accelerator, "dll")`. This prevents the main archive checksum from being accidentally reused for the DLL archive.
+
+### Temporary archive cleanup on failure
+
+Downloaded archives are written to temporary files before extraction. If size or SHA256 verification fails, or if extraction fails for any other reason, the installer removes the temporary main archive and, on the Windows CUDA path, the temporary DLL archive before raising the wrapped `BinaryNotFoundError`. This avoids leaving partial or mismatched archives on disk.
+
+### What future PRs may add
+
+- Real manifest entries populated with SHA256 digests (and optionally sizes) sourced from upstream release pages or checksum files.
+- Source/provenance verification, such as Sigstore signatures or signed manifests.
+- Broader platform coverage beyond the currently supported platform/accelerator combinations.
+
+Until those entries are added, the verification layer is dormant and Oprel continues to rely on HTTPS, SSL verification, and upstream release-page integrity as described in section 4.
+
+---
+
+## 7. Safe Operational Guidance for Users
+
+Until real manifest entries are populated and enforcement becomes active, you can use the following practices to reduce supply-chain risk.
 
 ### Skip automatic downloads in CI and controlled environments
 
@@ -212,7 +258,7 @@ The downloaded binaries are executed as separate processes. Run Oprel under a de
 
 ---
 
-## 7. Relationship to Other Guides
+## 8. Relationship to Other Guides
 
 - **[Safe Installation & Deployment Guide](install_hardening.md)** — covers `OPREL_SKIP_RUNTIME_DOWNLOAD`, SSL configuration, cache locations, server exposure, and the deployment checklist. Read it together with this guide when hardening an installation.
 - **[Hardware & Deployment Guide](hardware_guide.md)** — explains how Oprel selects the CUDA, Vulkan, Metal, or CPU binary for your platform and how GPU detection influences the download.
@@ -220,6 +266,6 @@ The downloaded binaries are executed as separate processes. Run Oprel under a de
 
 ---
 
-## 8. Summary
+## 9. Summary
 
-Oprel downloads official upstream release binaries for llama.cpp and stable-diffusion.cpp so users do not have to compile them. Today the trust model relies on HTTPS, SSL certificate verification, and the integrity of the upstream GitHub release pages. Automated checksum or signature verification of downloaded archives is not yet implemented. Adding a per-platform, per-version SHA256 manifest and failing closed on mismatch would be a practical next step for improving supply-chain transparency and operator confidence.
+Oprel downloads official upstream release binaries for llama.cpp and stable-diffusion.cpp so users do not have to compile them. Today the trust model relies on HTTPS, SSL certificate verification, and the integrity of the upstream GitHub release pages. Automated checksum and size verification hooks now exist, but remain dormant while the manifest is empty; signature verification is still future work. Adding real digests to the per-platform, per-version manifest and failing closed on mismatch would activate enforcement and improve supply-chain transparency and operator confidence.
