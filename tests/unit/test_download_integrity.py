@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from oprel.core.exceptions import BinaryNotFoundError
 from oprel.runtime.binaries.integrity import (
     BinaryIntegrityEntry,
     IntegrityMismatchError,
@@ -1035,3 +1036,138 @@ class TestEnsureBinaryTempfileCleanup:
         for p in seen_paths:
             assert not p.exists(), f"Temp file {p} should be cleaned up on success"
         assert result.exists()
+
+
+# ---------------------------------------------------------------------------
+# Error context for integrity verification failures
+# ---------------------------------------------------------------------------
+
+
+class TestEnsureBinaryIntegrityErrorContext:
+    """Installer-level tests for the BinaryNotFoundError message shape."""
+
+    def test_size_mismatch_wrapped_with_integrity_message(
+        self, tmp_path, monkeypatch
+    ):
+        """SizeMismatchError is wrapped with a clear integrity-failure message."""
+        import zipfile
+
+        from oprel.runtime.binaries import installer as installer_module
+        from oprel.runtime.binaries.integrity import SizeMismatchError
+
+        binary_dir = tmp_path / "bin"
+        main_zip = tmp_path / "main.zip"
+
+        with zipfile.ZipFile(main_zip, "w") as zf:
+            zf.writestr("llama-server", b"fake binary")
+
+        def fake_safe_download(url, dest_path, config=None):
+            dest_path.write_bytes(main_zip.read_bytes())
+
+        monkeypatch.setattr(installer_module, "_safe_download", fake_safe_download)
+        monkeypatch.setattr(installer_module.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(installer_module.platform, "machine", lambda: "x86_64")
+        monkeypatch.setattr(installer_module, "detect_gpu", lambda: None)
+        monkeypatch.setattr(installer_module, "_has_vulkan_runtime", lambda: False)
+
+        def fake_verify(
+            archive_path, backend, version, platform, accelerator, artifact=None
+        ):
+            raise SizeMismatchError(archive_path, 999, 1)
+
+        monkeypatch.setattr(
+            installer_module, "_verify_download_integrity", fake_verify
+        )
+
+        with pytest.raises(BinaryNotFoundError) as exc_info:
+            installer_module.ensure_binary(
+                "llama.cpp", "b9616", binary_dir, force_download=True
+            )
+
+        message = str(exc_info.value).lower()
+        assert "integrity" in message or "verification failed" in message
+        assert isinstance(exc_info.value.__cause__, SizeMismatchError)
+
+    def test_integrity_mismatch_wrapped_with_integrity_message(
+        self, tmp_path, monkeypatch
+    ):
+        """IntegrityMismatchError is wrapped with a clear integrity-failure message."""
+        import zipfile
+
+        from oprel.runtime.binaries import installer as installer_module
+        from oprel.runtime.binaries.integrity import IntegrityMismatchError
+
+        binary_dir = tmp_path / "bin"
+        main_zip = tmp_path / "main.zip"
+
+        with zipfile.ZipFile(main_zip, "w") as zf:
+            zf.writestr("llama-server", b"fake binary")
+
+        def fake_safe_download(url, dest_path, config=None):
+            dest_path.write_bytes(main_zip.read_bytes())
+
+        monkeypatch.setattr(installer_module, "_safe_download", fake_safe_download)
+        monkeypatch.setattr(installer_module.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(installer_module.platform, "machine", lambda: "x86_64")
+        monkeypatch.setattr(installer_module, "detect_gpu", lambda: None)
+        monkeypatch.setattr(installer_module, "_has_vulkan_runtime", lambda: False)
+
+        def fake_verify(
+            archive_path, backend, version, platform, accelerator, artifact=None
+        ):
+            raise IntegrityMismatchError(archive_path, "0" * 64, "1" * 64)
+
+        monkeypatch.setattr(
+            installer_module, "_verify_download_integrity", fake_verify
+        )
+
+        with pytest.raises(BinaryNotFoundError) as exc_info:
+            installer_module.ensure_binary(
+                "llama.cpp", "b9616", binary_dir, force_download=True
+            )
+
+        message = str(exc_info.value).lower()
+        assert "integrity" in message or "verification failed" in message
+        assert isinstance(exc_info.value.__cause__, IntegrityMismatchError)
+
+    def test_generic_extraction_error_uses_generic_message(
+        self, tmp_path, monkeypatch
+    ):
+        """Non-integrity failures keep the existing generic download/extract wording."""
+        import zipfile
+
+        from oprel.runtime.binaries import installer as installer_module
+
+        binary_dir = tmp_path / "bin"
+        main_zip = tmp_path / "main.zip"
+
+        with zipfile.ZipFile(main_zip, "w") as zf:
+            zf.writestr("llama-server", b"fake binary")
+
+        def fake_safe_download(url, dest_path, config=None):
+            dest_path.write_bytes(main_zip.read_bytes())
+
+        monkeypatch.setattr(installer_module, "_safe_download", fake_safe_download)
+        monkeypatch.setattr(installer_module.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(installer_module.platform, "machine", lambda: "x86_64")
+        monkeypatch.setattr(installer_module, "detect_gpu", lambda: None)
+        monkeypatch.setattr(installer_module, "_has_vulkan_runtime", lambda: False)
+
+        monkeypatch.setattr(
+            installer_module, "_verify_download_integrity", lambda *a, **k: None
+        )
+
+        def fake_extract(*args, **kwargs):
+            raise RuntimeError("mock extraction failure")
+
+        monkeypatch.setattr(installer_module, "_extract_zip", fake_extract)
+        monkeypatch.setattr(installer_module, "_extract_tarball", fake_extract)
+
+        with pytest.raises(BinaryNotFoundError) as exc_info:
+            installer_module.ensure_binary(
+                "llama.cpp", "b9616", binary_dir, force_download=True
+            )
+
+        message = str(exc_info.value)
+        assert "download/extract" in message
+        assert isinstance(exc_info.value.__cause__, RuntimeError)
