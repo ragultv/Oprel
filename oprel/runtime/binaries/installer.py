@@ -17,6 +17,7 @@ from typing import Optional
 from oprel.core.config import Config
 from oprel.core.exceptions import BinaryNotFoundError, UnsupportedPlatformError
 from oprel.runtime.binaries.integrity import (
+    IntegrityError,
     SizeMismatchError,
     get_integrity_entry,
     verify_sha256,
@@ -410,6 +411,11 @@ def ensure_binary(
             tmp_dll_path.unlink()
         if "tmp_path" in locals() and tmp_path.exists():
             tmp_path.unlink()
+        if isinstance(e, IntegrityError):
+            raise BinaryNotFoundError(
+                f"Binary integrity verification failed for {backend} {resolved_version} "
+                f"({base_platform_key}/{gpu_type}): {e}"
+            ) from e
         raise BinaryNotFoundError(f"Failed to download/extract binary: {e}") from e
 
 
