@@ -220,6 +220,13 @@ class TestManifestEntry:
         assert isinstance(entry, BinaryIntegrityEntry)
         assert entry.artifact is None
 
+    def test_manifest_contains_llama_cpp_b9616_linux_x86_64_vulkan(self):
+        entry = BINARY_INTEGRITY_MANIFEST.get(
+            ("llama.cpp", "b9616", "Linux-x86_64", "vulkan")
+        )
+        assert isinstance(entry, BinaryIntegrityEntry)
+        assert entry.artifact is None
+
     def test_get_integrity_entry_returns_entry(self):
         result = get_integrity_entry("llama.cpp", "b9616", "Linux-x86_64", "cpu")
         assert result is not None
@@ -237,6 +244,25 @@ class TestManifestEntry:
         )
         assert result.size == 15493795
 
+    def test_get_integrity_entry_returns_vulkan_entry(self):
+        result = get_integrity_entry(
+            "llama.cpp", "b9616", "Linux-x86_64", "vulkan"
+        )
+        assert result is not None
+        assert result.backend == "llama.cpp"
+        assert result.version == "b9616"
+        assert result.platform == "Linux-x86_64"
+        assert result.accelerator == "vulkan"
+        assert result.artifact is None
+        assert result.url == (
+            "https://github.com/ggml-org/llama.cpp/releases/download/b9616/"
+            "llama-b9616-bin-ubuntu-vulkan-x64.tar.gz"
+        )
+        assert result.sha256 == (
+            "6003f264df830e6de48532837d3dabeeec28ab2c90f700165ead24d47a4fb9ae"
+        )
+        assert result.size == 38352024
+
     def test_get_integrity_entry_returns_none_for_unknown_platform(self):
         result = get_integrity_entry("llama.cpp", "b9616", "Darwin-arm64", "cpu")
         assert result is None
@@ -247,7 +273,7 @@ class TestManifestEntry:
 
     def test_get_integrity_entry_returns_none_for_unknown_accelerator(self):
         result = get_integrity_entry(
-            "llama.cpp", "b9616", "Linux-x86_64", "vulkan"
+            "llama.cpp", "b9616", "Linux-x86_64", "rocm"
         )
         assert result is None
 

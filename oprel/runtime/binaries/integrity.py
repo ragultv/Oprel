@@ -114,10 +114,15 @@ class BinaryIntegrityEntry:
 # Manifest placeholder
 # ---------------------------------------------------------------------------
 
-# First verified entry: llama.cpp b9616 Linux-x86_64 CPU main archive.
-# The digest was verified against the GitHub release asset metadata digest
-# and independently recomputed with sha256sum and Python hashlib.  Additional
-# entries will be added in future PRs.
+# Verified entries:
+# - llama.cpp b9616 Linux-x86_64 CPU main archive.
+#   The digest was verified against the GitHub release asset metadata digest
+#   and independently recomputed with sha256sum and Python hashlib.
+# - llama.cpp b9616 Linux-x86_64 Vulkan main archive.
+#   No separate checksum file was published for this asset. The GitHub
+#   release asset API digest matched SHA256 values independently recomputed
+#   with sha256sum and Python hashlib.
+# Additional entries will be added in future PRs.
 IntegrityManifestKey = Union[
     tuple[str, str, str, Optional[str]],
     tuple[str, str, str, Optional[str], Optional[str]],
@@ -133,6 +138,16 @@ BINARY_INTEGRITY_MANIFEST: dict[IntegrityManifestKey, BinaryIntegrityEntry] = {
         url="https://github.com/ggml-org/llama.cpp/releases/download/b9616/llama-b9616-bin-ubuntu-x64.tar.gz",
         sha256="06a9651dafa495a3d3a83afc88b421d6e37fc433873745f8a991c4f5839c5a6c",
         size=15493795,
+    ),
+    ("llama.cpp", "b9616", "Linux-x86_64", "vulkan"): BinaryIntegrityEntry(
+        backend="llama.cpp",
+        version="b9616",
+        platform="Linux-x86_64",
+        accelerator="vulkan",
+        artifact=None,
+        url="https://github.com/ggml-org/llama.cpp/releases/download/b9616/llama-b9616-bin-ubuntu-vulkan-x64.tar.gz",
+        sha256="6003f264df830e6de48532837d3dabeeec28ab2c90f700165ead24d47a4fb9ae",
+        size=38352024,
     ),
 }
 
