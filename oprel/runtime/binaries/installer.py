@@ -17,6 +17,7 @@ from typing import Optional
 from oprel.core.config import Config
 from oprel.core.exceptions import BinaryNotFoundError, UnsupportedPlatformError
 from oprel.runtime.binaries.integrity import (
+    IntegrityError,
     SizeMismatchError,
     get_integrity_entry,
     verify_sha256,
@@ -153,8 +154,8 @@ def _verify_download_integrity(
     value, the archive's byte size is checked first.  If the entry also
     carries a ``sha256`` digest, the archive is verified in place after the
     size check.  When no entry exists, or the entry has neither ``size`` nor
-    ``sha256``, this is a no-op so that current runtime behaviour is unchanged
-    while the manifest is empty.
+    ``sha256``, this is a no-op so that runtime behaviour is unchanged for
+    archives that are not yet listed in the manifest.
 
     The optional *artifact* argument distinguishes the main binary archive
     (``artifact=None``) from the separate Windows CUDA DLL archive
@@ -410,6 +411,11 @@ def ensure_binary(
             tmp_dll_path.unlink()
         if "tmp_path" in locals() and tmp_path.exists():
             tmp_path.unlink()
+        if isinstance(e, IntegrityError):
+            raise BinaryNotFoundError(
+                f"Binary integrity verification failed for {backend} {resolved_version} "
+                f"({base_platform_key}/{gpu_type}): {e}"
+            ) from e
         raise BinaryNotFoundError(f"Failed to download/extract binary: {e}") from e
 
 

@@ -153,18 +153,119 @@ If upstream projects publish per-binary checksums in addition to archive checksu
 A lightweight manifest and helper module — `oprel/runtime/binaries/integrity.py` — has been added as a first code-side step toward the model above. It provides:
 
 - A `BinaryIntegrityEntry` dataclass matching the manifest shape described here, including an optional `artifact` field for separate archives such as the Windows CUDA DLL archive.
-- An empty `BINARY_INTEGRITY_MANIFEST` placeholder (no digests populated yet).
+- A `BINARY_INTEGRITY_MANIFEST` that currently contains two verified entries for the llama.cpp `b9616` Linux-x86_64 CPU and Vulkan main archives.
 - `get_integrity_entry()` lookup that returns `None` when no entry exists, with backward-compatible 4-tuple keys for the main archive and 5-tuple keys for artifact-qualified archives.
 - `validate_sha256_format()` (case-insensitive), `compute_sha256()`, `verify_sha256()`, and `verify_size()` helpers.
 - An `IntegrityMismatchError` exception and a `SizeMismatchError` exception for clear failure reporting.
 
-The installer optionally verifies the main binary archive and, on the Windows CUDA path, the separate DLL archive before extraction. When a manifest entry includes an optional `size`, the file size is checked before SHA256 verification. The manifest remains intentionally empty, so runtime behavior is unchanged until real digests are populated.
+The installer optionally verifies the main binary archive and, on the Windows CUDA path, the separate DLL archive before extraction. When a manifest entry includes an optional `size`, the file size is checked before SHA256 verification. The llama.cpp `b9616` Linux-x86_64 CPU and Vulkan entries are populated, so verification is active for those archives; all other archives remain no-op until their entries are added.
+
+The CPU entry is based on the GitHub release asset metadata for `llama-b9616-bin-ubuntu-x64.tar.gz` plus an independently computed local SHA256 that matched that metadata. The Vulkan entry is based on the GitHub release asset metadata for `llama-b9616-bin-ubuntu-vulkan-x64.tar.gz`. No separate upstream checksum file was published for that asset; the GitHub release asset API digest matched two independently computed local SHA256 values (`sha256sum` and Python `hashlib`).
 
 ---
 
-## 6. Safe Operational Guidance for Users
+## 6. Troubleshooting binary integrity verification
 
-Until automated checksum verification is implemented, you can use the following practices to reduce supply-chain risk.
+Oprel can verify downloaded runtime binaries against an integrity manifest before extraction. The manifest now contains two verified entries, so enforcement is active for those archives. This section explains how the behavior works for populated and unpopulated entries.
+
+### What is currently in the manifest
+
+`BINARY_INTEGRITY_MANIFEST` in `oprel/runtime/binaries/integrity.py` currently contains two entries: the llama.cpp `b9616` Linux-x86_64 CPU main archive and the llama.cpp `b9616` Linux-x86_64 Vulkan main archive. Both entries were verified against GitHub release asset metadata (asset name, URL, and size) and independently recomputed with `sha256sum` and Python `hashlib`. No separate upstream checksum file was published for the Vulkan asset; the GitHub release asset API digest matched two independently computed local SHA256 values. All other backend/version/platform/accelerator combinations remain unpopulated, so verification is skipped for those downloads and runtime behavior is unchanged for them.
+
+### No manifest entry found
+
+When `get_integrity_entry()` finds no entry for a given backend, version, platform, accelerator, and optional artifact, `_verify_download_integrity()` returns immediately. The archive is extracted as usual. This is the behavior today for all downloads.
+
+### Manifest entry has size only
+
+If an entry has `size` but no `sha256`, the archive's byte size is checked before extraction. A mismatch raises `SizeMismatchError`, which the installer wraps as a download failure. If the size matches, extraction proceeds without a digest check.
+
+### Manifest entry has sha256 only
+
+If an entry has `sha256` but no `size`, the SHA256 digest is computed and compared before extraction. A mismatch raises `IntegrityMismatchError`, which the installer wraps as a download failure.
+
+### Manifest entry has both size and sha256
+
+Size is checked first as a fast sanity check. If the size matches, SHA256 is computed and compared. Both must pass before extraction.
+
+### Size or SHA256 mismatch
+
+Any mismatch is treated as a download failure. The archive is not extracted, and the installer raises a `BinaryNotFoundError` that preserves the original `SizeMismatchError` or `IntegrityMismatchError` as its cause. The error message includes the expected and actual values so operators can compare them.
+
+### Main archive entries vs artifact-qualified entries
+
+Main binary archive entries use the key `(backend, version, platform, accelerator)`. A separate archive, such as the Windows CUDA runtime library archive downloaded from `dll_url`, uses the artifact qualifier `"dll"` and the key `(backend, version, platform, accelerator, "dll")`. This prevents the main archive checksum from being accidentally reused for the DLL archive.
+
+### Temporary archive cleanup on failure
+
+Downloaded archives are written to temporary files before extraction. If size or SHA256 verification fails, or if extraction fails for any other reason, the installer removes the temporary main archive and, on the Windows CUDA path, the temporary DLL archive before raising the wrapped `BinaryNotFoundError`. This avoids leaving partial or mismatched archives on disk.
+
+### What future PRs may add
+
+- Additional manifest entries for the remaining backend/version/platform/accelerator combinations, populated with SHA256 digests (and optionally sizes) sourced from upstream release asset metadata and independently verified locally.
+- Source/provenance verification, such as Sigstore signatures or signed manifests.
+- Broader platform coverage beyond the currently supported platform/accelerator combinations.
+
+Enforcement is currently active for the llama.cpp `b9616` Linux-x86_64 CPU archive and the llama.cpp `b9616` Linux-x86_64 Vulkan archive. All other archives remain dormant until their entries are added; for those, Oprel continues to rely on HTTPS, SSL verification, and upstream release-page integrity as described in section 4.
+
+---
+
+## 7. Manifest Provenance and Signing Roadmap
+
+This section describes the process maintainers should follow when adding new entries to `BINARY_INTEGRITY_MANIFEST` in `oprel/runtime/binaries/integrity.py`. It is a lightweight provenance checklist, not a cryptographic signature scheme.
+
+### Source identity
+
+Each manifest entry must map to a single, exact upstream release asset:
+
+- The `url` must match the Oprel registry URL for that backend, version, platform, and accelerator.
+- Use concrete upstream versions (for example, `b9616`) rather than mutable aliases.
+- If the installer resolves an alias such as `latest` before manifest lookup, document the concrete version the alias resolved to at the time the digest was recorded.
+
+### Evidence required before adding an entry
+
+Collect the following for every asset you add:
+
+- GitHub release asset metadata where available: asset name, URL, size, digest if the API provides one, and `created_at`/`updated_at` if useful.
+- A local byte-size check of the downloaded file.
+- An independent local SHA256 computation. Prefer two independent tools, for example `sha256sum` and Python `hashlib`.
+- An optional archive content check, such as confirming the expected binary name is present.
+- Never execute the downloaded binary during evidence collection.
+
+### Documentation requirements
+
+- If upstream publishes an official checksum file, cite it and use its digest.
+- If no official checksum file exists, state clearly that the digest was locally derived from the referenced release asset.
+- Do not claim upstream published a checksum unless it did.
+
+### Review requirements
+
+- Keep manifest PRs small. Prefer one entry per PR until the process is trusted.
+- Include the collected evidence in the PR body.
+- Ensure tests cover lookup and the unknown-key no-op behavior.
+- Do not claim broad coverage beyond the entries actually added.
+
+### Future signing plan
+
+After the manifest grows, consider signing the manifest or a generated manifest file. Generic options include:
+
+- A project signing key distributed with releases.
+- Sigstore/cosign signatures against a release artifact.
+- A signed release bundle that contains the manifest.
+
+Do not implement signing in a manifest-entry PR, and do not imply that signing currently exists.
+
+### Risk notes
+
+- If upstream replaces a release asset, the recorded size and SHA256 will no longer match and verification will fail closed. This is intended behavior.
+- Concrete versions reduce but do not eliminate asset replacement risk.
+- Updating an entry should follow the same evidence collection and review process as adding it.
+
+---
+
+## 8. Safe Operational Guidance for Users
+
+Enforcement is active for the llama.cpp `b9616` Linux-x86_64 CPU archive and the llama.cpp `b9616` Linux-x86_64 Vulkan archive. For all other archives, verification remains a no-op, so you can use the following practices to reduce supply-chain risk until those entries are added.
 
 ### Skip automatic downloads in CI and controlled environments
 
@@ -212,7 +313,7 @@ The downloaded binaries are executed as separate processes. Run Oprel under a de
 
 ---
 
-## 7. Relationship to Other Guides
+## 9. Relationship to Other Guides
 
 - **[Safe Installation & Deployment Guide](install_hardening.md)** — covers `OPREL_SKIP_RUNTIME_DOWNLOAD`, SSL configuration, cache locations, server exposure, and the deployment checklist. Read it together with this guide when hardening an installation.
 - **[Hardware & Deployment Guide](hardware_guide.md)** — explains how Oprel selects the CUDA, Vulkan, Metal, or CPU binary for your platform and how GPU detection influences the download.
@@ -220,6 +321,6 @@ The downloaded binaries are executed as separate processes. Run Oprel under a de
 
 ---
 
-## 8. Summary
+## 10. Summary
 
-Oprel downloads official upstream release binaries for llama.cpp and stable-diffusion.cpp so users do not have to compile them. Today the trust model relies on HTTPS, SSL certificate verification, and the integrity of the upstream GitHub release pages. Automated checksum or signature verification of downloaded archives is not yet implemented. Adding a per-platform, per-version SHA256 manifest and failing closed on mismatch would be a practical next step for improving supply-chain transparency and operator confidence.
+Oprel downloads official upstream release binaries for llama.cpp and stable-diffusion.cpp so users do not have to compile them. Today the trust model relies on HTTPS, SSL certificate verification, and the integrity of the upstream GitHub release pages. Automated checksum and size verification hooks are now in place and enforced for the two verified llama.cpp `b9616` Linux-x86_64 CPU and Vulkan archives; all other archives remain dormant until their entries are added. Signature verification is still future work. Adding real digests to the per-platform, per-version manifest and failing closed on mismatch would extend enforcement to the remaining archives and improve supply-chain transparency and operator confidence.
