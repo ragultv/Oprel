@@ -2,7 +2,7 @@
 Version information for Oprel SDK
 """
 
-__version__ = "0.6.2"
+__version__ = "0.7.0"
 __author__ = "Oprel Team"
 __email__ = "tragulragul@gmail.com"
 __url__ = ""
