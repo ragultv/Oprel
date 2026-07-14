@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useRef, useState } from "react"
-import { Download, Image as ImageIcon, RefreshCcw, Sparkles, Trash2, Wand2 } from "lucide-react"
+import { ChevronDown, Download, Image as ImageIcon, RefreshCcw, Sparkles, Trash2, Wand2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
@@ -112,6 +112,9 @@ export function ImageGenerationView() {
   const [generationProgress, setGenerationProgress] = useState<{ value: number; message: string } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [gallery, setGallery] = useState<GalleryItem[]>([])
+  const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false)
+  const [isSizeDropdownOpen, setIsSizeDropdownOpen] = useState(false)
+  const [isSamplerDropdownOpen, setIsSamplerDropdownOpen] = useState(false)
   const streamCleanupRef = useRef<(() => void) | null>(null)
   const resumeAttemptedRef = useRef(false)
 
@@ -237,6 +240,8 @@ export function ImageGenerationView() {
             }
             return downloadedModels[0].local_path || downloadedModels[0].repo_id
           })
+        } else {
+          setSelectedModel("")
         }
       })
       .catch((err) => setError(err instanceof Error ? err.message : "Failed to fetch image models"))
@@ -299,8 +304,9 @@ export function ImageGenerationView() {
   }, [])
 
   const selectedModelLabel = (() => {
+    if (imageModels.length === 0) return "No model found"
     const selected = imageModels.find((model) => (model.local_path || model.repo_id) === selectedModel)
-    if (!selected) return selectedModel
+    if (!selected) return "No model found"
     const supportLabel = selected.supported === false ? " · unsupported" : ""
     return `${selected.id}${selected.quantization ? ` · ${selected.quantization}` : ""}${supportLabel} · ${selected.repo_id}`
   })()
@@ -385,9 +391,9 @@ export function ImageGenerationView() {
                 </p>
               </div>
               <div className="grid gap-3 sm:grid-cols-3">
-                <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                <div className="rounded-2xl border border-white/10 bg-black/20 p-4 min-w-0">
                   <div className="text-[10px] font-bold uppercase tracking-[0.24em] text-muted-foreground">Model</div>
-                  <div className="mt-1 text-sm font-semibold text-foreground">{selectedModelLabel || "Select downloaded model"}</div>
+                  <div className="mt-1 text-sm font-semibold text-foreground truncate" title={selectedModelLabel}>{selectedModelLabel || "Select downloaded model"}</div>
                 </div>
                 <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
                   <div className="text-[10px] font-bold uppercase tracking-[0.24em] text-muted-foreground">Canvas</div>
@@ -449,30 +455,74 @@ export function ImageGenerationView() {
 
             <div className="space-y-2">
               <label className="text-[11px] font-bold uppercase tracking-[0.24em] text-muted-foreground">Image Model</label>
-              <select
-                value={selectedModel}
-                onChange={(event) => setSelectedModel(event.target.value)}
-                disabled={modelLoading || imageModels.length === 0}
-                className="h-10 w-full rounded-md border border-input bg-black/20 px-3 text-sm text-foreground outline-none transition-colors focus:border-ring disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                <option value="" disabled>
-                  {modelLoading
-                    ? "Loading downloaded models..."
-                    : imageModels.length > 0
-                      ? "Choose a downloaded GGUF model"
-                      : "No downloaded image models found"}
-                </option>
-                {imageModels.map((model) => {
-                  const value = model.local_path || model.repo_id
-                  const quantLabel = model.quantization ? ` · ${model.quantization}` : ""
-                  const supportLabel = model.supported === false ? " · unsupported" : ""
-                  return (
-                    <option key={value} value={value}>
-                      {model.id}{quantLabel}{supportLabel} · {model.repo_id}
-                    </option>
-                  )
-                })}
-              </select>
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => !modelLoading && setIsModelDropdownOpen((v) => !v)}
+                  disabled={modelLoading}
+                  className="flex items-center justify-between h-10 w-full rounded-md border border-input bg-black/20 px-3 text-sm text-foreground outline-none hover:border-border transition-colors disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <span className="truncate text-left">
+                    {modelLoading
+                      ? "Loading downloaded models..."
+                      : imageModels.length === 0
+                        ? "No downloaded image models found"
+                        : (() => {
+                            const selected = imageModels.find((m) => (m.local_path || m.repo_id) === selectedModel)
+                            return selected
+                              ? `${selected.id}${selected.quantization ? ` · ${selected.quantization}` : ""}`
+                              : "Choose a downloaded GGUF model"
+                          })()}
+                  </span>
+                  <ChevronDown
+                    size={14}
+                    className={cn("text-muted-foreground transition-transform shrink-0 ml-2", isModelDropdownOpen && "rotate-180")}
+                  />
+                </button>
+
+                {isModelDropdownOpen && (
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setIsModelDropdownOpen(false)} />
+                    <div className="absolute left-0 right-0 top-11 bg-[#1e1e1e] border border-border rounded-xl shadow-2xl p-2 z-50 max-h-64 overflow-y-auto animate-fade-in-up">
+                      {imageModels.length === 0 ? (
+                        <div className="px-3 py-4 text-center text-xs text-muted-foreground">
+                          No downloaded image models found. Download a stable-diffusion.cpp model from the Models page.
+                        </div>
+                      ) : (
+                        imageModels.map((model) => {
+                          const value = model.local_path || model.repo_id
+                          const isSelected = value === selectedModel
+                          return (
+                            <button
+                              key={value}
+                              type="button"
+                              onClick={() => {
+                                setSelectedModel(value)
+                                setIsModelDropdownOpen(false)
+                              }}
+                              className={cn(
+                                "w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-left text-xs transition-colors my-0.5",
+                                isSelected
+                                  ? "bg-primary/20 text-foreground font-bold border border-primary/30"
+                                  : "text-muted-foreground hover:text-foreground hover:bg-secondary/60"
+                              )}
+                            >
+                              <div className="min-w-0 flex-1 pr-2">
+                                <div className="font-semibold text-foreground truncate">
+                                  {model.id}
+                                  {model.quantization && <span className="ml-1.5 text-primary font-mono text-[10px]">({model.quantization})</span>}
+                                </div>
+                                <div className="text-[10px] text-muted-foreground truncate mt-0.5">{model.repo_id}</div>
+                              </div>
+                              {isSelected && <span className="w-1.5 h-1.5 rounded-full bg-primary shrink-0" />}
+                            </button>
+                          )
+                        })
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
               {!modelLoading && imageModels.length === 0 && (
                 <p className="text-xs text-muted-foreground">
                   Download a stable-diffusion.cpp image model from the Models page first.
@@ -505,17 +555,48 @@ export function ImageGenerationView() {
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-2">
                 <label className="text-[11px] font-bold uppercase tracking-[0.24em] text-muted-foreground">Canvas Size</label>
-                <select
-                  value={size}
-                  onChange={(event) => setSize(event.target.value)}
-                  className="h-10 w-full rounded-md border border-input bg-black/20 px-3 text-sm text-foreground outline-none transition-colors focus:border-ring"
-                >
-                  {sizePresets.map((preset) => (
-                    <option key={preset} value={preset}>
-                      {preset}
-                    </option>
-                  ))}
-                </select>
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setIsSizeDropdownOpen((v) => !v)}
+                    className="flex items-center justify-between h-10 w-full rounded-md border border-input bg-black/20 px-3 text-sm text-foreground outline-none hover:border-border transition-colors"
+                  >
+                    <span className="truncate">{size}</span>
+                    <ChevronDown
+                      size={14}
+                      className={cn("text-muted-foreground transition-transform shrink-0 ml-2", isSizeDropdownOpen && "rotate-180")}
+                    />
+                  </button>
+                  {isSizeDropdownOpen && (
+                    <>
+                      <div className="fixed inset-0 z-40" onClick={() => setIsSizeDropdownOpen(false)} />
+                      <div className="absolute left-0 right-0 top-11 bg-[#1e1e1e] border border-border rounded-xl shadow-2xl p-1.5 z-50 max-h-56 overflow-y-auto animate-fade-in-up">
+                        {sizePresets.map((preset) => {
+                          const isSelected = preset === size
+                          return (
+                            <button
+                              key={preset}
+                              type="button"
+                              onClick={() => {
+                                setSize(preset)
+                                setIsSizeDropdownOpen(false)
+                              }}
+                              className={cn(
+                                "w-full flex items-center justify-between px-3 py-2 rounded-lg text-left text-xs transition-colors",
+                                isSelected
+                                  ? "bg-primary/20 text-foreground font-bold border border-primary/30"
+                                  : "text-muted-foreground hover:text-foreground hover:bg-secondary/60"
+                              )}
+                            >
+                              <span>{preset}</span>
+                              {isSelected && <span className="w-1.5 h-1.5 rounded-full bg-primary shrink-0" />}
+                            </button>
+                          )
+                        })}
+                      </div>
+                    </>
+                  )}
+                </div>
               </div>
 
               <div className="space-y-2">
@@ -543,17 +624,48 @@ export function ImageGenerationView() {
 
               <div className="space-y-2">
                 <label className="text-[11px] font-bold uppercase tracking-[0.24em] text-muted-foreground">Sampler</label>
-                <select
-                  value={sampler}
-                  onChange={(event) => setSampler(event.target.value)}
-                  className="h-10 w-full rounded-md border border-input bg-black/20 px-3 text-sm text-foreground outline-none transition-colors focus:border-ring"
-                >
-                  {samplerPresets.map((preset) => (
-                    <option key={preset} value={preset}>
-                      {preset}
-                    </option>
-                  ))}
-                </select>
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setIsSamplerDropdownOpen((v) => !v)}
+                    className="flex items-center justify-between h-10 w-full rounded-md border border-input bg-black/20 px-3 text-sm text-foreground outline-none hover:border-border transition-colors"
+                  >
+                    <span className="truncate">{sampler}</span>
+                    <ChevronDown
+                      size={14}
+                      className={cn("text-muted-foreground transition-transform shrink-0 ml-2", isSamplerDropdownOpen && "rotate-180")}
+                    />
+                  </button>
+                  {isSamplerDropdownOpen && (
+                    <>
+                      <div className="fixed inset-0 z-40" onClick={() => setIsSamplerDropdownOpen(false)} />
+                      <div className="absolute left-0 right-0 top-11 bg-[#1e1e1e] border border-border rounded-xl shadow-2xl p-1.5 z-50 max-h-56 overflow-y-auto animate-fade-in-up">
+                        {samplerPresets.map((preset) => {
+                          const isSelected = preset === sampler
+                          return (
+                            <button
+                              key={preset}
+                              type="button"
+                              onClick={() => {
+                                setSampler(preset)
+                                setIsSamplerDropdownOpen(false)
+                              }}
+                              className={cn(
+                                "w-full flex items-center justify-between px-3 py-2 rounded-lg text-left text-xs transition-colors",
+                                isSelected
+                                  ? "bg-primary/20 text-foreground font-bold border border-primary/30"
+                                  : "text-muted-foreground hover:text-foreground hover:bg-secondary/60"
+                              )}
+                            >
+                              <span>{preset}</span>
+                              {isSelected && <span className="w-1.5 h-1.5 rounded-full bg-primary shrink-0" />}
+                            </button>
+                          )
+                        })}
+                      </div>
+                    </>
+                  )}
+                </div>
               </div>
 
               <div className="space-y-2 sm:col-span-2">

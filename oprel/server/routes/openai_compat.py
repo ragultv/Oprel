@@ -355,7 +355,7 @@ async def v1_list_models():
         "text-to-image": ["image", "text-to-image"],
     }
 
-    skip_categories = ["embeddings", "text-to-video", "text-to-image"]
+    skip_categories = ["embeddings", "text-to-video"]
 
     alias_to_repo: dict[str, str] = {}
     repo_to_alias: dict[str, str] = {}
@@ -402,6 +402,7 @@ async def v1_list_models():
                 continue
 
             tags = category_to_tags.get(category, ["text"])
+            backend = "stable-diffusion.cpp" if category == "text-to-image" else "llama.cpp"
 
             for alias, repo_id in alias_dict.items():
                 is_downloaded = alias in downloaded_aliases
@@ -415,6 +416,7 @@ async def v1_list_models():
                         "owned_by": "oprel",
                         "tags": tags,
                         "category": category,
+                        "backend": backend,
                         "loaded": is_loaded,
                         "downloaded": is_downloaded,
                     }
@@ -440,6 +442,7 @@ async def v1_list_models():
 
             tags = category_to_tags.get(cat, ["text"])
             display_name = raw_id.split("/")[-1] if "/" in raw_id else raw_id
+            backend = "stable-diffusion.cpp" if cat == "text-to-image" else "llama.cpp"
 
             models.append(
                 {
@@ -449,6 +452,7 @@ async def v1_list_models():
                     "owned_by": "oprel",
                     "tags": tags,
                     "category": cat or "text-generation",
+                    "backend": backend,
                     "loaded": raw_id in state.models,
                     "downloaded": True,
                     "name": display_name,

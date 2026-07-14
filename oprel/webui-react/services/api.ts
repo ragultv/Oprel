@@ -141,7 +141,7 @@ export const API = {
       name: m.name || m.id,
       size_gb: 0, 
       quantization: "Unknown",
-      backend: "llama.cpp",
+      backend: m.backend || "llama.cpp",
       loaded: !!m.loaded, 
       downloaded: !!m.downloaded,
       status: m.loaded ? 'loaded' : (m.downloaded ? 'available' : 'registry'),

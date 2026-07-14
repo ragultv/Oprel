@@ -3,7 +3,10 @@ HuggingFace Hub integration for model downloads with production-ready reliabilit
 """
 
 import hashlib
+import os
+import socket
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional, Callable
 from huggingface_hub import hf_hub_download, list_repo_files, HfFileSystem
@@ -24,6 +27,34 @@ DEFAULT_TIMEOUT = (30, 300)
 # M1.18: Max retries with exponential backoff
 MAX_RETRIES = 3
 BACKOFF_FACTOR = 1.0  # 1s, 2s, 4s
+
+
+def _enable_fast_transfer() -> None:
+    """
+    Enable Hugging Face fast transfer (hf_transfer/hf_xet) if installed.
+    Accelerates downloads via multi-threaded chunked transfer.
+    """
+    try:
+        import hf_transfer  # noqa: F401
+        os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+        logger.debug("Fast chunked downloader (hf_transfer) enabled via HF_HUB_ENABLE_HF_TRANSFER=1")
+    except ImportError:
+        logger.debug("hf_transfer not installed; using standard HuggingFace Hub downloader")
+
+
+@contextmanager
+def _socket_timeout(timeout_seconds: float = 300.0):
+    """
+    Temporarily set global default socket read timeout so stalled HTTP/TCP connections
+    raise a Timeout error instead of hanging indefinitely ('stuck in between').
+    """
+    old_timeout = socket.getdefaulttimeout()
+    socket.setdefaulttimeout(timeout_seconds)
+    try:
+        yield
+    finally:
+        socket.setdefaulttimeout(old_timeout)
+
 
 
 def _create_robust_session() -> requests.Session:
@@ -453,18 +484,21 @@ def download_model(
                  
             return cached_model
     
+    _enable_fast_transfer()
+    
     # M1.18: Retry loop with exponential backoff
     last_error = None
     for attempt in range(max_retries):
         try:
-            return _download_model_attempt(
-                model_id=model_id,
-                quantization=quantization,
-                cache_dir=cache_dir,
-                force_download=force_download,
-                attempt=attempt + 1,
-            )
-        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+            with _socket_timeout(DEFAULT_TIMEOUT[1]):
+                return _download_model_attempt(
+                    model_id=model_id,
+                    quantization=quantization,
+                    cache_dir=cache_dir,
+                    force_download=force_download,
+                    attempt=attempt + 1,
+                )
+        except (requests.exceptions.RequestException, TimeoutError, ConnectionError, socket.timeout) as e:
             last_error = e
             if attempt < max_retries - 1:
                 wait_time = BACKOFF_FACTOR * (2 ** attempt)
@@ -751,31 +785,72 @@ def download_model_with_progress(
 
             def __init__(self, *args, **kwargs):
                 super().__init__(*args, **kwargs)
+                self._last_cb_time = 0.0
                 # Fire immediately on creation so the UI jumps to the resumed
                 # progress (e.g. 77%) even before the first new chunk arrives.
                 if self.total and self.total > 0:
                     _cb(int(self.n), int(self.total))
+                    self._last_cb_time = time.time()
 
             def update(self, n: int = 1) -> bool | None:  # type: ignore[override]
                 result = super().update(n)
-                # self.n  = cumulative bytes downloaded so far (post-update)
-                # self.total = total file size in bytes
+                # Throttled progress callback to avoid excessive synchronous updates
                 if self.total and self.total > 0:
-                    _cb(int(self.n), int(self.total))
+                    now = time.time()
+                    if now - self._last_cb_time >= 0.25 or self.n >= self.total:
+                        _cb(int(self.n), int(self.total))
+                        self._last_cb_time = now
                 return result
 
         tqdm_class_to_use = _ProgressTqdm
 
     # ------------------------------------------------------------------
-    # 4.  Run the download.
+    # 4.  Run the download with retry and resume support.
     # ------------------------------------------------------------------
-    model_path = _hf_hub_download(
-        repo_id=model_id,
-        filename=filename,
-        cache_dir=str(cache_dir),
-        force_download=force_download,
-        tqdm_class=tqdm_class_to_use,
-    )
+    _enable_fast_transfer()
+
+    last_error = None
+    for attempt in range(MAX_RETRIES):
+        try:
+            with _socket_timeout(DEFAULT_TIMEOUT[1]):
+                model_path = _hf_hub_download(
+                    repo_id=model_id,
+                    filename=filename,
+                    cache_dir=str(cache_dir),
+                    force_download=force_download,
+                    resume_download=True,
+                    tqdm_class=tqdm_class_to_use,
+                )
+            break
+        except (requests.exceptions.RequestException, TimeoutError, ConnectionError, socket.timeout) as e:
+            last_error = e
+            if attempt < MAX_RETRIES - 1:
+                wait_time = BACKOFF_FACTOR * (2 ** attempt)
+                logger.warning(
+                    f"Download attempt {attempt + 1}/{MAX_RETRIES} failed: {e}. "
+                    f"Retrying in {wait_time}s..."
+                )
+                time.sleep(wait_time)
+            else:
+                logger.error(f"All {MAX_RETRIES} download attempts failed for {filename}")
+        except HfHubHTTPError as e:
+            if getattr(e, "response", None) is not None and e.response.status_code in [401, 403, 404]:
+                raise ModelNotFoundError(
+                    f"Model not found or access denied: {model_id}/{filename}"
+                ) from e
+            elif getattr(e, "response", None) is not None and e.response.status_code >= 500 and attempt < MAX_RETRIES - 1:
+                last_error = e
+                wait_time = BACKOFF_FACTOR * (2 ** attempt)
+                logger.warning(
+                    f"Server error {e.response.status_code}. Retrying in {wait_time}s..."
+                )
+                time.sleep(wait_time)
+            else:
+                raise ModelNotFoundError(f"Failed to download model: {e}") from e
+    else:
+        raise ModelNotFoundError(
+            f"Failed to download {model_id}/{filename} after {MAX_RETRIES} attempts: {last_error}"
+        ) from last_error
 
     downloaded_file = Path(model_path)
 
