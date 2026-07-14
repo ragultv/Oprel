@@ -2,15 +2,26 @@
 
 from __future__ import annotations
 
+import socket
 import struct
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+import requests
 from huggingface_hub import hf_hub_download, list_repo_files
+from huggingface_hub.utils import HfHubHTTPError
 
 from oprel.core.config import Config
 from oprel.downloader.aliases import MODEL_ALIASES, resolve_model_id
+from oprel.downloader.hub import (
+    _enable_fast_transfer,
+    _socket_timeout,
+    DEFAULT_TIMEOUT,
+    MAX_RETRIES,
+    BACKOFF_FACTOR,
+)
 from oprel.models.model_types import detect_model_type
 from oprel.utils.logging import get_logger
 
@@ -71,14 +82,45 @@ def _is_local_model_path(model_id: str) -> bool:
 
 
 def _download_file(repo_id: str, filename: str, cache_dir: Path, force_download: bool) -> Path:
-    path = hf_hub_download(
-        repo_id=repo_id,
-        filename=filename,
-        cache_dir=str(cache_dir),
-        resume_download=True,
-        force_download=force_download,
-    )
-    return Path(path)
+    _enable_fast_transfer()
+    last_error = None
+    for attempt in range(MAX_RETRIES):
+        try:
+            with _socket_timeout(DEFAULT_TIMEOUT[1]):
+                path = hf_hub_download(
+                    repo_id=repo_id,
+                    filename=filename,
+                    cache_dir=str(cache_dir),
+                    resume_download=True,
+                    force_download=force_download,
+                )
+            return Path(path)
+        except (requests.exceptions.RequestException, TimeoutError, ConnectionError, socket.timeout) as e:
+            last_error = e
+            if attempt < MAX_RETRIES - 1:
+                wait_time = BACKOFF_FACTOR * (2 ** attempt)
+                logger.warning(
+                    f"Download attempt {attempt + 1}/{MAX_RETRIES} failed for {filename}: {e}. "
+                    f"Retrying in {wait_time}s..."
+                )
+                time.sleep(wait_time)
+            else:
+                logger.error(f"All {MAX_RETRIES} download attempts failed for {filename}")
+        except HfHubHTTPError as e:
+            if getattr(e, "response", None) is not None and e.response.status_code in [401, 403, 404]:
+                raise
+            elif getattr(e, "response", None) is not None and e.response.status_code >= 500 and attempt < MAX_RETRIES - 1:
+                last_error = e
+                wait_time = BACKOFF_FACTOR * (2 ** attempt)
+                logger.warning(
+                    f"Server error {e.response.status_code} for {filename}. Retrying in {wait_time}s..."
+                )
+                time.sleep(wait_time)
+            else:
+                raise
+    raise RuntimeError(
+        f"Failed to download {repo_id}/{filename} after {MAX_RETRIES} attempts: {last_error}"
+    ) from last_error
 
 
 def _read_gguf_metadata_keys(file_path: Path) -> tuple[str, set[str]]:

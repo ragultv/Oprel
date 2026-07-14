@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import json
 import time as time_module
 from datetime import datetime
@@ -101,7 +102,11 @@ async def _handle_chat_completions(request: OpenAIChatRequest, referer: str):
     conversation_history = []
     for msg in request.messages[:-1]:
         if msg.role == "system":
-            system_prompt = msg.content if isinstance(msg.content, str) else ""
+            # Only set system_prompt if there's actual non-empty content.
+            # An empty/whitespace-only system message must not block skill matching.
+            content = msg.content if isinstance(msg.content, str) else ""
+            if content.strip():
+                system_prompt = content
         else:
             conversation_history.append({"role": msg.role, "content": msg.content})
 
@@ -128,7 +133,7 @@ async def _handle_chat_completions(request: OpenAIChatRequest, referer: str):
             for item in prompt
         )
         if has_image and gen_params.max_tokens < 8192:
-            gen_params = GenerateParams(**{**gen_params.__dict__, "max_tokens": 8192})
+            gen_params = dataclasses.replace(gen_params, max_tokens=8192)
 
     conv_id = request.conversation_id
     if is_webui_request:
@@ -156,7 +161,7 @@ async def _handle_chat_completions(request: OpenAIChatRequest, referer: str):
         if not conv_id:
             conv_id = f"ephemeral_{int(time_module.time() * 1000)}"
 
-    gen_params = GenerateParams(**{**gen_params.__dict__, "conversation_id": conv_id})
+    gen_params = dataclasses.replace(gen_params, conversation_id=conv_id)
 
     response = await generate_text(gen_params)
 
@@ -350,7 +355,7 @@ async def v1_list_models():
         "text-to-image": ["image", "text-to-image"],
     }
 
-    skip_categories = ["embeddings", "text-to-video", "text-to-image"]
+    skip_categories = ["embeddings", "text-to-video"]
 
     alias_to_repo: dict[str, str] = {}
     repo_to_alias: dict[str, str] = {}
@@ -397,6 +402,7 @@ async def v1_list_models():
                 continue
 
             tags = category_to_tags.get(category, ["text"])
+            backend = "stable-diffusion.cpp" if category == "text-to-image" else "llama.cpp"
 
             for alias, repo_id in alias_dict.items():
                 is_downloaded = alias in downloaded_aliases
@@ -410,6 +416,7 @@ async def v1_list_models():
                         "owned_by": "oprel",
                         "tags": tags,
                         "category": category,
+                        "backend": backend,
                         "loaded": is_loaded,
                         "downloaded": is_downloaded,
                     }
@@ -435,6 +442,7 @@ async def v1_list_models():
 
             tags = category_to_tags.get(cat, ["text"])
             display_name = raw_id.split("/")[-1] if "/" in raw_id else raw_id
+            backend = "stable-diffusion.cpp" if cat == "text-to-image" else "llama.cpp"
 
             models.append(
                 {
@@ -444,6 +452,7 @@ async def v1_list_models():
                     "owned_by": "oprel",
                     "tags": tags,
                     "category": cat or "text-generation",
+                    "backend": backend,
                     "loaded": raw_id in state.models,
                     "downloaded": True,
                     "name": display_name,

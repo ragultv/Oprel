@@ -16,7 +16,19 @@ from typing import Optional
 
 from oprel.core.config import Config
 from oprel.core.exceptions import BinaryNotFoundError, UnsupportedPlatformError
-from oprel.runtime.binaries.registry import get_binary_info, get_supported_platforms, get_optimal_platform_key
+from oprel.runtime.binaries.integrity import (
+    IntegrityError,
+    SizeMismatchError,
+    get_integrity_entry,
+    verify_sha256,
+    verify_size,
+)
+from oprel.runtime.binaries.registry import (
+    get_binary_info,
+    get_optimal_platform_key,
+    get_supported_platforms,
+    resolve_version,
+)
 from oprel.telemetry.hardware import detect_gpu
 from oprel.utils.logging import get_logger
 
@@ -127,6 +139,63 @@ def _safe_download(url: str, dest_path: Path, config: Optional[Config] = None) -
         raise BinaryNotFoundError(f"Download failed: {e}") from e
 
 
+def _verify_download_integrity(
+    archive_path: Path,
+    backend: str,
+    version: str,
+    platform: str,
+    accelerator: str,
+    artifact: Optional[str] = None,
+) -> None:
+    """Optionally verify a downloaded archive against the integrity manifest.
+
+    Looks up an integrity entry for (*backend*, *version*, *platform*,
+    *accelerator*, *artifact*).  If an entry exists and carries a ``size``
+    value, the archive's byte size is checked first.  If the entry also
+    carries a ``sha256`` digest, the archive is verified in place after the
+    size check.  When no entry exists, or the entry has neither ``size`` nor
+    ``sha256``, this is a no-op so that runtime behaviour is unchanged for
+    archives that are not yet listed in the manifest.
+
+    The optional *artifact* argument distinguishes the main binary archive
+    (``artifact=None``) from the separate Windows CUDA DLL archive
+    (``artifact="dll"``).
+
+    Args:
+        archive_path: Path to the downloaded archive on disk.
+        backend: Backend name (e.g. ``"llama.cpp"``).
+        version: Binary version string (e.g. ``"b9616"``).
+        platform: Base platform key (e.g. ``"Linux-x86_64"``).
+        accelerator: Accelerator / gpu_type from the registry entry
+            (e.g. ``"cuda"``, ``"cpu"``, ``"vulkan"``).
+        artifact: Optional artifact qualifier.  ``"dll"`` for the Windows
+            CUDA runtime library archive; ``None`` for the main archive.
+
+    Raises:
+        SizeMismatchError: when the archive size does not match the expected
+            value.  The caller's existing exception handling wraps this in
+            ``BinaryNotFoundError`` with the original error preserved as
+            ``__cause__``.
+        IntegrityMismatchError: when the computed digest does not match
+            the expected value.  The caller's existing exception handling
+            wraps this in ``BinaryNotFoundError`` with the original error
+            preserved as ``__cause__``.
+    """
+    entry = get_integrity_entry(backend, version, platform, accelerator, artifact)
+    if entry is None:
+        return
+    label = f"{platform}/{accelerator}"
+    if artifact:
+        label += f" ({artifact})"
+    logger.debug(
+        f"Verifying archive integrity for {backend} {version} ({label})"
+    )
+    if entry.size is not None:
+        verify_size(archive_path, entry.size)
+    if entry.sha256:
+        verify_sha256(archive_path, entry.sha256)
+
+
 def ensure_binary(
     backend: str,
     version: str,
@@ -191,6 +260,10 @@ def ensure_binary(
         raise UnsupportedPlatformError(
             f"Platform {platform_key} not supported. Available: {available}"
         )
+
+    # Resolve aliases like "latest" to the concrete upstream version so that
+    # integrity manifest lookups are keyed by the real build (e.g. "b9616").
+    resolved_version = resolve_version(backend, version)
 
     url = binary_info["url"]
     archive_type = binary_info["archive_type"]
@@ -261,6 +334,11 @@ def ensure_binary(
         logger.info(f"Downloading to temp file: {tmp_path}")
         _safe_download(url, tmp_path, config)
 
+        # Optionally verify the archive checksum before extraction.
+        _verify_download_integrity(
+            tmp_path, backend, resolved_version, base_platform_key, gpu_type
+        )
+
         # Extract based on archive type
         if archive_type == "zip":
             _extract_zip(tmp_path, actual_binary_dir, binary_name)
@@ -284,6 +362,17 @@ def ensure_binary(
                 tmp_dll_path = Path(tmp_dll.name)
             
             _safe_download(dll_url, tmp_dll_path, config)
+
+            # Optionally verify the separate DLL archive checksum before extraction.
+            _verify_download_integrity(
+                tmp_dll_path,
+                backend,
+                resolved_version,
+                base_platform_key,
+                gpu_type,
+                artifact="dll",
+            )
+
             # DLL zip usually has libs in specific folder, extract flat
             _extract_zip(tmp_dll_path, actual_binary_dir, "non-existent-file-to-force-extract-all")
             
@@ -315,9 +404,18 @@ def ensure_binary(
         return oprel_binary_path  # Return the oprel-branded binary instead
 
     except Exception as e:
-        # Clean up on failure
+        # Clean up temporary archives on failure.  Both tmp_path (main
+        # archive) and tmp_dll_path (Windows CUDA DLL archive) are created
+        # with NamedTemporaryFile(delete=False), so we must unlink manually.
+        if "tmp_dll_path" in locals() and tmp_dll_path.exists():
+            tmp_dll_path.unlink()
         if "tmp_path" in locals() and tmp_path.exists():
             tmp_path.unlink()
+        if isinstance(e, IntegrityError):
+            raise BinaryNotFoundError(
+                f"Binary integrity verification failed for {backend} {resolved_version} "
+                f"({base_platform_key}/{gpu_type}): {e}"
+            ) from e
         raise BinaryNotFoundError(f"Failed to download/extract binary: {e}") from e
 
 

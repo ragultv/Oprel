@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
+
 import asyncio
 import signal
 import sys
@@ -214,7 +217,7 @@ def run_server(host: str = "127.0.0.1", port: int = 11435):
         print(banner)
     except UnicodeEncodeError:
         print(f"{coral}{bold}   OPREL DAEMON{reset}\n")
-    print(f" {Colors.GRAY}Oprel Daemon v0.6.2{Colors.RESET}\n")
+    print(f" {Colors.GRAY}Oprel Daemon v0.7.0{Colors.RESET}\n")
     print(f"  Listening on: {Colors.CYAN}http://{host}:{port}{Colors.RESET}")
     print(f"  Press {Colors.YELLOW}Ctrl+C{Colors.RESET} to stop\n")
     uvicorn.run(app, host=host, port=port, log_level="warning", access_log=False)

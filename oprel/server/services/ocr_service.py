@@ -11,6 +11,9 @@ Responsibilities:
 
 from __future__ import annotations
 
+import os
+os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
+
 import base64
 import importlib
 import importlib.util
@@ -229,6 +232,7 @@ def _get_engine():
             return _ocr_engine
         if not is_ocr_ready():
             raise RuntimeError("OCR models not ready. Run setup first.")
+        os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
         from paddleocr import PaddleOCR  # type: ignore
         use_gpu = detect_gpu()
         logger.info(f"Initializing PaddleOCR engine (gpu={use_gpu})")

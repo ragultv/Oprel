@@ -371,20 +371,6 @@ export function KnowledgeView() {
               )}
             </div>
           </div>
-
-          {/* Local Security Tip */}
-          <div className="p-6 rounded-2xl border border-border bg-secondary/15 flex gap-5 items-start shadow-sm">
-            <div className="p-3 rounded-xl bg-primary/10 shrink-0 border border-primary/20">
-              <Zap className="text-primary" size={18} />
-            </div>
-            <div>
-              <h3 className="text-xs font-bold text-foreground mb-1 uppercase tracking-wider">Local Neural Privacy</h3>
-              <p className="text-[11px] text-muted-foreground leading-relaxed font-medium">
-                Your knowledge chunks and vectors are indexed and stored **locally** on your device. Oprel never uploads your private documents to external clouds for indexing. 
-              </p>
-            </div>
-          </div>
-
         </div>
       </div>
     </div>

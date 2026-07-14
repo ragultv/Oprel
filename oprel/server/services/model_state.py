@@ -172,9 +172,9 @@ def scan_cached_models() -> list[ModelInfoData]:
         model_id_lower = model_id.lower()
         is_unwanted = any(
             kw in model_id_lower
-            for kw in ["embed", "embedding", "nomic-embed", "bge-m3", "flux", "stable-diffusion", "sdxl", "pixart"]
+            for kw in ["embed", "embedding", "nomic-embed", "bge-m3"]
         )
-        if is_unwanted or cat in ["embeddings", "text-to-image", "text-to-video"]:
+        if is_unwanted or cat in ["embeddings", "text-to-video"]:
             continue
 
         quant = config.get("quantization") or "Unknown"
@@ -230,10 +230,9 @@ def scan_cached_models() -> list[ModelInfoData]:
                 kw in repo_id_lower
                 for kw in [
                     "embed", "embedding", "nomic-embed", "bge-m3",
-                    "flux", "stable-diffusion", "sdxl", "pixart",
                 ]
             )
-            if is_unwanted or cat in ["embeddings", "text-to-image", "text-to-video"]:
+            if is_unwanted or cat in ["embeddings", "text-to-video"]:
                 continue
 
             file_key = (repo_id, filename)

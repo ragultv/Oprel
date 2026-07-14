@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import time as time_module
 from typing import Any, AsyncIterator
 
 import httpx
 
 from oprel.server import db
+from oprel.server.domain.state import get_state
 from oprel.server.services.context import logger
 from oprel.server.services.generation import GenerateResult, StreamResult
 
@@ -104,59 +106,56 @@ async def fetch_provider_models(provider_id: str) -> list[str]:
     if p_type == "nvidia":
         # Curated NVIDIA NIM chat-compatible models — returned directly without API call
         return [
-            "abacusai/dracarys-llama-3.1-70b-instruct",
-            "bytedance/seed-oss-36b-instruct",
-            "deepseek-ai/deepseek-v4-flash",
-            "deepseek-ai/deepseek-v4-pro",
-            "google/codegemma-7b",
-            "google/gemma-2-2b-it",
-            "google/gemma-7b",
-            "meta/llama2-70b",
-            "meta/llama-3.1-8b-instruct",
-            "meta/llama-3.1-70b-instruct",
-            "meta/llama-3.2-1b-instruct",
-            "meta/llama-3.2-3b-instruct",
-            "meta/llama-3.3-70b-instruct",
-            "microsoft/phi-4-mini-instruct",
-            "microsoft/phi-4-mini-flash-reasoning",
-            "minimaxai/minimax-m2.5",
-            "minimaxai/minimax-m2.7",
-            "mistralai/mistral-nemotron",
-            "mistralai/mixtral-8x7b-instruct",
-            "mistralai/mixtral-8x22b-instruct",
-            "moonshotai/kimi-k2-instruct",
-            "moonshotai/kimi-k2-thinking",
-            "nvidia/gliner-pii",
-            "nvidia/llama-3.1-nemoguard-8b-content-safety",
-            "nvidia/llama-3.1-nemoguard-8b-topic-control",
-            "nvidia/llama-3.1-nemotron-nano-8b-v1",
-            "nvidia/llama-3.1-nemotron-safety-guard-8b-v3",
-            "nvidia/llama-3.1-nemotron-ultra-253b-v1",
-            "nvidia/llama-3.3-nemotron-super-49b-v1",
-            "nvidia/llama-3.3-nemotron-super-49b-v1.5",
-            "nvidia/nemotron-3-nano-30b-a3b",
-            "nvidia/nemotron-3-super-120b-a12b",
-            "nvidia/nemotron-3-ultra-550b-a55b",
-            "nvidia/nemotron-content-safety-reasoning-4b",
-            "nvidia/nemotron-mini-4b-instruct",
-            "nvidia/nemoguard-jailbreak-detect",
-            "nvidia/nvidia-nemotron-nano-9b-v2",
-            "nvidia/riva-translate-4b-instruct-v1_1",
-            "nvidia/usdcode",
-            "openai/gpt-oss-20b",
-            "openai/gpt-oss-120b",
-            "qwen/qwen3-5-122b-a10b",
-            "qwen/qwen3-coder-480b-a35b-instruct",
-            "qwen/qwen3-next-80b-a3b-instruct",
-            "qwen/qwen3-next-80b-a3b-thinking",
-            "qwen/qwq-32b",
-            "sarvamai/sarvam-m",
-            "stepfun-ai/step-3-5-flash",
-            "stockmark/stockmark-2-100b-instruct",
-            "upstage/solar-10.7b-instruct",
-            "z-ai/glm4.7",
-            "z-ai/glm5.1",
-        ]
+    "abacusai/dracarys-llama-3.1-70b-instruct",
+    "deepseek-ai/deepseek-v4-flash",
+    "deepseek-ai/deepseek-v4-pro",
+    "google/diffusiongemma-26b-a4b-it",
+    "google/gemma-3n-e2b-it",
+    "google/gemma-3n-e4b-it",
+    "google/gemma-4-31b-it",
+    "meta/llama-3.1-70b-instruct",
+    "meta/llama-3.1-8b-instruct",
+    "meta/llama-3.2-11b-vision-instruct",
+    "meta/llama-3.2-1b-instruct",
+    "meta/llama-3.2-90b-vision-instruct",
+    "meta/llama-guard-4-12b",
+    "microsoft/phi-4-multimodal-instruct",
+    "minimaxai/minimax-m2.7",
+    "minimaxai/minimax-m3",
+    "mistralai/ministral-14b-instruct-2512",
+    "mistralai/mistral-large-3-675b-instruct-2512",
+    "mistralai/mistral-medium-3.5-128b",
+    "mistralai/mistral-small-4-119b-2603",
+    "nvidia/gliner-pii",
+    "nvidia/ising-calibration-1-35b-a3b",
+    "nvidia/llama-3.1-nemoguard-8b-content-safety",
+    "nvidia/llama-3.1-nemotron-nano-vl-8b-v1",
+    "nvidia/llama-3.1-nemotron-safety-guard-8b-v3",
+    "nvidia/llama-3.3-nemotron-super-49b-v1",
+    "nvidia/llama-3.3-nemotron-super-49b-v1.5",
+    "nvidia/nemotron-3-content-safety",
+    "nvidia/nemotron-3-nano-30b-a3b",
+    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+    "nvidia/nemotron-3-super-120b-a12b",
+    "nvidia/nemotron-3-ultra-550b-a55b",
+    "nvidia/nemotron-3.5-content-safety",
+    "nvidia/nemotron-content-safety-reasoning-4b",
+    "nvidia/nemotron-mini-4b-instruct",
+    "nvidia/nemotron-nano-12b-v2-vl",
+    "nvidia/nvidia-nemotron-nano-9b-v2",
+    "nvidia/riva-translate-4b-instruct-v1.1",
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
+    "qwen/qwen3-next-80b-a3b-instruct",
+    "qwen/qwen3.5-122b-a10b",
+    "qwen/qwen3.5-397b-a17b",
+    "sarvamai/sarvam-m",
+    "stepfun-ai/step-3.5-flash",
+    "stepfun-ai/step-3.7-flash",
+    "stockmark/stockmark-2-100b-instruct",
+    "upstage/solar-10.7b-instruct",
+    "z-ai/glm-5.2",
+]
 
     presets = {
         "openai": "https://api.openai.com/v1",
@@ -598,6 +597,7 @@ async def provider_chat_proxy(provider_id: str, body: Any) -> GenerateResult | S
 
     # 1. Non-Streaming Flow
     if not body.stream:
+        start_gen_time = time_module.perf_counter()
         if p_type == "gemini":
             full_response = await _call_gemini(api_key, body, prepared_messages)
         elif p_type == "nvidia":
@@ -609,14 +609,22 @@ async def provider_chat_proxy(provider_id: str, body: Any) -> GenerateResult | S
         else:
             full_response = await _call_openai(api_key, base_url, body, prepared_messages)
 
+        duration = time_module.perf_counter() - start_gen_time
+
         if full_response and full_response.strip():
+            completion_tokens = _estimate_tokens(full_response, body.model)
+            tps = completion_tokens / duration if duration > 0 else 0.0
+            if duration > 0:
+                state = get_state()
+                state.last_gen_speed = tps
+
             db.add_message(effective_conv_id, "assistant", full_response)
             db.add_inference_log(
                 model_id=body.model,
                 prompt_tokens=_estimate_tokens(_message_content_to_text(prepared_messages[-1]["content"] if prepared_messages else ""), body.model),
-                completion_tokens=_estimate_tokens(full_response, body.model),
-                latency_ms=100.0,
-                tps=0.0,
+                completion_tokens=completion_tokens,
+                latency_ms=duration * 1000.0,
+                tps=tps,
             )
 
         return GenerateResult(
@@ -629,6 +637,7 @@ async def provider_chat_proxy(provider_id: str, body: Any) -> GenerateResult | S
     # 2. Streaming Flow
     async def stream_generator(conv_id: str) -> AsyncIterator[str]:
         full_response = ""
+        start_gen_time = time_module.perf_counter()
         try:
             if p_type == "gemini":
                 async for line in _stream_gemini(api_key, body, prepared_messages):
@@ -671,14 +680,21 @@ async def provider_chat_proxy(provider_id: str, body: Any) -> GenerateResult | S
             yield f"data: {json.dumps({'error': f'Streaming error: {str(exc)}'})}\n\n"
             return
 
+        duration = time_module.perf_counter() - start_gen_time
         if full_response.strip():
+            completion_tokens = _estimate_tokens(full_response, body.model)
+            tps = completion_tokens / duration if duration > 0 else 0.0
+            if duration > 0:
+                state = get_state()
+                state.last_gen_speed = tps
+
             db.add_message(conv_id, "assistant", full_response)
             db.add_inference_log(
                 model_id=body.model,
                 prompt_tokens=_estimate_tokens(_message_content_to_text(prepared_messages[-1]["content"] if prepared_messages else ""), body.model),
-                completion_tokens=_estimate_tokens(full_response, body.model),
-                latency_ms=100.0,
-                tps=0.0,
+                completion_tokens=completion_tokens,
+                latency_ms=duration * 1000.0,
+                tps=tps,
             )
 
     return StreamResult(iterator=stream_generator(effective_conv_id), conversation_id=effective_conv_id)

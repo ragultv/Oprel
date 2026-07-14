@@ -59,8 +59,8 @@ def detect_model_type(model_id: str) -> str:
 def format_chat_prompt(
     model_id: str,
     user_message: str,
-    system_prompt: str = None,
-    conversation_history: list = None,
+    system_prompt: str | None = None,
+    conversation_history: list | None = None,
     thinking: bool = False,
 ) -> str:
     """
@@ -127,8 +127,8 @@ def _get_content_text(content) -> str:
 
 def format_qwen_prompt(
     user_message: str,
-    system_prompt: str = None,
-    conversation_history: list = None,
+    system_prompt: str | None = None,
+    conversation_history: list | None = None,
 ) -> str:
     """Format prompt for Qwen models (ChatML format)"""
     
@@ -156,8 +156,8 @@ def format_qwen_prompt(
 
 def format_llama3_prompt(
     user_message: str,
-    system_prompt: str = None,
-    conversation_history: list = None,
+    system_prompt: str | None = None,
+    conversation_history: list | None = None,
 ) -> str:
     """Format prompt for Llama 3 models"""
     
@@ -184,8 +184,8 @@ def format_llama3_prompt(
 
 def format_llama2_prompt(
     user_message: str,
-    system_prompt: str = None,
-    conversation_history: list = None,
+    system_prompt: str | None = None,
+    conversation_history: list | None = None,
 ) -> str:
     """Format prompt for Llama 2 models"""
     
@@ -211,8 +211,8 @@ def format_llama2_prompt(
 
 def format_gemma_prompt(
     user_message: str,
-    system_prompt: str = None,
-    conversation_history: list = None,
+    system_prompt: str | None = None,
+    conversation_history: list | None = None,
 ) -> str:
     """Format prompt for Gemma models"""
     
@@ -239,8 +239,8 @@ def format_gemma_prompt(
 
 def format_mistral_prompt(
     user_message: str,
-    system_prompt: str = None,
-    conversation_history: list = None,
+    system_prompt: str | None = None,
+    conversation_history: list | None = None,
 ) -> str:
     """Format prompt for Mistral models"""
     
@@ -269,8 +269,8 @@ def format_mistral_prompt(
 
 def format_phi_prompt(
     user_message: str,
-    system_prompt: str = None,
-    conversation_history: list = None,
+    system_prompt: str | None = None,
+    conversation_history: list | None = None,
 ) -> str:
     """Format prompt for Phi models (ChatML-like)"""
     

@@ -141,7 +141,7 @@ export const API = {
       name: m.name || m.id,
       size_gb: 0, 
       quantization: "Unknown",
-      backend: "llama.cpp",
+      backend: m.backend || "llama.cpp",
       loaded: !!m.loaded, 
       downloaded: !!m.downloaded,
       status: m.loaded ? 'loaded' : (m.downloaded ? 'available' : 'registry'),
@@ -231,8 +231,38 @@ export const API = {
     return res.json();
   },
 
+  async pauseDownload(downloadId: string): Promise<any> {
+    const res = await fetch(`${API_BASE}/downloads/${encodeURIComponent(downloadId)}/pause`, {
+      method: 'POST',
+    });
+    if (!res.ok) throw new Error('Failed to pause download');
+    return res.json();
+  },
+
+  async resumeDownload(downloadId: string): Promise<any> {
+    const res = await fetch(`${API_BASE}/downloads/${encodeURIComponent(downloadId)}/resume`, {
+      method: 'POST',
+    });
+    if (!res.ok) throw new Error('Failed to resume download');
+    return res.json();
+  },
+
+  async cancelDownload(downloadId: string): Promise<any> {
+    const res = await fetch(`${API_BASE}/downloads/${encodeURIComponent(downloadId)}/cancel`, {
+      method: 'POST',
+    });
+    if (!res.ok) throw new Error('Failed to cancel download');
+    return res.json();
+  },
+
+
   /**
-   * Stream download progress via SSE
+   * Stream download progress via SSE, with automatic reconnection on error.
+   *
+   * The returned cleanup function must be called to stop streaming (e.g. on
+   * component unmount). While active, the client will transparently reconnect
+   * if the SSE connection drops — common on flaky networks or after a brief
+   * server-side timeout.
    */
   streamDownloadProgress(
     downloadId: string,
@@ -250,43 +280,61 @@ export const API = {
     onComplete: () => void,
     onError: (error: string) => void
   ): () => void {
-    const eventSource = new EventSource(`${API_BASE}/downloads/progress?id=${encodeURIComponent(downloadId)}`);
-    
-    eventSource.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        
-        if (data.error) {
-          onError(data.error);
-          eventSource.close();
-          return;
+    let eventSource: EventSource | null = null;
+    let stopped = false;          // set true when cleanup() is called
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const connect = () => {
+      if (stopped) return;
+
+      eventSource = new EventSource(`${API_BASE}/downloads/progress?id=${encodeURIComponent(downloadId)}`);
+
+      eventSource.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+
+          if (data.error) {
+            // Server explicitly reported an error — do not reconnect
+            onError(data.error);
+            cleanup();
+            return;
+          }
+
+          onProgress(data);
+
+          if (data.status === 'completed') {
+            onComplete();
+            cleanup();
+          } else if (data.status === 'error') {
+            onError(data.error || 'Download failed');
+            cleanup();
+          }
+        } catch (err) {
+          console.warn('Error parsing SSE data:', err);
         }
-        
-        onProgress(data);
-        
-        if (data.status === 'completed') {
-          onComplete();
-          eventSource.close();
-        } else if (data.status === 'error') {
-          onError(data.error || 'Download failed');
-          eventSource.close();
+      };
+
+      eventSource.onerror = () => {
+        // Connection dropped — close current source and schedule a reconnect.
+        // Do NOT call onError here; the download is still running on the server.
+        eventSource?.close();
+        eventSource = null;
+        if (!stopped) {
+          console.warn('SSE connection lost, reconnecting in 1 s…');
+          reconnectTimer = setTimeout(connect, 1000);
         }
-      } catch (error) {
-        console.warn('Error parsing SSE data:', error);
-      }
+      };
     };
-    
-    eventSource.onerror = (error) => {
-      // Suppress console.error, let the caller handle it via onError callback
-      console.warn('SSE connection error - endpoint may not be available');
-      onError('Connection lost. Please restart the server to enable real-time progress.');
-      eventSource.close();
+
+    const cleanup = () => {
+      stopped = true;
+      if (reconnectTimer !== null) clearTimeout(reconnectTimer);
+      eventSource?.close();
+      eventSource = null;
     };
-    
-    // Return cleanup function
-    return () => {
-      eventSource.close();
-    };
+
+    connect();
+    return cleanup;
   },
 
   async fetchConversations(): Promise<Conversation[]> {
