@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
+
 import asyncio
 import signal
 import sys

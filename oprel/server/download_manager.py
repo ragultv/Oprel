@@ -60,10 +60,15 @@ class DownloadManager:
                 download.progress = (downloaded_bytes / download.total_bytes) * 100
             
             # Calculate speed (bytes per second)
+            # FIX: Use _last_bytes (snapshot of previous update) not downloaded_bytes
+            # (which was just overwritten above). Previously this computed
+            # bytes_diff = downloaded_bytes - downloaded_bytes = 0 on every call.
             time_diff = now - download.last_update
             if time_diff > 0:
-                bytes_diff = downloaded_bytes - (download.downloaded_bytes if hasattr(download, '_last_bytes') else 0)
-                download.speed_bps = bytes_diff / time_diff
+                prev_bytes = getattr(download, '_last_bytes', downloaded_bytes)
+                bytes_diff = downloaded_bytes - prev_bytes
+                if bytes_diff >= 0:
+                    download.speed_bps = bytes_diff / time_diff
                 
                 # Calculate ETA
                 if download.speed_bps > 0 and download.total_bytes > 0:
@@ -72,6 +77,7 @@ class DownloadManager:
             
             download.last_update = now
             download._last_bytes = downloaded_bytes
+
             
             # Trigger callbacks
             if download_id in self._callbacks:
@@ -111,7 +117,21 @@ class DownloadManager:
             self._downloads.pop(download_id, None)
             self._callbacks.pop(download_id, None)
     
+    def pause_download(self, download_id: str):
+        """Mark download as paused"""
+        with self._lock:
+            if download_id in self._downloads:
+                self._downloads[download_id].status = "paused"
+                self._downloads[download_id].speed_bps = 0.0
+
+    def cancel_download(self, download_id: str):
+        """Mark download as cancelled"""
+        with self._lock:
+            if download_id in self._downloads:
+                self._downloads[download_id].status = "cancelled"
+
     def add_callback(self, download_id: str, callback: Callable):
+
         """Add a callback for progress updates"""
         with self._lock:
             if download_id not in self._callbacks:

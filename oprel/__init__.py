@@ -5,6 +5,9 @@ The SQLite of LLMs
 Simple, embedded AI inference with zero configuration.
 """
 
+import os
+os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
+
 from oprel.core.model import Model
 from oprel.core.config import Config
 from oprel.core.exceptions import (
