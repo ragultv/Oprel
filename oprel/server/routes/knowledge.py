@@ -62,3 +62,11 @@ async def list_documents():
 @router.delete("/index/documents/{filename}")
 async def delete_indexed_document(filename: str):
     return knowledge_service.delete_document(filename)
+
+
+@router.get("/index/documents/{filename}/preview")
+async def preview_document(filename: str):
+    res = knowledge_service.get_document_content(filename)
+    if not res.get("success"):
+        raise HTTPException(status_code=404, detail=res.get("message"))
+    return res

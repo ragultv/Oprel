@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import {
   CheckCircle2, ClipboardCopy, Download, FileJson, FileText,
-  Loader2, ScanText, Trash2, Upload, X, Zap,
+  Loader2, ScanText, Trash2, Upload, X, Zap, ArrowLeft, Image as ImageIcon, Plus
 } from "lucide-react"
 import { OCR, type OcrJob, type OcrResult, type OcrStatus } from "@/services/api"
 import { cn } from "@/services/utils"
@@ -483,11 +483,13 @@ function ExtractionScreen({ history, onHistoryChange }: { history: OcrJob[]; onH
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null)
   const [minConfidence, setMinConfidence] = useState(0)
   const [isDragging, setIsDragging] = useState(false)
+  const [activeView, setActiveView] = useState<"list" | "detail">("list")
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const handleFile = (f: File) => {
     setFile(f); setJob(null); setError(null); setSelectedIdx(null); setHoveredIdx(null)
     setPreview(URL.createObjectURL(f))
+    setActiveView("detail")
   }
 
   const handleDrop = (e: React.DragEvent) => {
@@ -510,12 +512,10 @@ function ExtractionScreen({ history, onHistoryChange }: { history: OcrJob[]; onH
     }
   }
 
-  // Clicking a bbox selects that result row
   const handleBboxClick = useCallback((i: number) => {
     setSelectedIdx(prev => prev === i ? null : i)
   }, [])
 
-  // Clicking a result row selects that bbox
   const handleResultSelect = useCallback((i: number) => {
     setSelectedIdx(prev => prev === i ? null : i)
   }, [])
@@ -523,154 +523,204 @@ function ExtractionScreen({ history, onHistoryChange }: { history: OcrJob[]; onH
   const results: OcrResultWithNorm[] = (job?.results as OcrResultWithNorm[]) ?? []
 
   return (
-    <div className="h-full overflow-y-auto bg-[linear-gradient(180deg,#0e0e0e_0%,#111_50%,#0b0b0b_100%)] text-foreground">
-      <div className="mx-auto max-w-7xl px-6 py-6 lg:px-8 lg:py-8 space-y-6">
-
-        {/* Header */}
+    <div className="flex flex-col h-full bg-[#0a0a0a] relative overflow-hidden text-foreground">
+      {/* Refined Header */}
+      <header className="h-14 border-b border-border flex items-center justify-between px-5 shrink-0 bg-background/95 backdrop-blur-sm sticky top-0 z-20">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-primary/15 text-primary">
-            <ScanText size={18} />
-          </div>
+          {activeView === "detail" && (
+            <button
+              onClick={() => setActiveView("list")}
+              className="mr-2 p-1.5 rounded-lg hover:bg-secondary/80 text-muted-foreground hover:text-foreground transition-colors"
+            >
+              <ArrowLeft size={18} />
+            </button>
+          )}
           <div>
-            <div className="text-sm font-semibold text-foreground">OCR — Text Extraction</div>
-            <div className="text-xs text-muted-foreground">Upload an image to extract text with PaddleOCR</div>
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-bold text-foreground">
+                OCR — Text Extraction
+              </span>
+              <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
+            </div>
+            <div className="text-[10px] text-muted-foreground font-medium">
+              Local PaddleOCR Model
+            </div>
           </div>
         </div>
+        {activeView === "list" && (
+          <div>
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              className="inline-flex items-center gap-2 rounded-xl bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground hover:bg-primary/90 transition-all shadow-lg shadow-primary/20"
+            >
+              <Plus size={14} /> Add Image
+            </button>
+            <input ref={fileInputRef} type="file" accept="image/png,image/jpeg,image/jpg,image/webp,image/bmp,image/tiff" className="hidden"
+              onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f) }} />
+          </div>
+        )}
+      </header>
 
-        {/* Upload zone */}
-        <div
-          onDragOver={e => { e.preventDefault(); setIsDragging(true) }}
-          onDragLeave={() => setIsDragging(false)}
-          onDrop={handleDrop}
-          onClick={() => fileInputRef.current?.click()}
-          className={cn(
-            "relative cursor-pointer rounded-2xl border-2 border-dashed p-8 text-center transition-all",
-            isDragging ? "border-primary/60 bg-primary/8" :
-            file ? "border-primary/30 bg-primary/5 hover:bg-primary/8" :
-            "border-border hover:border-border/80 hover:bg-secondary/20"
-          )}
-        >
-          <input ref={fileInputRef} type="file" accept="image/png,image/jpeg,image/jpg,image/webp,image/bmp,image/tiff" className="hidden"
-            onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f) }} />
-          <div className="flex flex-col items-center gap-3">
-            <Upload size={28} className={file ? "text-primary" : "text-muted-foreground"} />
-            {file ? (
-              <div>
-                <div className="text-sm font-semibold text-foreground">{file.name}</div>
-                <div className="text-xs text-muted-foreground mt-0.5">{(file.size / 1024).toFixed(1)} KB — click to change</div>
+      <div className="relative flex-1 overflow-y-auto bg-[linear-gradient(180deg,#0e0e0e_0%,#111_50%,#0b0b0b_100%)]">
+        {activeView === "list" ? (
+          <div className="mx-auto max-w-7xl px-6 py-6 lg:px-8 lg:py-8 space-y-6">
+            <div className="rounded-3xl border border-border bg-[#141414]/90 p-6 space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="text-sm font-semibold text-foreground">Recent Extractions</div>
+                <div className="rounded-full border border-border bg-secondary/40 px-3 py-1 text-[11px] font-semibold text-muted-foreground">
+                  {history.length} item{history.length === 1 ? "" : "s"}
+                </div>
+              </div>
+              
+              {history.length === 0 ? (
+                <div 
+                  onDragOver={e => { e.preventDefault(); setIsDragging(true) }}
+                  onDragLeave={() => setIsDragging(false)}
+                  onDrop={handleDrop}
+                  className={cn(
+                    "flex flex-col items-center justify-center py-16 text-center border-2 border-dashed rounded-2xl transition-all",
+                    isDragging ? "border-primary/60 bg-primary/8" : "border-border bg-secondary/10 hover:bg-secondary/20"
+                  )}
+                >
+                  <ImageIcon size={32} className="text-muted-foreground mb-3 opacity-50" />
+                  <div className="text-sm font-semibold text-foreground">No extractions yet</div>
+                  <div className="text-xs text-muted-foreground max-w-xs mt-1">Upload or drop an image to extract text and it will appear here.</div>
+                  <button onClick={() => fileInputRef.current?.click()} className="mt-4 rounded-xl border border-border bg-secondary/30 px-4 py-2 text-xs font-semibold text-foreground hover:bg-secondary/60 transition-colors">
+                    Upload Image
+                  </button>
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm text-left border-collapse">
+                    <thead className="text-xs text-muted-foreground border-b border-border">
+                      <tr>
+                        <th className="px-4 py-3 font-semibold">Image</th>
+                        <th className="px-4 py-3 font-semibold">Filename</th>
+                        <th className="px-4 py-3 font-semibold">Words</th>
+                        <th className="px-4 py-3 font-semibold">Date</th>
+                        <th className="px-4 py-3 font-semibold text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border/50">
+                      {history.map(h => (
+                        <tr key={h.id} className="hover:bg-secondary/10 transition-colors group">
+                          <td className="px-4 py-3">
+                            <div className="h-10 w-10 overflow-hidden rounded-lg border border-border/50 bg-black/30">
+                              <img src={h.image_data} alt={h.filename} className="h-full w-full object-cover" />
+                            </div>
+                          </td>
+                          <td className="px-4 py-3">
+                            <div className="font-semibold text-foreground">{h.filename}</div>
+                            <div className="text-xs text-muted-foreground line-clamp-1 mt-0.5">{h.full_text.slice(0, 40)}</div>
+                          </td>
+                          <td className="px-4 py-3 text-muted-foreground">{h.word_count}</td>
+                          <td className="px-4 py-3 text-muted-foreground">{new Date(h.created_at).toLocaleString([], { dateStyle: "short", timeStyle: "short" })}</td>
+                          <td className="px-4 py-3 text-right">
+                            <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                              <button
+                                onClick={() => {
+                                  setJob({ ...h } as any); setPreview(h.image_data)
+                                  setFile(null); setSelectedIdx(null)
+                                  setActiveView("detail")
+                                }}
+                                className="rounded-lg border border-border bg-secondary/40 px-3 py-1.5 text-xs font-semibold text-foreground hover:bg-secondary/70"
+                              >
+                                View
+                              </button>
+                              <button
+                                onClick={async () => { await OCR.deleteJob(h.id); onHistoryChange() }}
+                                className="rounded-lg border border-red-500/20 bg-red-500/8 p-1.5 text-red-400 hover:bg-red-500/15 transition-all"
+                              >
+                                <Trash2 size={13} />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="mx-auto max-w-7xl px-6 py-6 lg:px-8 lg:py-8 space-y-6 h-full flex flex-col min-h-[700px]">
+            {/* Split view or empty detail */}
+            {!preview ? (
+              <div className="flex-1 flex flex-col items-center justify-center border-2 border-dashed border-border rounded-3xl bg-secondary/10">
+                <div className="text-sm text-muted-foreground">Select an image from the list or upload a new one.</div>
               </div>
             ) : (
-              <div>
-                <div className="text-sm font-semibold text-foreground">Drop image here or click to upload</div>
-                <div className="text-xs text-muted-foreground mt-0.5">PNG, JPG, WEBP, BMP, TIFF · max 20 MB</div>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {file && (
-          <button
-            onClick={handleExtract}
-            disabled={extracting}
-            className={cn(
-              "inline-flex items-center gap-2 rounded-xl px-6 py-3 text-sm font-bold transition-all",
-              extracting ? "bg-secondary/50 border border-border text-muted-foreground cursor-not-allowed"
-                : "bg-primary hover:bg-primary/90 text-primary-foreground shadow-lg shadow-primary/20"
-            )}
-          >
-            {extracting ? <Loader2 size={16} className="animate-spin" /> : <Zap size={16} />}
-            {extracting ? "Extracting…" : "Extract Text"}
-          </button>
-        )}
-
-        {error && (
-          <div className="rounded-2xl border border-red-500/20 bg-red-500/10 p-4 text-sm text-red-300">{error}</div>
-        )}
-
-        {/* Split view */}
-        {preview && (
-          <ResizerPane
-            leftChild={
-              <ImagePane
-                src={preview}
-                results={results}
-                selectedIdx={selectedIdx}
-                hoveredIdx={hoveredIdx}
-                minConfidence={minConfidence}
-                onBboxClick={handleBboxClick}
-                onBboxHover={setHoveredIdx}
-              />
-            }
-            rightChild={
-              <div className="rounded-3xl border border-border bg-[#141414]/90 overflow-hidden flex flex-col h-full shadow-xl">
-                {job ? (
-                  <ResultsPanel
-                    results={results}
-                    selectedIdx={selectedIdx}
-                    onHover={setHoveredIdx}
-                    onSelect={handleResultSelect}
-                    minConfidence={minConfidence}
-                    onMinConfidenceChange={setMinConfidence}
-                    job={job}
-                  />
-                ) : extracting ? (
-                  <div className="flex-1 flex flex-col items-center justify-center gap-4 text-sm text-muted-foreground p-8 text-center h-full">
-                    <Loader2 size={24} className="animate-spin text-primary" />
-                    Running PaddleOCR...
-                  </div>
-                ) : (
-                  <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground p-8 text-center h-full">
-                    Click "Extract Text" to run OCR
+              <div className="flex-1 min-h-0 flex flex-col gap-4">
+                {file && !job && (
+                  <div className="flex items-center justify-between rounded-2xl border border-border bg-[#141414] p-4 shadow-lg shrink-0">
+                    <div className="flex items-center gap-4">
+                       <div className="h-12 w-12 overflow-hidden rounded-lg border border-border/50 bg-black/30">
+                          <img src={preview} alt="Preview" className="h-full w-full object-cover" />
+                       </div>
+                       <div>
+                         <div className="text-sm font-semibold text-foreground">{file.name}</div>
+                         <div className="text-xs text-muted-foreground mt-0.5">{(file.size / 1024).toFixed(1)} KB — ready to extract</div>
+                       </div>
+                    </div>
+                    <button
+                      onClick={handleExtract}
+                      disabled={extracting}
+                      className={cn(
+                        "inline-flex items-center gap-2 rounded-xl px-5 py-2.5 text-sm font-bold transition-all",
+                        extracting ? "bg-secondary/50 border border-border text-muted-foreground cursor-not-allowed"
+                          : "bg-primary hover:bg-primary/90 text-primary-foreground shadow-lg shadow-primary/20"
+                      )}
+                    >
+                      {extracting ? <Loader2 size={16} className="animate-spin" /> : <Zap size={16} />}
+                      {extracting ? "Extracting…" : "Extract Text"}
+                    </button>
                   </div>
                 )}
-              </div>
-            }
-          />
-        )}
-
-        {/* History */}
-        {history.length > 0 && (
-          <div className="rounded-3xl border border-border bg-[#141414]/90 p-6 space-y-4">
-            <div className="flex items-center justify-between">
-              <div className="text-sm font-semibold text-foreground">Recent Extractions</div>
-              <div className="rounded-full border border-border bg-secondary/40 px-3 py-1 text-[11px] font-semibold text-muted-foreground">
-                {history.length} item{history.length === 1 ? "" : "s"}
-              </div>
-            </div>
-            <div className="space-y-3">
-              {history.map(h => (
-                <div key={h.id} className="group flex items-center gap-4 rounded-2xl border border-border/60 bg-black/20 p-4 hover:border-border transition-all">
-                  <div className="shrink-0 h-14 w-14 overflow-hidden rounded-xl border border-border/50 bg-black/30">
-                    <img src={h.image_data} alt={h.filename} className="h-full w-full object-cover" />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm font-semibold text-foreground truncate">{h.filename}</div>
-                    <div className="text-xs text-muted-foreground mt-0.5">
-                      {h.word_count} words · {new Date(h.created_at).toLocaleString([], { dateStyle: "short", timeStyle: "short" })}
-                    </div>
-                    <div className="text-xs text-muted-foreground mt-1 line-clamp-1 opacity-60">{h.full_text.slice(0, 80)}</div>
-                  </div>
-                  <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <button
-                      onClick={() => {
-                        setJob({ ...h } as any); setPreview(h.image_data)
-                        setFile(null); setSelectedIdx(null)
-                        window.scrollTo({ top: 0, behavior: "smooth" })
-                      }}
-                      className="rounded-lg border border-border bg-secondary/40 px-3 py-1.5 text-xs font-semibold text-foreground hover:bg-secondary/70"
-                    >
-                      View
-                    </button>
-                    <button
-                      onClick={async () => { await OCR.deleteJob(h.id); onHistoryChange() }}
-                      className="rounded-lg border border-red-500/20 bg-red-500/8 p-1.5 text-red-400 hover:bg-red-500/15 transition-all"
-                    >
-                      <Trash2 size={13} />
-                    </button>
-                  </div>
+                {error && (
+                  <div className="rounded-2xl border border-red-500/20 bg-red-500/10 p-4 text-sm text-red-300 shrink-0">{error}</div>
+                )}
+                <div className="flex-1 min-h-0">
+                  <ResizerPane
+                    leftChild={
+                      <ImagePane
+                        src={preview}
+                        results={results}
+                        selectedIdx={selectedIdx}
+                        hoveredIdx={hoveredIdx}
+                        minConfidence={minConfidence}
+                        onBboxClick={handleBboxClick}
+                        onBboxHover={setHoveredIdx}
+                      />
+                    }
+                    rightChild={
+                      <div className="rounded-3xl border border-border bg-[#141414]/90 overflow-hidden flex flex-col h-full shadow-xl">
+                        {job ? (
+                          <ResultsPanel
+                            results={results}
+                            selectedIdx={selectedIdx}
+                            onHover={setHoveredIdx}
+                            onSelect={handleResultSelect}
+                            minConfidence={minConfidence}
+                            onMinConfidenceChange={setMinConfidence}
+                            job={job}
+                          />
+                        ) : extracting ? (
+                          <div className="flex-1 flex flex-col items-center justify-center gap-4 text-sm text-muted-foreground p-8 text-center h-full">
+                            <Loader2 size={24} className="animate-spin text-primary" />
+                            Running PaddleOCR...
+                          </div>
+                        ) : (
+                          <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground p-8 text-center h-full">
+                            Click "Extract Text" above to run OCR
+                          </div>
+                        )}
+                      </div>
+                    }
+                  />
                 </div>
-              ))}
-            </div>
+              </div>
+            )}
           </div>
         )}
       </div>
