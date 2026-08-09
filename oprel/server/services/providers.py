@@ -108,7 +108,6 @@ async def fetch_provider_models(provider_id: str) -> list[str]:
         return [
     "abacusai/dracarys-llama-3.1-70b-instruct",
     "deepseek-ai/deepseek-v4-flash",
-    "deepseek-ai/deepseek-v4-pro",
     "google/diffusiongemma-26b-a4b-it",
     "google/gemma-3n-e2b-it",
     "google/gemma-3n-e4b-it",
@@ -124,7 +123,6 @@ async def fetch_provider_models(provider_id: str) -> list[str]:
     "minimaxai/minimax-m3",
     "mistralai/ministral-14b-instruct-2512",
     "mistralai/mistral-large-3-675b-instruct-2512",
-    "mistralai/mistral-medium-3.5-128b",
     "mistralai/mistral-small-4-119b-2603",
     "nvidia/gliner-pii",
     "nvidia/ising-calibration-1-35b-a3b",
@@ -148,7 +146,6 @@ async def fetch_provider_models(provider_id: str) -> list[str]:
     "openai/gpt-oss-20b",
     "qwen/qwen3-next-80b-a3b-instruct",
     "qwen/qwen3.5-122b-a10b",
-    "qwen/qwen3.5-397b-a17b",
     "sarvamai/sarvam-m",
     "stepfun-ai/step-3.5-flash",
     "stepfun-ai/step-3.7-flash",

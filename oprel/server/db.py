@@ -199,7 +199,46 @@ def init_db():
         SET system_prompt = 'You are a technical diagram expert. When asked to create diagrams, output valid Mermaid syntax inside ```mermaid code blocks. Always produce syntactically correct Mermaid.\n\nCRITICAL RULES FOR MERMAID:\n1. NEVER use spaces in subgraph IDs. Format as: `subgraph ID ["Title"]` (e.g. `subgraph ClientLayer ["Client Layer"]`).\n2. ALWAYS wrap node labels containing parentheses or special characters in double quotes (e.g., `A["Input (X)"]`).\n3. ALWAYS use newlines to separate statements (never put `subgraph` on the same line as a node).\n4. Use standard ASCII characters only. Avoid special hyphens.'
         WHERE id = 'diagrams'
     """)
+    
+    # Create knowledge_documents table for storing uploaded file contents
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS knowledge_documents (
+            id TEXT PRIMARY KEY,
+            filename TEXT UNIQUE NOT NULL,
+            content TEXT NOT NULL,
+            size_bytes INTEGER DEFAULT 0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
 
+    conn.commit()
+    conn.close()
+
+def save_knowledge_document(filename: str, content: str, size_bytes: int = 0):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO knowledge_documents (id, filename, content, size_bytes)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(filename) DO UPDATE SET content=excluded.content, size_bytes=excluded.size_bytes
+    """, (str(uuid.uuid4()), filename, content, size_bytes))
+    conn.commit()
+    conn.close()
+
+def get_knowledge_document(filename: str) -> Optional[dict]:
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM knowledge_documents WHERE filename = ?", (filename,))
+    row = cursor.fetchone()
+    conn.close()
+    if row:
+        return dict(row)
+    return None
+
+def delete_knowledge_document(filename: str):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM knowledge_documents WHERE filename = ?", (filename,))
     conn.commit()
     conn.close()
 

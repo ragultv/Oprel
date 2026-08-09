@@ -112,7 +112,6 @@ OFFICIAL_REPOS = {
         "gemma 4-vl-26b" : "unsloth/gemma-4-26B-A4B-it-GGUF",
         "gemma 4-vl-31 b" : "unsloth/gemma-4-31B-it-GGUF",
         "gemma 4-vl-5b-uncensored" : "HauhauCS/Gemma-4-E2B-Uncensored-HauhauCS-Aggressive"
-
     },
 
     "embeddings": {
@@ -126,7 +125,8 @@ OFFICIAL_REPOS = {
     
     # GGUF-only image models for stable-diffusion.cpp backend
     "text-to-image": {
-        "ideation" : "HamSFL/Ideation"
+        "ideation" : "HamSFL/Ideation",
+        "z-image-turbo":"unsloth/Z-Image-Turbo-GGUF"
     },
 }
 
@@ -226,12 +226,13 @@ def resolve_model_id(model_id: str) -> str:
             return gguf_id
             
     # Reverse lookup: Check if input matches the filename of any alias target
-    # e.g. "Qwen2.5-VL-3B-Instruct-GGUF" -> "unsloth/Qwen2.5-VL-3B-Instruct-GGUF"
+    # e.g. "Qwen2.5-VL-3B-Instruct-GGUF" or "Qwen2.5-VL-3B-Instruct" -> "unsloth/Qwen2.5-VL-3B-Instruct-GGUF"
     if "/" not in model_id:
         for alias, gguf_id in MODEL_ALIASES.items():
             if "/" in gguf_id:
                 repo_filename = gguf_id.split("/")[-1]
-                if model_lower == repo_filename.lower():
+                repo_filename_lower = repo_filename.lower()
+                if model_lower == repo_filename_lower or model_lower == repo_filename_lower.replace("-gguf", ""):
                      logger.info(f"Resolved filename '{model_id}' -> '{gguf_id}'")
                      return gguf_id
     
@@ -275,15 +276,27 @@ def get_model_category(alias: str) -> Optional[str]:
     Returns:
         Category name or None if not found
     """
-    for category, models in OFFICIAL_REPOS.items():
-        if alias in models:
-            return category
+    if not alias:
+        return None
+    alias_clean = alias.strip()
+    alias_lower = alias_clean.lower()
 
-    # Allow repo_id lookups too, so cached model scans can classify
-    # models like "HamSFL/Ideation" even when they are not stored by alias.
     for category, models in OFFICIAL_REPOS.items():
-        if alias in models.values():
+        if alias_clean in models:
             return category
+        for k, v in models.items():
+            if alias_lower == k.lower() or alias_lower == v.lower():
+                return category
+            if k.lower() in alias_lower or v.lower() in alias_lower or alias_lower in v.lower():
+                return category
+
+    # Allow repo_id lookups and image_hub fallback
+    try:
+        from oprel.downloader.image_hub import _COMPONENT_REPO_OVERRIDES, _COMPONENT_SPECS
+        if alias_lower in _COMPONENT_REPO_OVERRIDES or any(alias_lower in spec.llm_repo.lower() or alias_lower in spec.vae_repo.lower() for spec in _COMPONENT_SPECS.values()):
+            return "text-to-image"
+    except Exception:
+        pass
 
     return None
 

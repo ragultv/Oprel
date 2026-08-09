@@ -596,10 +596,14 @@ def _download_model_attempt(
                 logger.info(f"✓ Using fallback quantization: {fallback_quant} -> {filename}")
                 break
         else:
-            # No suitable fallback found
-            raise InvalidQuantizationError(
-                f"No {quantization} quantization found and no suitable fallback. Available: {available}"
-            )
+            if available:
+                filename = available[0]
+                logger.warning(f"No {quantization} or fallback found. Using first available: {filename}")
+            else:
+                # No suitable fallback found
+                raise InvalidQuantizationError(
+                    f"No {quantization} quantization found and no suitable fallback. Available: {available}"
+                )
     else:
         # Use the first match (usually there's only one)
         filename = matching_files[0]

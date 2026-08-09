@@ -7,7 +7,7 @@ import { API, type ModelDetailedInfo } from "@/services/api"
 
 interface QuantizationSelectorProps {
   modelId: string
-  onQuantizationChange?: (quant: string, size: number, parameters: string) => void
+  onQuantizationChange?: (quant: string, size: number, parameters: string, hasQuants: boolean) => void
   onQualityChange?: (quality: string) => void
 }
 
@@ -47,15 +47,19 @@ export function QuantizationSelector({ modelId, onQuantizationChange, onQualityC
         if (defaultQuant) {
           setSelectedQuant(defaultQuant)
           const size = info.sizes[defaultQuant] || 0
-          onQuantizationChange?.(defaultQuant, size, info.parameters)
+          onQuantizationChange?.(defaultQuant, size, info.parameters, true)
           onQualityChange?.(getQualityLabel(defaultQuant))
         } else if (info.quantizations.length > 0) {
           // Fallback to first quantization
           const firstQuant = info.quantizations[0]
           setSelectedQuant(firstQuant)
           const size = info.sizes[firstQuant] || 0
-          onQuantizationChange?.(firstQuant, size, info.parameters)
+          onQuantizationChange?.(firstQuant, size, info.parameters, true)
           onQualityChange?.(getQualityLabel(firstQuant))
+        } else {
+          setSelectedQuant("")
+          onQuantizationChange?.("", 0, info.parameters, false)
+          onQualityChange?.("")
         }
       } catch (error) {
         console.error("Failed to fetch model info:", error)
@@ -71,7 +75,7 @@ export function QuantizationSelector({ modelId, onQuantizationChange, onQualityC
     setSelectedQuant(quant)
     setIsOpen(false)
     const size = modelInfo?.sizes[quant] || 0
-    onQuantizationChange?.(quant, size, modelInfo?.parameters || "Unknown")
+    onQuantizationChange?.(quant, size, modelInfo?.parameters || "Unknown", true)
     onQualityChange?.(getQualityLabel(quant))
   }
 

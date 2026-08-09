@@ -156,11 +156,12 @@ function parseUserContent(content: string | any[]): { text: string, files: Array
   const files: Array<{ name: string, ext: string }> = [];
   
   // Regex to find [File: name] followed by optional code block
-  // We want to hide these from the UI and only show Chips
-  const fileRegex = /\[File: ([^\]]+)\](?:\r?\n)```(\w*)\r?\n[\s\S]*?```/g;
+  // We want to hide these from the UI and only show Chips.
+  // Support both legacy ``` and new ~~~ to avoid conflict with markdown files.
+  const fileRegex = /\[File: ([^\]]+)\](?:\r?\n)(?:```(\w*)\r?\n[\s\S]*?```|~~~(\w*)\r?\n[\s\S]*?~~~)/g;
   
-  let cleanText = rawText.replace(fileRegex, (match, name, ext) => {
-    files.push({ name, ext });
+  let cleanText = rawText.replace(fileRegex, (match, name, ext1, ext2) => {
+    files.push({ name, ext: ext1 || ext2 || '' });
     return ''; // Remove from text
   });
 
@@ -238,6 +239,17 @@ function isVisionModel(model: AIModel | undefined) {
   if (!model) return false;
   const visionKeywords = ['vl', 'vision', 'llava', 'qwen2-vl', 'qwen2.5-vl', 'pixtral'];
   return visionKeywords.some(kw => model.id.toLowerCase().includes(kw) || model.name.toLowerCase().includes(kw));
+}
+
+function isImageGenerationModel(model: AIModel | undefined): boolean {
+  if (!model) return false;
+  if (model.category === 'text-to-image' || model.category === 'image-to-image') return true;
+  if (model.architecture === 'stable-diffusion.cpp' || model.architecture === 'diffusers') return true;
+  const idLower = (model.id || '').toLowerCase();
+  const nameLower = (model.name || '').toLowerCase();
+  const repoLower = (model.modelRepoId || '').toLowerCase();
+  const imageKeywords = ['z-image', 'ideation', 'flux-', 'sdxl', 'stable-diffusion', 'imagen-', 'dall-e'];
+  return imageKeywords.some(kw => idLower.includes(kw) || nameLower.includes(kw) || repoLower.includes(kw));
 }
 
 function ThinkingBlock({ content, renderers }: { content: string, renderers: any }) {
@@ -677,11 +689,14 @@ export function ChatView({
   // ── Save canvas to database whenever it changes ───────────────────────
   useEffect(() => {
     if (canvasMode && activeConversationId && canvasDoc.content) {
-      API.saveCanvas(activeConversationId, { 
-        title: canvasDoc.title, 
-        content: canvasDoc.content, 
-        card_timestamp: canvasCardTimestamp 
-      })
+      const timeoutId = setTimeout(() => {
+        API.saveCanvas(activeConversationId, { 
+          title: canvasDoc.title, 
+          content: canvasDoc.content, 
+          card_timestamp: canvasCardTimestamp 
+        })
+      }, 1000)
+      return () => clearTimeout(timeoutId)
     }
   }, [canvasDoc, canvasMode, activeConversationId, canvasCardTimestamp])
 
@@ -706,6 +721,7 @@ export function ChatView({
     let isMounted = true
 
     async function loadCanvas() {
+      if (!activeConversationId) return;
       const saved = await API.getCanvas(activeConversationId)
       if (isMounted && saved && saved.content) {
         setCanvasDoc({
@@ -756,11 +772,11 @@ export function ChatView({
 
   const activeConv = useMemo(() => conversations.find((c) => c.id === activeConversationId), [conversations, activeConversationId]);
   const chatLocalModels = useMemo(
-    () => localModels.filter((m) => m.category !== 'text-to-image'),
+    () => localModels.filter((m) => !isImageGenerationModel(m)),
     [localModels]
   );
   const chatModels = useMemo(
-    () => models.filter((m) => m.category !== 'text-to-image'),
+    () => models.filter((m) => !isImageGenerationModel(m)),
     [models]
   );
   // Prefer localModels (which have alias·quant names) for the active model display.
@@ -963,7 +979,7 @@ export function ChatView({
     if (currentAttachments.length > 0) {
       const fileBlocks = currentAttachments.map(a => {
         const ext = a.name.split('.').pop() || '';
-        return `\n\n[File: ${a.name}]\n\`\`\`${ext}\n${a.content}\n\`\`\``;
+        return `\n\n[File: ${a.name}]\n~~~${ext}\n${a.content}\n~~~`;
       }).join('');
       textWithFiles = currentInput ? currentInput + fileBlocks : `Here are the attached files:${fileBlocks}`;
     }
@@ -1508,7 +1524,7 @@ export function ChatView({
           ) : (
             <>
               {(() => {
-                const filteredMessages = activeConv?.messages.filter(m => m.role !== 'system') || [];
+                const filteredMessages = activeConv?.messages.filter(m => (m.role as string) !== 'system') || [];
                 const lastCanvasMsgIdx = filteredMessages.findLastIndex(m => 
                   m.role === 'assistant' && looksLikeCanvasHtml(typeof m.content === 'string' ? m.content : '')
                 );

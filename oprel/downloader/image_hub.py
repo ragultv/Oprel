@@ -201,6 +201,139 @@ def validate_image_gguf_compatibility(file_path: Path) -> tuple[bool, str | None
     return True, None
 
 
+@dataclass
+class ComponentSpec:
+    vae_repo: str
+    vae_filename: str
+    vae_fallback_repos: tuple[str, ...] = ()
+    llm_repo: Optional[str] = None
+    llm_filename: Optional[str] = None
+    clip_l_repo: Optional[str] = None
+    clip_l_filename: Optional[str] = None
+    clip_g_repo: Optional[str] = None
+    clip_g_filename: Optional[str] = None
+    t5xxl_repo: Optional[str] = None
+    t5xxl_filename: Optional[str] = None
+
+
+_COMPONENT_SPECS = {
+    "lumina2": ComponentSpec(
+        vae_repo="second-state/FLUX.1-dev-GGUF",
+        vae_filename="ae.safetensors",
+        vae_fallback_repos=(
+            "camenduru/FLUX.1-dev",
+            "SicariusSicariiStuff/FLUX.1-dev",
+            "ffxvs/vae-flux",
+            "black-forest-labs/FLUX.1-schnell",
+        ),
+        llm_repo="unsloth/Qwen3-4B-Instruct-2507-GGUF",
+        llm_filename="Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+    ),
+}
+
+_COMPONENT_REPO_OVERRIDES: dict[str, str] = {
+    "unsloth/z-image-turbo-gguf": "lumina2",
+    "leejet/z-image-turbo-gguf": "lumina2",
+}
+
+
+def _get_component_spec(arch: str, repo_id: str | None) -> ComponentSpec | None:
+    if arch and arch.lower() in _COMPONENT_SPECS:
+        return _COMPONENT_SPECS[arch.lower()]
+    if repo_id and repo_id.lower() in _COMPONENT_REPO_OVERRIDES:
+        arch_key = _COMPONENT_REPO_OVERRIDES[repo_id.lower()]
+        return _COMPONENT_SPECS.get(arch_key)
+    return None
+
+
+def _resolve_component_assets(
+    main_path: Path,
+    spec: ComponentSpec,
+    cache_dir: Path,
+    force_download: bool,
+    repo_id: str | None,
+) -> ImageModelAssets:
+    vae_path: Path | None = None
+    llm_path: Path | None = None
+    clip_l_path: Path | None = None
+    clip_g_path: Path | None = None
+    t5xxl_path: Path | None = None
+
+    if spec.vae_filename:
+        candidates = [
+            main_path.parent / spec.vae_filename,
+            main_path.parent / "vae" / spec.vae_filename,
+            main_path.parent / "ae.safetensors",
+            main_path.parent / "ae.sft",
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                vae_path = candidate
+                break
+        if not vae_path and spec.vae_repo:
+            repos_to_try = [spec.vae_repo, *spec.vae_fallback_repos]
+            last_err = None
+            for r in repos_to_try:
+                try:
+                    vae_path = _download_file(r, spec.vae_filename, cache_dir, force_download)
+                    break
+                except Exception as exc:
+                    last_err = exc
+                    logger.warning("Could not download VAE '%s' from repo '%s': %s. Trying fallback candidate...", spec.vae_filename, r, exc)
+            if not vae_path and last_err:
+                raise last_err
+
+    if spec.llm_filename:
+        candidates = [
+            main_path.parent / spec.llm_filename,
+            main_path.parent / "text_encoders" / spec.llm_filename,
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                llm_path = candidate
+                break
+        if not llm_path and spec.llm_repo:
+            llm_path = _download_file(spec.llm_repo, spec.llm_filename, cache_dir, force_download)
+
+    if spec.clip_l_filename:
+        candidates = [main_path.parent / spec.clip_l_filename]
+        for candidate in candidates:
+            if candidate.exists():
+                clip_l_path = candidate
+                break
+        if not clip_l_path and spec.clip_l_repo:
+            clip_l_path = _download_file(spec.clip_l_repo, spec.clip_l_filename, cache_dir, force_download)
+
+    if spec.clip_g_filename:
+        candidates = [main_path.parent / spec.clip_g_filename]
+        for candidate in candidates:
+            if candidate.exists():
+                clip_g_path = candidate
+                break
+        if not clip_g_path and spec.clip_g_repo:
+            clip_g_path = _download_file(spec.clip_g_repo, spec.clip_g_filename, cache_dir, force_download)
+
+    if spec.t5xxl_filename:
+        candidates = [main_path.parent / spec.t5xxl_filename]
+        for candidate in candidates:
+            if candidate.exists():
+                t5xxl_path = candidate
+                break
+        if not t5xxl_path and spec.t5xxl_repo:
+            t5xxl_path = _download_file(spec.t5xxl_repo, spec.t5xxl_filename, cache_dir, force_download)
+
+    return ImageModelAssets(
+        repo_id=repo_id,
+        model_path=None,
+        diffusion_model_path=main_path,
+        vae_path=vae_path,
+        clip_l_path=clip_l_path,
+        clip_g_path=clip_g_path,
+        t5xxl_path=t5xxl_path,
+        llm_path=llm_path,
+    )
+
+
 def _select_main_model_file(repo_files: list[str]) -> str | None:
     candidates = [
         path
@@ -244,13 +377,30 @@ def resolve_image_model_assets(
                     f"Selected image model is not compatible with stable-diffusion.cpp: {reason} "
                     f"(file: {local_path.name})"
                 )
+            try:
+                arch, _ = _read_gguf_metadata_keys(local_path)
+            except Exception:
+                arch = ""
+            spec = _get_component_spec(arch, None)
+            if spec:
+                logger.info("Local image model '%s' uses component architecture '%s', resolving companion assets", local_path.name, arch)
+                return _resolve_component_assets(local_path, spec, cache_dir, force_download, repo_id=None)
             return ImageModelAssets(repo_id=None, model_path=local_path)
 
         if local_path.is_dir():
             gguf_files = sorted(local_path.rglob("*.gguf"))
             if not gguf_files:
                 raise ValueError("Unsupported local image model directory. Expected at least one .gguf file.")
-            return ImageModelAssets(repo_id=None, model_path=gguf_files[0].resolve())
+            main_gguf = gguf_files[0].resolve()
+            try:
+                arch, _ = _read_gguf_metadata_keys(main_gguf)
+            except Exception:
+                arch = ""
+            spec = _get_component_spec(arch, None)
+            if spec:
+                logger.info("Local image model directory uses component architecture '%s', resolving companion assets", arch)
+                return _resolve_component_assets(main_gguf, spec, cache_dir, force_download, repo_id=None)
+            return ImageModelAssets(repo_id=None, model_path=main_gguf)
 
         raise ValueError("Unsupported local image model path. Expected a .gguf file or directory containing one.")
 
@@ -271,6 +421,19 @@ def resolve_image_model_assets(
             if cached_model is not None:
                 is_valid, reason = validate_image_gguf_compatibility(cached_model)
                 if is_valid:
+                    try:
+                        arch, _ = _read_gguf_metadata_keys(cached_model)
+                    except Exception:
+                        arch = ""
+                    spec = _get_component_spec(arch, resolved_id)
+                    if spec:
+                        logger.info(
+                            "Using cached component image model variant for '%s': %s (arch: %s)",
+                            resolved_id,
+                            cached_model.name,
+                            arch or resolved_id,
+                        )
+                        return _resolve_component_assets(cached_model, spec, cache_dir, force_download, repo_id=resolved_id)
                     logger.info(
                         "Using cached image model variant for '%s': %s",
                         resolved_id,
@@ -303,5 +466,13 @@ def resolve_image_model_assets(
             f"Downloaded GGUF is not compatible with stable-diffusion.cpp: {reason} "
             f"(file: {model_path.name}, repo: {resolved_id})"
         )
+    try:
+        arch, _ = _read_gguf_metadata_keys(model_path)
+    except Exception:
+        arch = ""
+    spec = _get_component_spec(arch, resolved_id)
+    if spec:
+        logger.info("Downloaded GGUF '%s' uses component architecture '%s', resolving companion assets", model_path.name, arch or resolved_id)
+        return _resolve_component_assets(model_path, spec, cache_dir, force_download, repo_id=resolved_id)
     logger.info("Using GGUF image model: %s", model_path.name)
     return ImageModelAssets(repo_id=resolved_id, model_path=model_path)

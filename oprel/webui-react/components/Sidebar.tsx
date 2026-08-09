@@ -18,6 +18,7 @@ import {
   ScanText,
 } from "lucide-react"
 import { usePathname, useRouter } from "next/navigation"
+import Link from "next/link"
 import { cn } from "@/services/utils"
 import { useApp } from "@/services/context"
 import { useDownloads } from "@/services/downloadContext"
@@ -137,11 +138,11 @@ export function Sidebar() {
 
     if (canUpdateChatUrlInPlace) {
       const basePath = window.location.pathname.startsWith('/gui') ? '/gui' : ''
-      window.history.pushState(null, "", `${basePath}/chat?conversationId=${conversationId}`)
+      window.history.pushState(null, "", `${basePath}/chat/?conversationId=${conversationId}`)
       return
     }
 
-    router.push(`/chat?conversationId=${conversationId}`)
+    router.push(`/chat/?conversationId=${conversationId}`)
   }
 
   const startConversation = async () => {
@@ -150,11 +151,11 @@ export function Sidebar() {
 
     if (canUpdateChatUrlInPlace) {
       const basePath = window.location.pathname.startsWith('/gui') ? '/gui' : ''
-      window.history.pushState(null, "", `${basePath}/chat?conversationId=${newId}`)
+      window.history.pushState(null, "", `${basePath}/chat/?conversationId=${newId}`)
       return
     }
 
-    router.push(`/chat?conversationId=${newId}`)
+    router.push(`/chat/?conversationId=${newId}`)
   }
 
   function ConvGroup({ label, items }: { label: string; items: Conversation[] }) {
@@ -245,8 +246,8 @@ export function Sidebar() {
 
           {/* Nav buttons — 2 per row */}
           <div className="grid grid-cols-2 gap-2">
-            <button
-              onClick={() => router.push("/models")}
+            <Link
+              href="/models/"
               className={cn(
                 "flex flex-col items-center gap-1.5 py-3 rounded-lg border border-border text-xs font-semibold transition-all text-center",
                 isModelsRoute
@@ -256,9 +257,9 @@ export function Sidebar() {
             >
               <Box size={18} />
               <span className="text-[10px]">Models</span>
-            </button>
-            <button
-              onClick={() => router.push("/images")}
+            </Link>
+            <Link
+              href="/images/"
               className={cn(
                 "flex flex-col items-center gap-1.5 py-3 rounded-lg border border-border text-xs font-semibold transition-all text-center",
                 isImagesRoute
@@ -268,9 +269,9 @@ export function Sidebar() {
             >
               <Image size={18} />
               <span className="text-[10px]">Images</span>
-            </button>
-            <button
-              onClick={() => router.push("/ocr")}
+            </Link>
+            <Link
+              href="/ocr/"
               className={cn(
                 "flex flex-col items-center gap-1.5 py-3 rounded-lg border border-border text-xs font-semibold transition-all text-center",
                 isOcrRoute
@@ -280,9 +281,9 @@ export function Sidebar() {
             >
               <ScanText size={18} />
               <span className="text-[10px]">OCR</span>
-            </button>
-            <button
-              onClick={() => router.push("/knowledge")}
+            </Link>
+            <Link
+              href="/knowledge/"
               className={cn(
                 "flex flex-col items-center gap-1.5 py-3 rounded-lg border border-border text-xs font-semibold transition-all text-center",
                 isKnowledgeRoute
@@ -292,9 +293,9 @@ export function Sidebar() {
             >
               <Database size={18} />
               <span className="text-[10px]">Knowledge</span>
-            </button>
-            <button
-              onClick={() => router.push("/dev")}
+            </Link>
+            <Link
+              href="/dev/"
               className={cn(
                 "flex flex-col items-center gap-1.5 py-3 rounded-lg border border-border text-xs font-semibold transition-all col-span-2 text-center",
                 isDevRoute
@@ -304,7 +305,7 @@ export function Sidebar() {
             >
               <BarChart2 size={18} />
               <span className="text-[10px]">Dev</span>
-            </button>
+            </Link>
           </div>
         </div>
 

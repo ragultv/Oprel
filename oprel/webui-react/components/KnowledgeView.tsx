@@ -16,7 +16,9 @@ import {
   Layers,
   ArrowRight,
   ExternalLink,
-  Zap
+  Zap,
+  Eye,
+  X
 } from "lucide-react"
 import { API } from "@/services/api"
 import { cn } from "@/services/utils"
@@ -50,6 +52,9 @@ export function KnowledgeView() {
   const [isSearching, setIsSearching] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const { toast } = useToast()
+  const [previewContent, setPreviewContent] = useState<string | null>(null)
+  const [previewFilename, setPreviewFilename] = useState<string | null>(null)
+  const [previewLoading, setPreviewLoading] = useState(false)
 
   const refreshFiles = async () => {
     try {
@@ -134,16 +139,17 @@ export function KnowledgeView() {
     <div className="flex flex-col h-full bg-[#0a0a0a] relative overflow-hidden">
       <div className="absolute inset-x-0  pointer-events-none" />
       {/* Refined Header */}
-      <header className="relative px-6 py-5 border-b border-border/80 bg-[#0f0f0f]/90 backdrop-blur flex items-center justify-between shrink-0">
+      <header className="h-14 border-b border-border flex items-center justify-between px-5 shrink-0 bg-background/95 backdrop-blur-sm sticky top-0 z-20">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center shadow-[0_0_0_1px_rgba(238,70,71,0.08)]">
-            <Database size={20} className="text-primary" />
-          </div>
           <div>
-            <h1 className="text-base font-bold text-foreground">Knowledge Base</h1>
-            <div className="flex items-center gap-1.5">
-              <span className="flex h-1.5 w-1.5 rounded-full bg-primary" />
-              <p className="text-[11px] text-muted-foreground font-medium uppercase tracking-wider">Local Vector Store</p>
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-bold text-foreground">
+                Knowledge Base
+              </span>
+              <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+            </div>
+            <div className="text-[10px] text-muted-foreground font-medium">
+              Local Vector Store
             </div>
           </div>
         </div>
@@ -308,9 +314,30 @@ export function KnowledgeView() {
                               </div>
                             </td>
                             <td className="px-6 py-4 text-right">
-                              <button className="p-1.5 rounded-lg text-muted-foreground hover:bg-red-500/10 hover:text-red-400 transition-all">
-                                <Trash2 size={14} />
-                              </button>
+                              <div className="flex items-center justify-end gap-1">
+                                <button 
+                                  onClick={async () => {
+                                    setPreviewFilename(file.filename);
+                                    setPreviewLoading(true);
+                                    try {
+                                      const res = await API.previewDocument(file.filename);
+                                      setPreviewContent(res.content);
+                                    } catch (e: any) {
+                                      toast({ title: "Preview Failed", description: e.message, variant: "destructive" });
+                                      setPreviewFilename(null);
+                                    } finally {
+                                      setPreviewLoading(false);
+                                    }
+                                  }}
+                                  className="p-1.5 rounded-lg text-muted-foreground hover:bg-secondary hover:text-foreground transition-all"
+                                  title="Preview Document"
+                                >
+                                  {previewLoading && previewFilename === file.filename ? <RefreshCcw size={14} className="animate-spin" /> : <Eye size={14} />}
+                                </button>
+                                <button className="p-1.5 rounded-lg text-muted-foreground hover:bg-red-500/10 hover:text-red-400 transition-all">
+                                  <Trash2 size={14} />
+                                </button>
+                              </div>
                             </td>
                           </tr>
                         ))
@@ -373,6 +400,37 @@ export function KnowledgeView() {
           </div>
         </div>
       </div>
+
+      {/* Preview Modal */}
+      {(previewContent !== null || previewLoading) && previewFilename && (
+        <div className="absolute inset-0 z-50 bg-background/80 backdrop-blur-sm flex items-center justify-center p-6 animate-in fade-in duration-200">
+          <div className="w-full max-w-4xl max-h-[80vh] flex flex-col bg-[#1e1e1e] border border-border rounded-2xl shadow-2xl overflow-hidden">
+            <div className="flex items-center justify-between p-4 border-b border-border/50 bg-secondary/30">
+              <h3 className="font-bold text-sm text-foreground flex items-center gap-2">
+                <FileText size={16} className="text-primary" />
+                {previewFilename}
+              </h3>
+              <button 
+                onClick={() => { setPreviewContent(null); setPreviewFilename(null); }}
+                className="p-1.5 rounded-lg text-muted-foreground hover:bg-white/10 hover:text-foreground transition-all"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4 md:p-6 bg-[#1a1a1a]">
+              {previewLoading ? (
+                <div className="flex items-center justify-center py-20">
+                  <RefreshCcw size={24} className="animate-spin text-primary" />
+                </div>
+              ) : (
+                <pre className="text-sm font-mono text-muted-foreground whitespace-pre-wrap leading-relaxed">
+                  {previewContent}
+                </pre>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -103,7 +103,54 @@ def _resolve_model_id(model_id: str) -> str:
 
 def _extract_prompt_and_images(prompt: Any, images: list[str] | None) -> tuple[str, list[str] | None, str | list[Any]]:
     import base64
-    from oprel.utils.multimodal import preprocess_image_to_bytes
+    from oprel.utils.vision_processor import VisionImageProcessor, VisionProcessingResult
+
+    def _process_one_image(b64: str) -> str:
+        """
+        Run VisionImageProcessor on a single base64-encoded image.
+
+        Returns an optimized base64 string.  On any failure, logs clearly and
+        returns the *original* b64 so we never silently lose the image —
+        but the caller will know the full-size image is being sent.
+        """
+        if not CONFIG.vision_optimization_enabled:
+            return b64
+
+        try:
+            img_bytes = base64.b64decode(b64)
+        except Exception as decode_exc:
+            logger.error(f"[Vision] Failed to base64-decode image: {decode_exc}")
+            return b64
+
+        try:
+            processor = VisionImageProcessor(
+                max_pixels=CONFIG.vision_max_pixels,
+                quality=CONFIG.vision_image_quality,
+            )
+            result: VisionProcessingResult = processor.process(img_bytes)
+
+            # ── [Vision Performance] benchmark summary ──────────────────────
+            logger.info(
+                f"[Vision Performance]\n"
+                f"  Original:       {result.original_width}x{result.original_height} "
+                f"({result.original_pixels / 1_000_000:.2f} MP)\n"
+                f"  Optimized:      {result.output_width}x{result.output_height} "
+                f"({result.output_pixels / 1_000_000:.2f} MP)\n"
+                f"  Pixel budget:   {CONFIG.vision_max_pixels}\n"
+                f"  Resized:        {result.was_resized}\n"
+                f"  Scale factor:   {result.scale_factor:.3f}\n"
+                f"  Preprocessing:  {result.preprocessing_ms:.1f} ms"
+            )
+
+            return base64.b64encode(result.image_bytes).decode("utf-8")
+
+        except Exception as proc_exc:
+            logger.error(
+                f"[Vision] Preprocessing failed: {proc_exc}  "
+                f"Falling back to original image (may be oversized).",
+                exc_info=True,
+            )
+            return b64
 
     if isinstance(prompt, list):
         text_parts: list[str] = []
@@ -118,30 +165,17 @@ def _extract_prompt_and_images(prompt: Any, images: list[str] | None) -> tuple[s
                     if url.startswith("data:image"):
                         try:
                             _, b64 = url.split(",", 1)
-                            # Preprocess base64 image (decode -> resize/compress -> re-encode)
-                            img_bytes = base64.b64decode(b64)
-                            compressed_bytes = preprocess_image_to_bytes(img_bytes)
-                            preprocessed_b64 = base64.b64encode(compressed_bytes).decode('utf-8')
-                            images.append(preprocessed_b64)
+                            optimized_b64 = _process_one_image(b64)
+                            images.append(optimized_b64)
                         except Exception as e:
-                            logger.error(f"Failed to preprocess base64 image: {e}")
-                            images.append(b64)
+                            logger.error(f"[Vision] Failed to extract image from data URL: {e}")
         return " ".join(text_parts), images, prompt
 
     if images:
-        preprocessed_images = []
-        for b64 in images:
-            try:
-                img_bytes = base64.b64decode(b64)
-                compressed_bytes = preprocess_image_to_bytes(img_bytes)
-                preprocessed_b64 = base64.b64encode(compressed_bytes).decode('utf-8')
-                preprocessed_images.append(preprocessed_b64)
-            except Exception as e:
-                logger.error(f"Failed to preprocess direct base64 image: {e}")
-                preprocessed_images.append(b64)
-        images = preprocessed_images
+        images = [_process_one_image(b64) for b64 in images]
 
     return str(prompt), images, prompt
+
 
 
 async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult:

@@ -18,20 +18,66 @@ logger = get_logger(__name__)
 def preprocess_image_to_bytes(
     image_input: Union[str, bytes, Path, Image.Image],
     max_dim: int = 1024,
-    quality: int = 80
+    max_pixels: Optional[int] = None,
+    quality: int = 80,
 ) -> bytes:
     """
-    Preprocessor: Resize and Compress an image.
-    Takes an image (file path, raw bytes, Path object, or PIL Image) and:
-    1. Resizes it maintaining aspect ratio if any dimension exceeds max_dim.
-    2. Compresses it to JPEG format with specified quality.
-    
+    Preprocess an image for vision model input.
+
+    Two operating modes (max_pixels takes priority when provided):
+
+    * **Pixel-budget mode** (``max_pixels`` is set):
+      Downscales the image so that ``width × height <= max_pixels`` while
+      preserving the aspect ratio exactly.  This is the correct mode for
+      vision inference — it produces consistently-sized inputs regardless of
+      the image's original aspect ratio.  Never upscales.
+
+    * **Legacy max-dim mode** (only ``max_dim`` provided):
+      Clamps the longest axis to ``max_dim``.  Kept for backward compatibility
+      with existing callers that don't pass ``max_pixels``.
+
+    Both modes:
+    - Return original bytes immediately if no resize is needed (passthrough).
+    - Convert palette / RGBA images to RGB (JPEG compatibility).
+    - Compress to JPEG once with the specified quality.
+
+    Args:
+        image_input: File path (str/Path), raw bytes, or PIL Image.
+        max_dim:     Longest-axis cap — used only when ``max_pixels`` is None.
+        max_pixels:  Pixel budget for pixel-budget mode.  When set, ``max_dim``
+                     is ignored.  Pass ``config.vision_max_pixels`` here.
+        quality:     JPEG output quality (1–100).
+
     Returns:
-        bytes: Compressed JPEG image bytes.
+        bytes: Compressed image bytes ready for base64 encoding.
     """
+    if max_pixels is not None:
+        # ── Pixel-budget mode: delegate to VisionImageProcessor ──────────
+        from oprel.utils.vision_processor import VisionImageProcessor
+
+        # Normalise input to bytes so VisionImageProcessor can inspect the
+        # format header without re-reading from disk.
+        if isinstance(image_input, (str, Path)):
+            with open(image_input, "rb") as fh:
+                raw_bytes: bytes = fh.read()
+        elif isinstance(image_input, bytes):
+            raw_bytes = image_input
+        elif isinstance(image_input, Image.Image):
+            buf = BytesIO()
+            fmt = image_input.format or "JPEG"
+            image_input.save(buf, format=fmt)
+            raw_bytes = buf.getvalue()
+        else:
+            raise ValueError(f"Unsupported image input type: {type(image_input)}")
+
+        processor = VisionImageProcessor(max_pixels=max_pixels, quality=quality)
+        result = processor.process(raw_bytes)
+        return result.image_bytes
+
+    # ── Legacy max-dim mode (backward compat) ────────────────────────────
     start_time = time.perf_counter()
     img = None
-    
+
     try:
         if isinstance(image_input, Image.Image):
             img = image_input
@@ -41,16 +87,15 @@ def preprocess_image_to_bytes(
             img = Image.open(BytesIO(image_input))
         else:
             raise ValueError(f"Unsupported image input type: {type(image_input)}")
-            
+
         # Convert RGBA / P modes to RGB for JPEG compatibility
         if img.mode in ("RGBA", "LA", "P"):
-            # Create a white background
             background = Image.new("RGB", img.size, (255, 255, 255))
             background.paste(img, mask=img.split()[-1] if img.mode == "RGBA" else None)
             img = background
         elif img.mode != "RGB":
             img = img.convert("RGB")
-            
+
         # Resize if any dimension exceeds max_dim
         width, height = img.size
         if width > max_dim or height > max_dim:
@@ -60,26 +105,27 @@ def preprocess_image_to_bytes(
             else:
                 new_height = max_dim
                 new_width = int(width * (max_dim / height))
-            
+
             try:
                 resample_filter = Image.Resampling.BILINEAR
             except AttributeError:
-                resample_filter = Image.BILINEAR
-                
+                resample_filter = Image.BILINEAR  # type: ignore[attr-defined]
+
             img = img.resize((new_width, new_height), resample_filter)
-            
-        # Compress and save to JPEG bytes
+
         out_io = BytesIO()
         img.save(out_io, format="JPEG", quality=quality)
         compressed_bytes = out_io.getvalue()
-        
+
         elapsed_ms = (time.perf_counter() - start_time) * 1000
-        logger.info(f"Image preprocessed (resized to {img.size[0]}x{img.size[1]}, compressed to JPEG) in {elapsed_ms:.1f}ms")
-        
+        logger.info(
+            f"Image preprocessed (resized to {img.size[0]}x{img.size[1]}, "
+            f"compressed to JPEG) in {elapsed_ms:.1f}ms"
+        )
         return compressed_bytes
+
     except Exception as exc:
         logger.error(f"Image preprocessing failed: {exc}", exc_info=True)
-        # Fallback to original bytes/file if possible
         if isinstance(image_input, bytes):
             return image_input
         elif isinstance(image_input, (str, Path)):

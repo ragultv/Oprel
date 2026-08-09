@@ -115,6 +115,7 @@ function ModelDetailPanel({ model }: { model: AIModel }) {
   const [localQuants, setLocalQuants] = useState<string[]>([])
   const [deletingQuant, setDeletingQuant] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
+  const [hasQuants, setHasQuants] = useState<boolean>(true)
   const isImageModel = model.category === "text-to-image"
 
   // Fetch (or re-fetch) local quantizations
@@ -137,7 +138,7 @@ function ModelDetailPanel({ model }: { model: AIModel }) {
   }, [model.id, model.modelRepoId, downloadsKey])
 
   const handleDownload = async () => {
-    if (!selectedQuantization) {
+    if (!selectedQuantization && hasQuants) {
       toast({
         title: "No Quantization Selected",
         description: "Please select a quantization level before downloading",
@@ -151,15 +152,15 @@ function ModelDetailPanel({ model }: { model: AIModel }) {
     try {
       const actualModelId = model.modelRepoId || model.id
       // Start download and get download_id
-      const response = await API.pullModel(actualModelId, selectedQuantization)
+      const response = await API.pullModel(actualModelId, selectedQuantization || undefined)
       const downloadId = response.download_id
       
       // Add to download manager with initial state
-      const displayId = `${actualModelId}-${selectedQuantization}`
+      const displayId = selectedQuantization ? `${actualModelId}-${selectedQuantization}` : actualModelId
       addDownload({
         modelId: displayId,
         modelName: model.name,
-        quantization: selectedQuantization,
+        quantization: selectedQuantization || "default",
         progress: 0,
         downloaded: 0,
         total: selectedSize * 1024 * 1024 * 1024, // Convert GB to bytes
@@ -175,7 +176,7 @@ function ModelDetailPanel({ model }: { model: AIModel }) {
       // Show success toast
       toast({
         title: "Download Started",
-        description: `${model.name} (${selectedQuantization}) is now downloading`,
+        description: `${model.name} ${selectedQuantization ? `(${selectedQuantization}) ` : ''}is now downloading`,
       })
       
     } catch (error) {
@@ -194,14 +195,14 @@ function ModelDetailPanel({ model }: { model: AIModel }) {
     setLoading(true)
     try {
       const actualModelId = model.modelRepoId || model.id
-      const quantToDownload = selectedQuantization || model.quantization || "Q8_0"
+      const quantToDownload = selectedQuantization || model.quantization || undefined
       const response = await API.pullImageModel(actualModelId, quantToDownload)
-      const displayId = `${actualModelId}-${quantToDownload}`
+      const displayId = quantToDownload ? `${actualModelId}-${quantToDownload}` : actualModelId
 
       addDownload({
         modelId: displayId,
         modelName: model.name,
-        quantization: quantToDownload,
+        quantization: quantToDownload || "default",
         progress: 0,
         downloaded: 0,
         total: 0,
@@ -285,15 +286,15 @@ function ModelDetailPanel({ model }: { model: AIModel }) {
   //   Load      — chosen quant IS on disk, but model isn't loaded yet
   //
   const isDownloaded = model.downloaded || model.status === 'available' || model.status === 'loaded'
-  const isSelectedQuantAvailable = localQuants.includes(selectedQuantization)
+  const isSelectedQuantAvailable = localQuants.includes(selectedQuantization) || (!hasQuants && isDownloaded)
 
   // ① A quant is explicitly selected and it is NOT present locally → Download
-  const shouldShowDownload = !!selectedQuantization && !isSelectedQuantAvailable
+  const shouldShowDownload = (!hasQuants && !isDownloaded) || (!!selectedQuantization && !isSelectedQuantAvailable)
 
   // ② Model is loaded in VRAM AND (no quant selection override, OR the chosen quant IS local)
   //    This is intentionally checked BEFORE shouldShowLoad so Chat wins when already loaded.
   const shouldShowChat =
-    model.status === "loaded" && (!selectedQuantization || isSelectedQuantAvailable)
+    model.status === "loaded" && (!hasQuants || !selectedQuantization || isSelectedQuantAvailable)
 
   // ③ A local quant is chosen but the model isn't loaded (or a different quant is loaded)
   const shouldShowLoad =
@@ -343,7 +344,7 @@ function ModelDetailPanel({ model }: { model: AIModel }) {
               ) : (
                 <button
                   onClick={handleImageDownload}
-                  disabled={loading}
+                  disabled={loading || (!selectedQuantization && hasQuants)}
                   className="flex items-center gap-2 px-4 py-2 rounded-lg bg-green-600 text-white text-sm font-semibold hover:bg-green-700 transition-all disabled:opacity-60"
                 >
                   {loading ? (
@@ -353,7 +354,7 @@ function ModelDetailPanel({ model }: { model: AIModel }) {
                     </>
                   ) : (
                     <>
-                      <Play size={14} /> Download GGUF
+                      <Play size={14} /> Download{selectedQuantization ? ` GGUF (${selectedQuantization})` : " GGUF"}
                     </>
                   )}
                 </button>
@@ -388,7 +389,7 @@ function ModelDetailPanel({ model }: { model: AIModel }) {
             ) : (
               <button
                 onClick={handleDownload}
-                disabled={loading || !selectedQuantization}
+                disabled={loading || (!selectedQuantization && hasQuants)}
                 className="flex items-center gap-2 px-4 py-2 rounded-lg bg-green-600 text-white text-sm font-semibold hover:bg-green-700 transition-all disabled:opacity-60"
               >
                 {loading ? (
@@ -398,7 +399,7 @@ function ModelDetailPanel({ model }: { model: AIModel }) {
                   </>
                 ) : (
                   <>
-                    <Play size={14} /> Download {selectedQuantization ? `(${selectedQuantization})` : ""}
+                    <Play size={14} /> Download{selectedQuantization ? ` (${selectedQuantization})` : ""}
                   </>
                 )}
               </button>
@@ -429,9 +430,10 @@ function ModelDetailPanel({ model }: { model: AIModel }) {
         <div className="grid grid-cols-2 xl:grid-cols-3 gap-3">
           <QuantizationSelector 
             modelId={model.modelRepoId || model.id}
-            onQuantizationChange={(quant, size, parameters) => {
+            onQuantizationChange={(quant, size, parameters, hasQ) => {
               setSelectedQuantization(quant)
               setSelectedSize(size)
+              if (hasQ !== undefined) setHasQuants(hasQ)
               console.log(`Selected ${quant}: ${size} GB (${parameters})`)
             }}
             onQualityChange={(quality) => {

@@ -56,6 +56,19 @@ async def upload_document(filename: str, file_obj: BinaryIO) -> dict[str, Any]:
     file_path = knowledge_dir / filename
 
     try:
+        content = file_obj.read().decode("utf-8")
+    except UnicodeDecodeError:
+        content = "Binary file content not previewable."
+    
+    file_obj.seek(0)
+    
+    from oprel.server.db import save_knowledge_document
+    try:
+        save_knowledge_document(filename, content, len(content))
+    except Exception as e:
+        logger.error(f"Failed to save document to DB: {e}")
+
+    try:
         with file_path.open("wb") as buffer:
             shutil.copyfileobj(file_obj, buffer)
 
@@ -205,3 +218,52 @@ def list_documents() -> list[dict[str, Any]]:
 
 def delete_document(filename: str) -> dict[str, Any]:
     return {"success": False, "message": "Deletion via API not yet implemented"}
+
+
+def get_document_content(filename: str) -> dict[str, Any]:
+    from oprel.server.services.context import CONFIG
+    import urllib.parse
+    import json
+    
+    # URL unquote in case filename comes url-encoded
+    safe_filename = urllib.parse.unquote(filename)
+    
+    # 1. Try to fetch from SQLite DB
+    from oprel.server.db import get_knowledge_document
+    doc = get_knowledge_document(safe_filename)
+    if doc:
+        return {"success": True, "content": doc["content"]}
+
+    # 2. Try to fetch original file from cache
+    file_path = CONFIG.cache_dir / "knowledge_files" / safe_filename
+    if file_path.exists():
+        try:
+            content = file_path.read_text(encoding="utf-8")
+            return {"success": True, "content": content}
+        except Exception:
+            return {"success": False, "message": "Preview not available for this file type (binary or unsupported encoding)"}
+            
+    # 3. If not found in DB or cache, reconstruct from indexed chunks in DB
+    try:
+        from oprel.knowledge.config import KNOWLEDGE_DIR
+        bm25_cache_path = KNOWLEDGE_DIR / "bm25_docs.json"
+        if bm25_cache_path.exists():
+            with open(bm25_cache_path, 'r', encoding='utf-8') as f:
+                docs = json.load(f)
+            
+            # Find all chunks matching this filename
+            chunks = []
+            for doc in docs:
+                meta = doc.get("metadata", {})
+                if meta.get("filename") == safe_filename:
+                    chunks.append(doc.get("text", ""))
+                    
+            if chunks:
+                reconstructed = "\n\n... (chunk boundary) ...\n\n".join(chunks)
+                return {"success": True, "content": f"[Reconstructed from {len(chunks)} indexed chunks]\n\n{reconstructed}"}
+                
+    except Exception as e:
+        from oprel.server.services.context import logger
+        logger.error(f"Failed to reconstruct from db: {e}")
+        
+    return {"success": False, "message": f"File '{safe_filename}' not found in cache or DB"}
