@@ -415,7 +415,7 @@ async def _call_gemini(api_key: str, body: Any, messages: list[dict]) -> str:
         if message["role"] == "system":
             continue
         role = "model" if message["role"] == "assistant" else "user"
-        content_text = str(message["content"])
+        content_text = _message_content_to_text(message["content"])
         if not use_system_instruction and system_msg and index == 1:
             content_text = f"{system_msg['content']}\n\n{content_text}"
         contents.append({"role": role, "parts": [{"text": content_text}]})
@@ -537,7 +537,7 @@ async def _stream_gemini(api_key: str, body: Any, messages: list[dict]) -> Async
         if message["role"] == "system":
             continue
         role = "model" if message["role"] == "assistant" else "user"
-        content_text = str(message["content"])
+        content_text = _message_content_to_text(message["content"])
         if not use_system_instruction and system_msg and index == 1:
             content_text = f"{system_msg['content']}\n\n{content_text}"
         contents.append({"role": role, "parts": [{"text": content_text}]})

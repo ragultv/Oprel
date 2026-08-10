@@ -424,7 +424,7 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
                 
                 if full_resp:
                     for char in full_resp:
-                        yield f"data: {char}\n\n"
+                        yield f"data: {json.dumps(char)}\n\n"
 
                 for token in model._client.generate(
                     prompt=full_prompt,
@@ -437,9 +437,10 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
                     images=images if images else None,
                     model=resolved_model_id,
                 ):
-                    full_resp += token
-                    token_count += 1
-                    yield f"data: {token}\n\n"
+                    if token:
+                        full_resp += token
+                        yield f"data: {json.dumps(token)}\n\n"
+                        token_count += 1
 
                 end_gen_time = time_module.perf_counter()
                 duration = end_gen_time - start_gen_time
