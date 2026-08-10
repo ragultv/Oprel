@@ -34,6 +34,7 @@ import { useRouter } from "next/navigation"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import remarkBreaks from "remark-breaks"
+import rehypeRaw from "rehype-raw"
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter"
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism"
 import { cn } from "@/services/utils"
@@ -273,7 +274,7 @@ function ThinkingBlock({ content, renderers }: { content: string, renderers: any
 
       {isExpanded && (
         <div className="px-4 text-muted-foreground italic text-sm border-t border-primary/5 pt-3 animate-in fade-in slide-in-from-top-2 duration-300">
-          <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={renderers}>{content}</ReactMarkdown>
+          <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} rehypePlugins={[rehypeRaw]} components={renderers}>{content}</ReactMarkdown>
         </div>
       )}
     </div>
@@ -466,6 +467,7 @@ function MessageBubble({
           <div className="oprel-markdown">
             <ReactMarkdown
               remarkPlugins={[remarkGfm, remarkBreaks]}
+              rehypePlugins={[rehypeRaw]}
               components={renderers}
             >
               {cleaned}
