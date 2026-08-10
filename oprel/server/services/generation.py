@@ -302,12 +302,23 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
             except Exception as exc:
                 logger.error(f"RAG search error: {exc}", exc_info=True)
                 search_results = []
+                
+            rag_html_block = ""
 
             if search_results:
                 context_parts = []
+                max_chars = 4000
+                current_chars = 0
                 for i, res in enumerate(search_results):
                     source = res.get("metadata", {}).get("filename", "Unknown source")
-                    context_parts.append(f"Source [{i+1}] ({source}):\n{res['text']}")
+                    chunk_text = res['text']
+                    if current_chars + len(chunk_text) > max_chars:
+                        chunk_text = chunk_text[:max_chars - current_chars] + "..."
+                    
+                    context_parts.append(f"Source [{i+1}] ({source}):\n{chunk_text}")
+                    current_chars += len(chunk_text)
+                    if current_chars >= max_chars:
+                        break
 
                 context_text = "\n\n".join(context_parts)
                 logger.info(f"RAG: Found {len(search_results)} relevant chunks")
@@ -321,6 +332,17 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
                     "INSTRUCTION: Use ONLY the provided context above to answer. "
                     "Cite source labels [1], [2], etc. If the answer isn't firmly supported by the context, "
                     "state that you don't have enough information."
+                )
+                
+                html_chunks = "\n\n".join(
+                    f"**Source [{i+1}] ({search_results[i].get('metadata', {}).get('filename', 'Unknown')})**\n```text\n{search_results[i]['text']}\n```"
+                    for i in range(len(context_parts))
+                )
+                rag_html_block = (
+                    f'<details style="font-size: 0.8rem; margin-bottom: 1rem; opacity: 0.8; border-left: 2px solid #555; padding-left: 12px;">\n'
+                    f'<summary style="cursor: pointer; font-weight: 500;">🔍 Used {len(context_parts)} knowledge base chunks</summary>\n\n'
+                    f'{html_chunks}\n\n'
+                    f'</details>\n\n'
                 )
 
         except Exception as exc:
@@ -395,10 +417,14 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
 
     if params.stream:
         async def generate_stream() -> AsyncIterator[str]:
-            full_resp = ""
+            full_resp = rag_html_block if locals().get('rag_html_block') else ""
             try:
                 start_gen_time = time_module.perf_counter()
                 token_count = 0
+                
+                if full_resp:
+                    for char in full_resp:
+                        yield f"data: {char}\n\n"
 
                 for token in model._client.generate(
                     prompt=full_prompt,
@@ -447,7 +473,7 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
         return StreamResult(iterator=generate_stream(), conversation_id=conv_id)
 
     start_gen_time = time_module.perf_counter()
-    text = model._client.generate(
+    text = (rag_html_block if locals().get('rag_html_block') else "") + model._client.generate(
         prompt=full_prompt,
         max_tokens=params.max_tokens,
         temperature=params.temperature,

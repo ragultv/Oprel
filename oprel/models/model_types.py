@@ -39,7 +39,7 @@ def detect_model_type(model_id: str) -> ModelType:
     model_lower = model_id.lower()
     
     # Vision models
-    if any(x in model_lower for x in ['vl', 'vision', 'llava', 'minicpm-v', 'moondream', 'internvl']):
+    if any(x in model_lower for x in ['vl', 'vision', 'llava','surya', 'minicpm-v', 'moondream', 'internvl']):
         return "vision"
     
     # Image generation
