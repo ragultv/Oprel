@@ -621,6 +621,15 @@ export const API = {
     return res.json();
   },
 
+  async previewDocument(filename: string): Promise<{content: string}> {
+    const res = await fetch(`${API_BASE}/index/documents/${encodeURIComponent(filename)}/preview`);
+    if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: 'Failed to fetch preview' }));
+        throw new Error(err.detail || 'Failed to fetch preview');
+    }
+    return res.json();
+  },
+
   async searchKnowledge(q: string, top_k = 5): Promise<any[]> {
     const res = await fetch(`${API_BASE}/index/search?q=${encodeURIComponent(q)}&top_k=${top_k}`);
     if (!res.ok) throw new Error('Failed to search knowledge base');

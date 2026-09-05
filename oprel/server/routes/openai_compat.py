@@ -175,10 +175,18 @@ async def _handle_chat_completions(request: OpenAIChatRequest, referer: str):
                 while "\n\n" in buffer:
                     line, buffer = buffer.split("\n\n", 1)
                     if line.startswith("data: "):
-                        token = line[6:]
-                        if token.startswith("[ERROR]"):
-                            yield f"data: {token}\n\n"
+                        payload = line[6:]
+                        if payload.startswith("[ERROR]"):
+                            yield f"data: {payload}\n\n"
                             continue
+                            
+                        try:
+                            # It's a JSON encoded string token from generation.py
+                            token = json.loads(payload)
+                        except json.JSONDecodeError:
+                            # Fallback if it wasn't JSON encoded
+                            token = payload
+                            
                         if token and token != "[DONE]":
                             chunk = {
                                 "id": request_id,
@@ -196,17 +204,23 @@ async def _handle_chat_completions(request: OpenAIChatRequest, referer: str):
                             yield f"data: {json.dumps(chunk)}\n\n"
 
             if buffer.startswith("data: "):
-                token = buffer[6:]
-                if token.startswith("[ERROR]"):
-                    yield f"data: {token}\n\n"
-                elif token and token != "[DONE]":
-                    yield f"data: {json.dumps({
-                        'id': request_id,
-                        'object': 'chat.completion.chunk',
-                        'created': int(time_module.time()),
-                        'model': request.model,
-                        'choices': [{'index': 0, 'delta': {'content': token}, 'finish_reason': None}]
-                    })}\n\n"
+                payload = buffer[6:]
+                if payload.startswith("[ERROR]"):
+                    yield f"data: {payload}\n\n"
+                else:
+                    try:
+                        token = json.loads(payload)
+                    except json.JSONDecodeError:
+                        token = payload
+                        
+                    if token and token != "[DONE]":
+                        yield f"data: {json.dumps({
+                            'id': request_id,
+                            'object': 'chat.completion.chunk',
+                            'created': int(time_module.time()),
+                            'model': request.model,
+                            'choices': [{'index': 0, 'delta': {'content': token}, 'finish_reason': None}]
+                        })}\n\n"
 
             final_chunk = {
                 "id": request_id,

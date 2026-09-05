@@ -143,6 +143,28 @@ class Config(BaseModel):
         default=None, description="Path to custom CA certificate bundle (for corporate proxies)"
     )
 
+    # Vision preprocessing (image optimization before llama.cpp inference)
+    vision_optimization_enabled: bool = Field(
+        default=True,
+        description="Downscale oversized images before vision model inference to reduce encoding latency",
+    )
+    vision_max_pixels: int = Field(
+        default=409_600,
+        ge=1,
+        description=(
+            "Maximum pixel count (width × height) for vision model inputs. "
+            "Images exceeding this budget are downscaled with aspect ratio preserved. "
+            "Reference values: 262144 ≈ 512×512, 409600 ≈ 640×640, "
+            "589824 ≈ 768×768, 1048576 ≈ 1024×1024."
+        ),
+    )
+    vision_image_quality: int = Field(
+        default=90,
+        ge=1,
+        le=100,
+        description="JPEG quality (1–100) used when re-encoding preprocessed vision images",
+    )
+
     class Config:
         arbitrary_types_allowed = True
 

@@ -14,7 +14,7 @@ export default function NewChatPage() {
     if (didInit.current) return
     didInit.current = true
     createConversation().then((newId) => {
-      router.replace(`/chat?conversationId=${newId}`)
+      router.replace(`/chat/?conversationId=${newId}`)
     })
   }, [createConversation, router])
 

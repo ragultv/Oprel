@@ -108,7 +108,6 @@ async def fetch_provider_models(provider_id: str) -> list[str]:
         return [
     "abacusai/dracarys-llama-3.1-70b-instruct",
     "deepseek-ai/deepseek-v4-flash",
-    "deepseek-ai/deepseek-v4-pro",
     "google/diffusiongemma-26b-a4b-it",
     "google/gemma-3n-e2b-it",
     "google/gemma-3n-e4b-it",
@@ -124,7 +123,6 @@ async def fetch_provider_models(provider_id: str) -> list[str]:
     "minimaxai/minimax-m3",
     "mistralai/ministral-14b-instruct-2512",
     "mistralai/mistral-large-3-675b-instruct-2512",
-    "mistralai/mistral-medium-3.5-128b",
     "mistralai/mistral-small-4-119b-2603",
     "nvidia/gliner-pii",
     "nvidia/ising-calibration-1-35b-a3b",
@@ -148,7 +146,6 @@ async def fetch_provider_models(provider_id: str) -> list[str]:
     "openai/gpt-oss-20b",
     "qwen/qwen3-next-80b-a3b-instruct",
     "qwen/qwen3.5-122b-a10b",
-    "qwen/qwen3.5-397b-a17b",
     "sarvamai/sarvam-m",
     "stepfun-ai/step-3.5-flash",
     "stepfun-ai/step-3.7-flash",
@@ -199,8 +196,9 @@ async def fetch_provider_models(provider_id: str) -> list[str]:
 
 # ─── Context Preparation Helper ──────────────────────────────────────────────
 
-async def _prepare_chat_context(body: Any, raw_messages: list[dict], p_type: str) -> list[dict]:
+async def _prepare_chat_context(body: Any, raw_messages: list[dict], p_type: str) -> tuple[list[dict], str]:
     messages = [dict(msg) for msg in raw_messages]
+    rag_html_block = ""
 
     if body.rag and messages:
         last_user_index = next((i for i in range(len(messages) - 1, -1, -1) if messages[i]["role"] == "user"), None)
@@ -268,6 +266,17 @@ async def _prepare_chat_context(body: Any, raw_messages: list[dict], p_type: str
                             "state that you don't have enough information."
                         )
                         logger.info(f"Provider RAG: Injected {len(context_parts)} chunks, ~{used_tokens} tokens")
+                        
+                        html_chunks = "\n\n".join(
+                            f"**Source [{i+1}] ({search_results[i].get('metadata', {}).get('filename', 'Unknown')})**\n```text\n{search_results[i]['text']}\n```"
+                            for i in range(len(context_parts))
+                        )
+                        rag_html_block = (
+                            f'<details style="font-size: 0.8rem; margin-bottom: 1rem; opacity: 0.8; border-left: 2px solid #555; padding-left: 12px;">\n'
+                            f'<summary style="cursor: pointer; font-weight: 500;">🔍 Used {len(context_parts)} knowledge base chunks</summary>\n\n'
+                            f'{html_chunks}\n\n'
+                            f'</details>\n\n'
+                        )
             except Exception as exc:
                 logger.error(f"Provider RAG search failed: {exc}")
 
@@ -311,15 +320,15 @@ async def _prepare_chat_context(body: Any, raw_messages: list[dict], p_type: str
             logger.warning(
                 f"Provider {p_type}: trimmed prompt from ~{total_tokens} to ~{compute_prompt_tokens(messages)} tokens to fit request budget"
             )
-
-    return messages
+        
+    return messages, rag_html_block
 
 
 # ─── Provider Callers (Non-Streaming) ────────────────────────────────────────
 
 async def _call_openai(api_key: str, base_url: str, body: Any, messages: list[dict]) -> str:
     clean_messages = [{k: v for k, v in message.items() if not k.startswith("_")} for message in messages]
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with httpx.AsyncClient(timeout=300.0) as client:
         resp = await client.post(
             f"{base_url}/chat/completions",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -368,7 +377,7 @@ async def _call_groq(api_key: str, base_url: str, body: Any, messages: list[dict
 async def _call_openrouter(api_key: str, base_url: str, body: Any, messages: list[dict]) -> str:
     url = base_url or "https://openrouter.ai/api/v1"
     clean_messages = [{k: v for k, v in message.items() if not k.startswith("_")} for message in messages]
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with httpx.AsyncClient(timeout=300.0) as client:
         resp = await client.post(
             f"{url}/chat/completions",
             headers={
@@ -406,7 +415,7 @@ async def _call_gemini(api_key: str, body: Any, messages: list[dict]) -> str:
         if message["role"] == "system":
             continue
         role = "model" if message["role"] == "assistant" else "user"
-        content_text = str(message["content"])
+        content_text = _message_content_to_text(message["content"])
         if not use_system_instruction and system_msg and index == 1:
             content_text = f"{system_msg['content']}\n\n{content_text}"
         contents.append({"role": role, "parts": [{"text": content_text}]})
@@ -434,7 +443,7 @@ async def _call_gemini(api_key: str, body: Any, messages: list[dict]) -> str:
 
 async def _stream_openai(api_key: str, base_url: str, body: Any, messages: list[dict]) -> AsyncIterator[str]:
     clean_messages = [{k: v for k, v in message.items() if not k.startswith("_")} for message in messages]
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with httpx.AsyncClient(timeout=300.0) as client:
         async with client.stream(
             "POST",
             f"{base_url}/chat/completions",
@@ -488,7 +497,7 @@ async def _stream_groq(api_key: str, base_url: str, body: Any, messages: list[di
 async def _stream_openrouter(api_key: str, base_url: str, body: Any, messages: list[dict]) -> AsyncIterator[str]:
     url = base_url or "https://openrouter.ai/api/v1"
     clean_messages = [{k: v for k, v in message.items() if not k.startswith("_")} for message in messages]
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with httpx.AsyncClient(timeout=300.0) as client:
         async with client.stream(
             "POST",
             f"{url}/chat/completions",
@@ -528,7 +537,7 @@ async def _stream_gemini(api_key: str, body: Any, messages: list[dict]) -> Async
         if message["role"] == "system":
             continue
         role = "model" if message["role"] == "assistant" else "user"
-        content_text = str(message["content"])
+        content_text = _message_content_to_text(message["content"])
         if not use_system_instruction and system_msg and index == 1:
             content_text = f"{system_msg['content']}\n\n{content_text}"
         contents.append({"role": role, "parts": [{"text": content_text}]})
@@ -588,7 +597,7 @@ async def provider_chat_proxy(provider_id: str, body: Any) -> GenerateResult | S
         effective_conv_id = db.create_conversation(model_id=body.model, title=title)
 
     # Context Preparation (RAG search, prompt trimming, limits processing)
-    prepared_messages = await _prepare_chat_context(body, body.messages, p_type)
+    prepared_messages, rag_html_block = await _prepare_chat_context(body, body.messages, p_type)
 
     # Save User message to history (use the original content before context wrapper expansion)
     user_msg = prepared_messages[-1] if prepared_messages else None
@@ -598,16 +607,18 @@ async def provider_chat_proxy(provider_id: str, body: Any) -> GenerateResult | S
     # 1. Non-Streaming Flow
     if not body.stream:
         start_gen_time = time_module.perf_counter()
+        
+        full_response = rag_html_block
         if p_type == "gemini":
-            full_response = await _call_gemini(api_key, body, prepared_messages)
+            full_response += await _call_gemini(api_key, body, prepared_messages)
         elif p_type == "nvidia":
-            full_response = await _call_nvidia(api_key, base_url, body, prepared_messages)
+            full_response += await _call_nvidia(api_key, base_url, body, prepared_messages)
         elif p_type == "groq":
-            full_response = await _call_groq(api_key, base_url, body, prepared_messages)
+            full_response += await _call_groq(api_key, base_url, body, prepared_messages)
         elif p_type == "openrouter":
-            full_response = await _call_openrouter(api_key, base_url, body, prepared_messages)
+            full_response += await _call_openrouter(api_key, base_url, body, prepared_messages)
         else:
-            full_response = await _call_openai(api_key, base_url, body, prepared_messages)
+            full_response += await _call_openai(api_key, base_url, body, prepared_messages)
 
         duration = time_module.perf_counter() - start_gen_time
 
@@ -636,8 +647,12 @@ async def provider_chat_proxy(provider_id: str, body: Any) -> GenerateResult | S
 
     # 2. Streaming Flow
     async def stream_generator(conv_id: str) -> AsyncIterator[str]:
-        full_response = ""
+        full_response = rag_html_block
         start_gen_time = time_module.perf_counter()
+        
+        if rag_html_block:
+            yield f"data: {json.dumps({'choices': [{'delta': {'content': rag_html_block}}]})}\n\n"
+
         try:
             if p_type == "gemini":
                 async for line in _stream_gemini(api_key, body, prepared_messages):
@@ -676,8 +691,9 @@ async def provider_chat_proxy(provider_id: str, body: Any) -> GenerateResult | S
                             pass
                     yield line
         except Exception as exc:
-            logger.error(f"Streaming error on provider {p_type}: {exc}")
-            yield f"data: {json.dumps({'error': f'Streaming error: {str(exc)}'})}\n\n"
+            err_msg = f"{type(exc).__name__}: {exc}"
+            logger.error(f"Streaming error on provider {p_type}: {err_msg}")
+            yield f"data: {json.dumps({'error': f'Streaming error: {err_msg}'})}\n\n"
             return
 
         duration = time_module.perf_counter() - start_gen_time

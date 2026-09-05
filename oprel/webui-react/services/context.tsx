@@ -184,7 +184,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         tags: m.tags || [],
         description: `${m.category || 'Text'} model`,
         publisher: m.model_id.includes('/') ? m.model_id.split('/')[0] : (m.name || '').split('-')[0],
-        architecture: "llama.cpp",
+        architecture: m.backend || "llama.cpp",
         parameters: "Unknown",
         license: "Proprietary",
         compatibility: "compatible",
@@ -216,6 +216,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           speed: m.loaded ? 'Active' : undefined,
           downloaded: true,
           modelRepoId: m.model_id,
+          category: m.category,
         }));
 
       // Deduplicate quants
@@ -443,9 +444,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     refreshConversations();
     refreshSettings();
     refreshUser();
-    refreshProviders();
     refreshSkills();
-  }, [refreshModels, refreshConversations, refreshSettings, refreshUser, refreshProviders, refreshSkills]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const createConversation = useCallback(async () => {
     const existingEmptyConversation = conversations.find(c => c.messageCount === 0);
@@ -471,7 +472,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     });
     setActiveConversationId(created.id);
     return created.id;
-  }, [activeModelId]);
+  }, [activeModelId, conversations]);
 
   const deleteConversation = useCallback(async (id: string) => {
     try {

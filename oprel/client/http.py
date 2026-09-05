@@ -124,19 +124,20 @@ class HTTPClient(BaseClient):
         # For vision models, use chat completions endpoint with proper image format
         if images:
             url = f"{self.base_url}/v1/chat/completions"
-            # Convert to chat format with images (OpenAI format: text first, then images)
-            content = [
-                {
-                    "type": "text",
-                    "text": prompt
-                }
-            ]
+            # Convert to chat format with images (Local models often expect images first)
+            content = []
             for img in images:
                 content.append({
                     "type": "image_url",
                     "image_url": {
                         "url": f"data:image/jpeg;base64,{img}"
                     }
+                })
+            
+            if prompt:
+                content.append({
+                    "type": "text",
+                    "text": prompt
                 })
             
             payload = {

@@ -39,7 +39,8 @@ def is_vision_model(model_id: str) -> bool:
     model_lower = model_id.lower()
     vision_keywords = [
         'llava', 'vl', 'minicpm-v', 
-        'moondream', 'internvl', 'cogvlm', 'vision'
+        'moondream', 'internvl', 'cogvlm', 'vision',
+        'gemma-3', 'gemma-4', 'gemma3', 'gemma4'
     ]
     return any(keyword in model_lower for keyword in vision_keywords)
 
@@ -197,6 +198,26 @@ def get_vision_model_config(model_id: str) -> Dict[str, Any]:
             'image_token': '<image>',
             'max_images': 1,
             'recommended_ctx': 2048,
+        }
+    
+    # Gemma 3 / 4 VL (Unified)
+    elif 'gemma' in model_lower:
+        return {
+            'architecture': 'gemma',
+            'requires_mmproj': False,
+            'image_token': '<image>',
+            'max_images': 4,
+            'recommended_ctx': 8192,
+        }
+        
+    # Llama 3.2 Vision (Unified)
+    elif 'llama' in model_lower and ('vision' in model_lower or 'vl' in model_lower):
+        return {
+            'architecture': 'llama',
+            'requires_mmproj': False,
+            'image_token': '<|image|>',
+            'max_images': 4,
+            'recommended_ctx': 8192,
         }
     
     # Default config

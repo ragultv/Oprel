@@ -198,10 +198,11 @@ def format_llama2_prompt(
     # Add conversation history + current message
     if conversation_history:
         for msg in conversation_history:
+            content = _get_content_text(msg.get("content", ""))
             if msg.get("role") == "user":
-                formatted += f"[INST] {msg.get('content')} [/INST] "
+                formatted += f"[INST] {content} [/INST] "
             elif msg.get("role") == "assistant":
-                formatted += f"{msg.get('content')} </s>"
+                formatted += f"{content} </s>"
     
     # Add current message
     formatted += f"[INST] {user_message} [/INST] "
@@ -227,7 +228,7 @@ def format_gemma_prompt(
     if conversation_history:
         for msg in conversation_history:
             role = "user" if msg.get("role") == "user" else "model"
-            content = msg.get("content", "")
+            content = _get_content_text(msg.get("content", ""))
             formatted += f"<start_of_turn>{role}\n{content}<end_of_turn>\n"
     
     # Add current message
@@ -250,13 +251,13 @@ def format_mistral_prompt(
     if system_prompt:
         formatted += f"[INST] {system_prompt}\n\n"
     
-    # Add conversation history
     if conversation_history:
         for msg in conversation_history:
+            content = _get_content_text(msg.get("content", ""))
             if msg.get("role") == "user":
-                formatted += f"{msg.get('content')} [/INST]"
+                formatted += f"{content} [/INST]"
             elif msg.get("role") == "assistant":
-                formatted += f" {msg.get('content')}</s>[INST] "
+                formatted += f" {content}</s>[INST] "
     
     # Add current message
     if system_prompt and not conversation_history:

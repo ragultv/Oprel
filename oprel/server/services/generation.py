@@ -103,7 +103,54 @@ def _resolve_model_id(model_id: str) -> str:
 
 def _extract_prompt_and_images(prompt: Any, images: list[str] | None) -> tuple[str, list[str] | None, str | list[Any]]:
     import base64
-    from oprel.utils.multimodal import preprocess_image_to_bytes
+    from oprel.utils.vision_processor import VisionImageProcessor, VisionProcessingResult
+
+    def _process_one_image(b64: str) -> str:
+        """
+        Run VisionImageProcessor on a single base64-encoded image.
+
+        Returns an optimized base64 string.  On any failure, logs clearly and
+        returns the *original* b64 so we never silently lose the image —
+        but the caller will know the full-size image is being sent.
+        """
+        if not CONFIG.vision_optimization_enabled:
+            return b64
+
+        try:
+            img_bytes = base64.b64decode(b64)
+        except Exception as decode_exc:
+            logger.error(f"[Vision] Failed to base64-decode image: {decode_exc}")
+            return b64
+
+        try:
+            processor = VisionImageProcessor(
+                max_pixels=CONFIG.vision_max_pixels,
+                quality=CONFIG.vision_image_quality,
+            )
+            result: VisionProcessingResult = processor.process(img_bytes)
+
+            # ── [Vision Performance] benchmark summary ──────────────────────
+            logger.info(
+                f"[Vision Performance]\n"
+                f"  Original:       {result.original_width}x{result.original_height} "
+                f"({result.original_pixels / 1_000_000:.2f} MP)\n"
+                f"  Optimized:      {result.output_width}x{result.output_height} "
+                f"({result.output_pixels / 1_000_000:.2f} MP)\n"
+                f"  Pixel budget:   {CONFIG.vision_max_pixels}\n"
+                f"  Resized:        {result.was_resized}\n"
+                f"  Scale factor:   {result.scale_factor:.3f}\n"
+                f"  Preprocessing:  {result.preprocessing_ms:.1f} ms"
+            )
+
+            return base64.b64encode(result.image_bytes).decode("utf-8")
+
+        except Exception as proc_exc:
+            logger.error(
+                f"[Vision] Preprocessing failed: {proc_exc}  "
+                f"Falling back to original image (may be oversized).",
+                exc_info=True,
+            )
+            return b64
 
     if isinstance(prompt, list):
         text_parts: list[str] = []
@@ -118,30 +165,17 @@ def _extract_prompt_and_images(prompt: Any, images: list[str] | None) -> tuple[s
                     if url.startswith("data:image"):
                         try:
                             _, b64 = url.split(",", 1)
-                            # Preprocess base64 image (decode -> resize/compress -> re-encode)
-                            img_bytes = base64.b64decode(b64)
-                            compressed_bytes = preprocess_image_to_bytes(img_bytes)
-                            preprocessed_b64 = base64.b64encode(compressed_bytes).decode('utf-8')
-                            images.append(preprocessed_b64)
+                            optimized_b64 = _process_one_image(b64)
+                            images.append(optimized_b64)
                         except Exception as e:
-                            logger.error(f"Failed to preprocess base64 image: {e}")
-                            images.append(b64)
+                            logger.error(f"[Vision] Failed to extract image from data URL: {e}")
         return " ".join(text_parts), images, prompt
 
     if images:
-        preprocessed_images = []
-        for b64 in images:
-            try:
-                img_bytes = base64.b64decode(b64)
-                compressed_bytes = preprocess_image_to_bytes(img_bytes)
-                preprocessed_b64 = base64.b64encode(compressed_bytes).decode('utf-8')
-                preprocessed_images.append(preprocessed_b64)
-            except Exception as e:
-                logger.error(f"Failed to preprocess direct base64 image: {e}")
-                preprocessed_images.append(b64)
-        images = preprocessed_images
+        images = [_process_one_image(b64) for b64 in images]
 
     return str(prompt), images, prompt
+
 
 
 async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult:
@@ -268,12 +302,23 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
             except Exception as exc:
                 logger.error(f"RAG search error: {exc}", exc_info=True)
                 search_results = []
+                
+            rag_html_block = ""
 
             if search_results:
                 context_parts = []
+                max_chars = 4000
+                current_chars = 0
                 for i, res in enumerate(search_results):
                     source = res.get("metadata", {}).get("filename", "Unknown source")
-                    context_parts.append(f"Source [{i+1}] ({source}):\n{res['text']}")
+                    chunk_text = res['text']
+                    if current_chars + len(chunk_text) > max_chars:
+                        chunk_text = chunk_text[:max_chars - current_chars] + "..."
+                    
+                    context_parts.append(f"Source [{i+1}] ({source}):\n{chunk_text}")
+                    current_chars += len(chunk_text)
+                    if current_chars >= max_chars:
+                        break
 
                 context_text = "\n\n".join(context_parts)
                 logger.info(f"RAG: Found {len(search_results)} relevant chunks")
@@ -287,6 +332,17 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
                     "INSTRUCTION: Use ONLY the provided context above to answer. "
                     "Cite source labels [1], [2], etc. If the answer isn't firmly supported by the context, "
                     "state that you don't have enough information."
+                )
+                
+                html_chunks = "\n\n".join(
+                    f"**Source [{i+1}] ({search_results[i].get('metadata', {}).get('filename', 'Unknown')})**\n```text\n{search_results[i]['text']}\n```"
+                    for i in range(len(context_parts))
+                )
+                rag_html_block = (
+                    f'<details style="font-size: 0.8rem; margin-bottom: 1rem; opacity: 0.8; border-left: 2px solid #555; padding-left: 12px;">\n'
+                    f'<summary style="cursor: pointer; font-weight: 500;">🔍 Used {len(context_parts)} knowledge base chunks</summary>\n\n'
+                    f'{html_chunks}\n\n'
+                    f'</details>\n\n'
                 )
 
         except Exception as exc:
@@ -361,10 +417,14 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
 
     if params.stream:
         async def generate_stream() -> AsyncIterator[str]:
-            full_resp = ""
+            full_resp = rag_html_block if locals().get('rag_html_block') else ""
             try:
                 start_gen_time = time_module.perf_counter()
                 token_count = 0
+                
+                if full_resp:
+                    for char in full_resp:
+                        yield f"data: {json.dumps(char)}\n\n"
 
                 for token in model._client.generate(
                     prompt=full_prompt,
@@ -377,9 +437,10 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
                     images=images if images else None,
                     model=resolved_model_id,
                 ):
-                    full_resp += token
-                    token_count += 1
-                    yield f"data: {token}\n\n"
+                    if token:
+                        full_resp += token
+                        yield f"data: {json.dumps(token)}\n\n"
+                        token_count += 1
 
                 end_gen_time = time_module.perf_counter()
                 duration = end_gen_time - start_gen_time
@@ -413,7 +474,7 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
         return StreamResult(iterator=generate_stream(), conversation_id=conv_id)
 
     start_gen_time = time_module.perf_counter()
-    text = model._client.generate(
+    text = (rag_html_block if locals().get('rag_html_block') else "") + model._client.generate(
         prompt=full_prompt,
         max_tokens=params.max_tokens,
         temperature=params.temperature,

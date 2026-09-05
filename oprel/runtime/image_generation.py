@@ -128,14 +128,41 @@ class StableDiffusionCppRunner:
             force_download=params.force_download,
         )
 
-        output_path = params.output_path
+        effective_params = params
+        model_name_lower = f"{params.model} {assets.repo_id or ''} {assets.primary_path.name}".lower()
+        if "turbo" in model_name_lower:
+            new_steps = params.steps
+            new_cfg = params.cfg_scale
+            if params.steps == 20:
+                is_z_image = "z-image" in model_name_lower or "z_image" in model_name_lower or "lumina2" in str(assets.primary_path).lower()
+                new_steps = 8 if is_z_image else 4
+                logger.info("Detected turbo model, overriding default steps (%d -> %d)", params.steps, new_steps)
+            if params.cfg_scale == 7.0:
+                new_cfg = 1.0
+                logger.info("Detected turbo model, overriding default cfg_scale (%.1f -> %.1f)", params.cfg_scale, new_cfg)
+            if new_steps != params.steps or new_cfg != params.cfg_scale:
+                effective_params = ImageGenerationParams(
+                    model=params.model,
+                    prompt=params.prompt,
+                    negative_prompt=params.negative_prompt,
+                    width=params.width,
+                    height=params.height,
+                    steps=new_steps,
+                    cfg_scale=new_cfg,
+                    seed=params.seed,
+                    sampler=params.sampler,
+                    output_path=params.output_path,
+                    force_download=params.force_download,
+                )
+
+        output_path = effective_params.output_path
         if output_path is None:
             generated_dir = self.config.cache_dir / "generated_images"
             generated_dir.mkdir(parents=True, exist_ok=True)
             output_path = generated_dir / f"oprel_{int(time.time())}.png"
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        cmd = self._build_command(binary_path, assets, params, output_path)
+        cmd = self._build_command(binary_path, assets, effective_params, output_path)
 
         logger.info("Running stable-diffusion.cpp for image generation")
         logger.debug("stable-diffusion.cpp command: %s", " ".join(cmd))

@@ -21,7 +21,7 @@ This guide explains what happens during installation and runtime, where files ar
 ### Standard pip install
 
 ```bash
-pip install oprel==0.7.0
+pip install oprel==0.7.1
 ```
 
 Depending on the installation path, Oprel may invoke setup.py post-install behavior that downloads runtime binaries (llama.cpp and stable-diffusion.cpp) for your platform. These are placed in `~/.cache/oprel/bin/`.
@@ -31,7 +31,7 @@ Depending on the installation path, Oprel may invoke setup.py post-install behav
 Set the `OPREL_SKIP_RUNTIME_DOWNLOAD` environment variable before installing:
 
 ```bash
-OPREL_SKIP_RUNTIME_DOWNLOAD=1 pip install oprel==0.7.0
+OPREL_SKIP_RUNTIME_DOWNLOAD=1 pip install oprel==0.7.1
 ```
 
 This skips the automatic binary download during installation. You can download runtimes later with `oprel setup runtime` or let them download on first use.
