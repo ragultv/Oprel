@@ -40,7 +40,8 @@ def is_vision_model(model_id: str) -> bool:
     vision_keywords = [
         'llava', 'vl', 'minicpm-v', 
         'moondream', 'internvl', 'cogvlm', 'vision',
-        'gemma-3', 'gemma-4', 'gemma3', 'gemma4'
+        'gemma-3', 'gemma-4', 'gemma3', 'gemma4',
+        'ocr', 'glm', 'dots',
     ]
     return any(keyword in model_lower for keyword in vision_keywords)
 

@@ -211,6 +211,36 @@ def init_db():
         )
     """)
 
+    # Create conversation_memories table for Supermemory long-term context
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS conversation_memories (
+            id TEXT PRIMARY KEY,
+            conversation_id TEXT NOT NULL,
+            user_text TEXT NOT NULL,
+            assistant_text TEXT NOT NULL,
+            turn_index INTEGER DEFAULT 0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+        )
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_memories_conv ON conversation_memories(conversation_id)
+    """)
+
+    # Create hf_auth table for storing connected Hugging Face credentials
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS hf_auth (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            token TEXT NOT NULL,
+            username TEXT,
+            display_name TEXT,
+            avatar_url TEXT,
+            email TEXT,
+            connected_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
     conn.commit()
     conn.close()
 
@@ -258,6 +288,7 @@ def create_conversation(model_id: str, title: str = "New Chat", conversation_id:
 def delete_conversation(conversation_id: str):
     conn = get_db()
     cursor = conn.cursor()
+    cursor.execute("DELETE FROM conversation_memories WHERE conversation_id = ?", (conversation_id,))
     cursor.execute("DELETE FROM canvas_documents WHERE conversation_id = ?", (conversation_id,))
     cursor.execute("DELETE FROM messages WHERE conversation_id = ?", (conversation_id,))
     cursor.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
@@ -275,6 +306,7 @@ def rename_conversation(conversation_id: str, new_title: str):
 def reset_conversation(conversation_id: str):
     conn = get_db()
     cursor = conn.cursor()
+    cursor.execute("DELETE FROM conversation_memories WHERE conversation_id = ?", (conversation_id,))
     cursor.execute("DELETE FROM canvas_documents WHERE conversation_id = ?", (conversation_id,))
     cursor.execute("DELETE FROM messages WHERE conversation_id = ?", (conversation_id,))
     now = datetime.now().isoformat()
@@ -343,6 +375,43 @@ def get_conversation_messages(conversation_id: str):
                 pass
         messages.append({"role": row["role"], "content": content})
     return messages
+
+def add_conversation_memory(conversation_id: str, user_text: str, assistant_text: str, turn_index: int = 0) -> str:
+    """Store a conversational turn in Supermemory storage."""
+    conn = get_db()
+    cursor = conn.cursor()
+    mem_id = f"mem_{uuid.uuid4().hex[:12]}"
+    now = datetime.now().isoformat()
+    cursor.execute("""
+        INSERT INTO conversation_memories (id, conversation_id, user_text, assistant_text, turn_index, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (mem_id, conversation_id, user_text, assistant_text, turn_index, now))
+    conn.commit()
+    conn.close()
+    return mem_id
+
+def get_conversation_memories(conversation_id: str, limit: int = 100) -> list[dict]:
+    """Retrieve indexed Supermemory conversational turns for a conversation."""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, conversation_id, user_text, assistant_text, turn_index, created_at
+        FROM conversation_memories
+        WHERE conversation_id = ?
+        ORDER BY turn_index ASC, created_at ASC
+        LIMIT ?
+    """, (conversation_id, limit))
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+def delete_conversation_memories(conversation_id: str):
+    """Delete all stored memories for a conversation."""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM conversation_memories WHERE conversation_id = ?", (conversation_id,))
+    conn.commit()
+    conn.close()
 
 def list_conversations():
     conn = get_db()
@@ -794,3 +863,66 @@ def delete_ocr_job(job_id: str) -> None:
     cursor.execute("DELETE FROM ocr_jobs WHERE id = ?", (job_id,))
     conn.commit()
     conn.close()
+
+
+def clear_all_ocr_jobs() -> int:
+    """Delete all OCR jobs from history and return deleted count."""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM ocr_jobs")
+    count = cursor.fetchone()[0]
+    cursor.execute("DELETE FROM ocr_jobs")
+    conn.commit()
+    conn.close()
+    return count
+
+
+# ── Hugging Face Auth ─────────────────────────────────────────────────────────
+
+def save_hf_auth(
+    token: str,
+    username: str,
+    display_name: str = "",
+    avatar_url: str = "",
+    email: str = "",
+) -> dict:
+    """Save or update the active Hugging Face authentication credentials."""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO hf_auth (id, token, username, display_name, avatar_url, email, updated_at)
+        VALUES (1, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(id) DO UPDATE SET
+            token = excluded.token,
+            username = excluded.username,
+            display_name = excluded.display_name,
+            avatar_url = excluded.avatar_url,
+            email = excluded.email,
+            updated_at = CURRENT_TIMESTAMP
+    """, (token, username, display_name, avatar_url, email))
+    conn.commit()
+    conn.close()
+    return get_hf_auth() or {}
+
+
+def get_hf_auth() -> Optional[dict]:
+    """Retrieve the stored Hugging Face credentials, if connected."""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, token, username, display_name, avatar_url, email, connected_at, updated_at FROM hf_auth WHERE id = 1")
+    row = cursor.fetchone()
+    conn.close()
+    if row:
+        return dict(row)
+    return None
+
+
+def delete_hf_auth() -> bool:
+    """Clear stored Hugging Face credentials."""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM hf_auth WHERE id = 1")
+    conn.commit()
+    conn.close()
+    return True
+

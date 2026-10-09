@@ -281,7 +281,11 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
         if params.max_tokens < 8192:
             params = dataclasses.replace(params, max_tokens=8192)
     else:
-        if params.max_tokens > 2048:
+        # Vision/multimodal OCR requests can produce long JSON; allow up to 4096 tokens
+        if params.images:
+            if params.max_tokens > 4096:
+                params = dataclasses.replace(params, max_tokens=4096)
+        elif params.max_tokens > 2048:
             params = dataclasses.replace(params, max_tokens=2048)
 
     context_text = ""
@@ -405,9 +409,52 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
     # --- END AUTO SKILL MATCHING ---
 
 
+    # --- SUPERMEMORY LONG-TERM CONVERSATION RECALL ---
+    active_history = history
+    if getattr(CONFIG, "supermemory_enabled", True) and conv_id:
+        recency_window = getattr(CONFIG, "supermemory_recency_window", 6)
+        if len(history) > recency_window:
+            # Keep immediate dialogue window for active continuity
+            active_history = history[-recency_window:]
+            try:
+                from oprel.knowledge.supermemory import SuperMemoryStore
+                from oprel.downloader.aliases import resolve_model_id
+
+                async def memory_embed(text: str) -> list[float]:
+                    try:
+                        resolved_embed_model = resolve_model_id("nomic-embed-text")
+                        res = await get_embeddings(EmbeddingParams(input=text, model=resolved_embed_model))
+                        return res.embedding or []
+                    except Exception:
+                        return []
+
+                recent_hint = None
+                if active_history:
+                    last_msg = active_history[-1]
+                    if isinstance(last_msg, dict):
+                        recent_hint = str(last_msg.get("content", ""))
+
+                memory_store = SuperMemoryStore(embed_func=memory_embed)
+                recalled = await memory_store.search_memories(
+                    conversation_id=conv_id,
+                    query=text_prompt,
+                    top_k=getattr(CONFIG, "supermemory_top_k", 3),
+                    context_hint=recent_hint,
+                )
+                if recalled:
+                    memory_block = memory_store.format_memory_context(recalled)
+                    if effective_system_prompt:
+                        effective_system_prompt = f"{effective_system_prompt}\n\n{memory_block}"
+                    else:
+                        effective_system_prompt = memory_block
+                    logger.info(f"[Supermemory] Injected {len(recalled)} recalled historical turns into context")
+            except Exception as exc:
+                logger.warning(f"[Supermemory] Context recall failed gracefully: {exc}")
+    # --- END SUPERMEMORY RECALL ---
+
     full_prompt = build_chat_prompt(
         resolved_model_id,
-        history,
+        active_history,
         effective_system_prompt,
         text_prompt,
         thinking=params.thinking,
@@ -436,6 +483,7 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
                     stream=True,
                     images=images if images else None,
                     model=resolved_model_id,
+                    cache_prompt=getattr(CONFIG, "prompt_cache_enabled", True),
                 ):
                     if token:
                         full_resp += token
@@ -457,6 +505,23 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
                     state.ephemeral_history[conv_id].append({"role": "assistant", "content": full_resp})
                     if len(state.ephemeral_history[conv_id]) > 40:
                         state.ephemeral_history[conv_id] = state.ephemeral_history[conv_id][-40:]
+
+                # Record into Supermemory store
+                if getattr(CONFIG, "supermemory_enabled", True) and conv_id:
+                    try:
+                        from oprel.knowledge.supermemory import SuperMemoryStore
+                        turn_idx = len(history) // 2
+                        u_text = text_prompt if isinstance(text_prompt, str) else str(text_prompt)
+                        asyncio.create_task(
+                            SuperMemoryStore().record_turn(
+                                conversation_id=conv_id,
+                                user_text=u_text,
+                                assistant_text=full_resp,
+                                turn_index=turn_idx,
+                            )
+                        )
+                    except Exception as exc:
+                        logger.debug(f"[Supermemory] Turn recording error: {exc}")
 
                 yield "data: [DONE]\n\n"
 
@@ -484,6 +549,7 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
         stream=False,
         images=images if images else None,
         model=resolved_model_id,
+        cache_prompt=getattr(CONFIG, "prompt_cache_enabled", True),
     )
 
     end_gen_time = time_module.perf_counter()
@@ -502,6 +568,23 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
         state.ephemeral_history[conv_id].append({"role": "assistant", "content": text})
         if len(state.ephemeral_history[conv_id]) > 40:
             state.ephemeral_history[conv_id] = state.ephemeral_history[conv_id][-40:]
+
+    # Record into Supermemory store
+    if getattr(CONFIG, "supermemory_enabled", True) and conv_id:
+        try:
+            from oprel.knowledge.supermemory import SuperMemoryStore
+            turn_idx = len(history) // 2
+            u_text = text_prompt if isinstance(text_prompt, str) else str(text_prompt)
+            asyncio.create_task(
+                SuperMemoryStore().record_turn(
+                    conversation_id=conv_id,
+                    user_text=u_text,
+                    assistant_text=text,
+                    turn_index=turn_idx,
+                )
+            )
+        except Exception as exc:
+            logger.debug(f"[Supermemory] Turn recording error: {exc}")
 
     prompt_tokens_est = len(text_prompt.split()) * 1.3
     completion_tokens_est = len(text.split()) * 1.3

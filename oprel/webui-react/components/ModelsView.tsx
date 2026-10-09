@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { useRouter } from "next/navigation"
+import { useRouter, useSearchParams } from "next/navigation"
 import {
   Search,
   Play,
@@ -20,9 +20,10 @@ import { cn } from "@/services/utils"
 import { useApp } from "@/services/context"
 import { useDownloads } from "@/services/downloadContext"
 import { useToast } from "@/hooks/use-toast"
-import { API } from "@/services/api"
+import { API, HF } from "@/services/api"
 import type { AIModel } from "@/services/data"
 import { QuantizationSelector } from "./QuantizationSelector"
+import { HfConnectModal } from "./HfConnectModal"
 
 function CompatBadge({ compat }: { compat: AIModel["compatibility"] }) {
   const map = {
@@ -117,6 +118,8 @@ function ModelDetailPanel({ model }: { model: AIModel }) {
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   const [hasQuants, setHasQuants] = useState<boolean>(true)
   const isImageModel = model.category === "text-to-image"
+  const [showHfDownloadNudge, setShowHfDownloadNudge] = useState(false)
+  const [pendingDownloadFn, setPendingDownloadFn] = useState<(() => Promise<void>) | null>(null)
 
   // Fetch (or re-fetch) local quantizations
   const refreshLocalQuants = async () => {
@@ -147,48 +150,65 @@ function ModelDetailPanel({ model }: { model: AIModel }) {
       return
     }
 
-    setLoading(true)
-    
-    try {
-      const actualModelId = model.modelRepoId || model.id
-      // Start download and get download_id
-      const response = await API.pullModel(actualModelId, selectedQuantization || undefined)
-      const downloadId = response.download_id
-      
-      // Add to download manager with initial state
-      const displayId = selectedQuantization ? `${actualModelId}-${selectedQuantization}` : actualModelId
-      addDownload({
-        modelId: displayId,
-        modelName: model.name,
-        quantization: selectedQuantization || "default",
-        progress: 0,
-        downloaded: 0,
-        total: selectedSize * 1024 * 1024 * 1024, // Convert GB to bytes
-        speed: 0,
-        timeLeft: "Calculating...",
-        status: "ongoing",
-        downloadId: downloadId,
-      })
-      
-      // Open the download dialog
-      setDialogOpen(true)
-      
-      // Show success toast
-      toast({
-        title: "Download Started",
-        description: `${model.name} ${selectedQuantization ? `(${selectedQuantization}) ` : ''}is now downloading`,
-      })
-      
-    } catch (error) {
-      console.error("Failed to start download:", error)
-      toast({
-        title: "Failed to Start Download",
-        description: error instanceof Error ? error.message : "Unknown error",
-        variant: "destructive",
-      })
-    } finally {
-      setLoading(false)
+    const executeDownload = async () => {
+      setLoading(true)
+      try {
+        const actualModelId = model.modelRepoId || model.id
+        // Start download and get download_id
+        const response = await API.pullModel(actualModelId, selectedQuantization || undefined)
+        const downloadId = response.download_id
+        
+        // Add to download manager with initial state
+        const displayId = selectedQuantization ? `${actualModelId}-${selectedQuantization}` : actualModelId
+        addDownload({
+          modelId: displayId,
+          modelName: model.name,
+          quantization: selectedQuantization || "default",
+          progress: 0,
+          downloaded: 0,
+          total: selectedSize * 1024 * 1024 * 1024, // Convert GB to bytes
+          speed: 0,
+          timeLeft: "Calculating...",
+          status: "ongoing",
+          downloadId: downloadId,
+        })
+        
+        // Open the download dialog
+        setDialogOpen(true)
+        
+        // Show success toast
+        toast({
+          title: "Download Started",
+          description: `${model.name} ${selectedQuantization ? `(${selectedQuantization}) ` : ''}is now downloading`,
+        })
+        
+      } catch (error) {
+        console.error("Failed to start download:", error)
+        toast({
+          title: "Failed to Start Download",
+          description: error instanceof Error ? error.message : "Unknown error",
+          variant: "destructive",
+        })
+      } finally {
+        setLoading(false)
+      }
     }
+
+    const skipped = typeof window !== "undefined" ? sessionStorage.getItem("oprel_hf_download_nudge_skipped") : null
+    if (!skipped) {
+      try {
+        const status = await HF.getStatus()
+        if (!status.connected) {
+          setPendingDownloadFn(() => executeDownload)
+          setShowHfDownloadNudge(true)
+          return
+        }
+      } catch {
+        // proceed anonymously on status failure
+      }
+    }
+
+    await executeDownload()
   }
 
   const handleImageDownload = async () => {
@@ -537,6 +557,27 @@ function ModelDetailPanel({ model }: { model: AIModel }) {
           </div>
         </div>
       )}
+
+      {/* Hugging Face Download Nudge Modal */}
+      <HfConnectModal
+        isOpen={showHfDownloadNudge}
+        onClose={() => setShowHfDownloadNudge(false)}
+        variant="download_nudge"
+        onSkip={() => {
+          if (typeof window !== "undefined") {
+            sessionStorage.setItem("oprel_hf_download_nudge_skipped", "1")
+          }
+          setShowHfDownloadNudge(false)
+          pendingDownloadFn?.()
+        }}
+        onConnected={() => {
+          if (typeof window !== "undefined") {
+            sessionStorage.setItem("oprel_hf_download_nudge_skipped", "1")
+          }
+          setShowHfDownloadNudge(false)
+          pendingDownloadFn?.()
+        }}
+      />
     </div>
 
     {/* Confirm Delete Dialog */}
@@ -576,8 +617,24 @@ function ModelDetailPanel({ model }: { model: AIModel }) {
 
 export function ModelsView() {
   const { models, localModels, selectedModelDetail, setSelectedModelDetail } = useApp()
+  const searchParams = useSearchParams()
+  const categoryParam = searchParams.get("category")
   const [search, setSearch] = useState("")
   const [filterStatus, setFilterStatus] = useState<"all" | "loaded" | "available">("all")
+
+  // Auto-select model matching category parameter if provided (e.g. ?category=OCR)
+  useEffect(() => {
+    if (categoryParam && models.length > 0 && !selectedModelDetail) {
+      const match =
+        models.find(
+          (m) =>
+            m.category?.toLowerCase() === categoryParam.toLowerCase() &&
+            (m.downloaded || m.status === "available")
+        ) ||
+        models.find((m) => m.category?.toLowerCase() === categoryParam.toLowerCase())
+      if (match) setSelectedModelDetail(match)
+    }
+  }, [categoryParam, models, selectedModelDetail, setSelectedModelDetail])
 
   const filtered = (filterStatus === "available" ? localModels : models).filter((m) => {
     const matchSearch =
@@ -593,6 +650,9 @@ export function ModelsView() {
   const categoryLabels: Record<string, string> = {
     "text-generation": "Text LLMs",
     "vision": "Vision models",
+    "Text + Vision": "Vision models",
+    "OCR": "OCR Models",
+    "Ocr": "OCR Models",
     "coding": "Coding specialists",
     "reasoning": "Reasoning / Thinking",
     "text-to-image": "Image Generation",

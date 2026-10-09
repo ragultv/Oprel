@@ -1,11 +1,14 @@
 "use client"
 
 import { useCallback, useEffect, useRef, useState } from "react"
+import { useRouter } from "next/navigation"
 import {
   CheckCircle2, ClipboardCopy, Download, FileJson, FileText,
-  Loader2, ScanText, Trash2, Upload, X, Zap, ArrowLeft, Image as ImageIcon, Plus
+  Loader2, ScanText, Trash2, Upload, X, Zap, ArrowLeft, Image as ImageIcon, Plus, Layers, ChevronDown,
+  ZoomIn, ZoomOut, RotateCcw
 } from "lucide-react"
-import { OCR, type OcrJob, type OcrResult, type OcrStatus } from "@/services/api"
+import { API, OCR, type OcrJob, type OcrResult, type OcrStatus } from "@/services/api"
+import { useDownloads } from "@/services/downloadContext"
 import { cn } from "@/services/utils"
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -83,32 +86,7 @@ function groupIntoTableRows(results: OcrResultWithNorm[]): OcrResultWithNorm[][]
 // ─────────────────────────────────────────────────────────────────────────────
 
 function SetupScreen({ onReady }: { onReady: () => void }) {
-  const [downloading, setDownloading] = useState(false)
-  const [steps, setSteps] = useState<SetupStep[]>([])
-  const [error, setError] = useState<string | null>(null)
-  const [done, setDone] = useState(false)
-  const cleanupRef = useRef<(() => void) | null>(null)
-
-  const handleDownload = async () => {
-    setDownloading(true)
-    setSteps([])
-    setError(null)
-    try {
-      await OCR.startSetup()
-      cleanupRef.current = OCR.streamSetupProgress(
-        (step, message) => setSteps(prev => [...prev, { step, message }]),
-        (err) => {
-          setDownloading(false)
-          if (err) { setError(err) } else { setDone(true); setTimeout(onReady, 1500) }
-        },
-      )
-    } catch (e: any) {
-      setError(e?.message || "Failed to start download")
-      setDownloading(false)
-    }
-  }
-
-  useEffect(() => () => { cleanupRef.current?.() }, [])
+  const router = useRouter()
 
   return (
     <div className="h-full overflow-y-auto bg-[linear-gradient(180deg,#0e0e0e_0%,#111_50%,#0b0b0b_100%)] text-foreground">
@@ -122,14 +100,14 @@ function SetupScreen({ onReady }: { onReady: () => void }) {
         <div className="space-y-3">
           <h1 className="text-4xl font-black tracking-tight">OCR — Text Extraction</h1>
           <p className="text-muted-foreground text-base leading-7 max-w-lg">
-            Extract text from images, screenshots, invoices, and documents using <strong className="text-foreground">PaddleOCR</strong>.
-            Models are downloaded once and stored locally.
+            Extract text from images, screenshots, invoices, and documents using <strong className="text-foreground">dedicated OCR models (GLM-OCR, DeepSeek-OCR, dots.ocr)</strong>.
+            Install an OCR model from your local model library to begin.
           </p>
         </div>
 
         {/* Feature bullets */}
         <div className="grid grid-cols-2 gap-3 w-full text-left text-sm">
-          {["Bounding box overlay", "Confidence scoring", "Table detection", "Export TXT / MD / JSON", "Persistent history", "GPU auto-detected"].map(f => (
+          {["Local GGUF OCR Model", "Markdown & Table Extraction", "Confidence scoring", "Export TXT / MD / JSON", "Persistent history", "GPU auto-detected"].map(f => (
             <div key={f} className="flex items-center gap-2 rounded-xl border border-border bg-secondary/30 px-4 py-3 text-muted-foreground">
               <CheckCircle2 size={14} className="text-primary shrink-0" />
               {f}
@@ -137,44 +115,16 @@ function SetupScreen({ onReady }: { onReady: () => void }) {
           ))}
         </div>
 
-        {/* Download button */}
-        {!done && (
+        {/* Registry Action */}
+        <div className="flex flex-wrap items-center justify-center gap-3">
           <button
-            onClick={handleDownload}
-            disabled={downloading}
-            className={cn(
-              "inline-flex items-center gap-3 rounded-2xl px-8 py-4 text-base font-bold transition-all",
-              downloading
-                ? "bg-secondary/50 border border-border text-muted-foreground cursor-not-allowed"
-                : "bg-primary hover:bg-primary/90 text-primary-foreground shadow-lg shadow-primary/25"
-            )}
+            onClick={() => router.push("/models?category=OCR")}
+            className="inline-flex items-center gap-2 rounded-2xl bg-primary px-7 py-4 text-base font-semibold text-primary-foreground hover:bg-primary/90 transition-all shadow-lg shadow-primary/20"
           >
-            {downloading ? <Loader2 size={20} className="animate-spin" /> : <Download size={20} />}
-            {downloading ? "Downloading…" : "Download OCR Models (~30MB MB)"}
+            <Layers size={18} />
+            <span>Browse OCR Models</span>
           </button>
-        )}
-
-        {/* Progress */}
-        {steps.length > 0 && (
-          <div className="w-full rounded-2xl border border-border bg-secondary/20 p-5 text-left space-y-2">
-            {steps.map((s, i) => (
-              <div key={i} className={cn("flex items-start gap-3 text-sm", i === steps.length - 1 && !done ? "text-foreground" : "text-muted-foreground")}>
-                {i === steps.length - 1 && !done
-                  ? <Loader2 size={14} className="animate-spin mt-0.5 text-primary shrink-0" />
-                  : <CheckCircle2 size={14} className="mt-0.5 text-emerald-400 shrink-0" />
-                }
-                {s.message}
-              </div>
-            ))}
-            {done && <div className="flex items-center gap-2 text-sm text-emerald-400 font-semibold mt-2"><CheckCircle2 size={14} />Setup complete — opening OCR…</div>}
-          </div>
-        )}
-
-        {error && (
-          <div className="w-full rounded-2xl border border-red-500/20 bg-red-500/10 p-4 text-sm text-red-300 text-left">
-            <strong>Error:</strong> {error}
-          </div>
-        )}
+        </div>
       </div>
     </div>
   )
@@ -336,9 +286,21 @@ function ResultsPanel({
                   )}
                 >
                   <span className="text-foreground leading-5 flex-1">{r.text}</span>
-                  <span className={cn("shrink-0 text-[10px] font-semibold rounded-full px-2 py-0.5 border mt-0.5", confBadge(r.confidence))}>
-                    {(r.confidence * 100).toFixed(0)}%
-                  </span>
+                  <div className="flex items-center gap-1.5 shrink-0 mt-0.5">
+                    {r.engine && (
+                      <span className="text-[9px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded bg-primary/10 text-primary border border-primary/20">
+                        {r.engine}
+                      </span>
+                    )}
+                    {r.category && (
+                      <span className="text-[9px] font-medium uppercase tracking-wider px-1.5 py-0.5 rounded bg-secondary/80 text-muted-foreground border border-border">
+                        {r.category}
+                      </span>
+                    )}
+                    <span className={cn("text-[10px] font-semibold rounded-full px-2 py-0.5 border", confBadge(r.confidence))}>
+                      {(r.confidence * 100).toFixed(0)}%
+                    </span>
+                  </div>
                 </div>
               )
             })}
@@ -370,16 +332,159 @@ function ImagePane({
   onBboxClick: (i: number) => void
   onBboxHover: (i: number | null) => void
 }) {
-  return (
-    <div className="rounded-3xl border border-border bg-[#141414]/90 p-4 flex flex-col gap-3 h-full">
-      <div className="text-[11px] font-bold uppercase tracking-[0.2em] text-muted-foreground flex-none">Image</div>
-      <div className="flex-1 flex items-center justify-center overflow-hidden rounded-2xl border border-border bg-black/30 p-2">
-        <div className="relative inline-block max-w-full max-h-full">
-          <img src={src} alt="Uploaded" className="max-w-full max-h-full object-contain block rounded-lg" />
+  const [naturalSize, setNaturalSize] = useState<{ w: number; h: number } | null>(null)
+  const [zoom, setZoom] = useState<number>(100)
+  const [viewMode, setViewMode] = useState<"width" | "fit" | "actual">("width")
+  const bboxRefs = useRef<{ [key: number]: HTMLDivElement | null }>({})
+  const scrollContainerRef = useRef<HTMLDivElement>(null)
 
-          {/* Bbox overlays — normalized coordinates */}
+  // Auto-scroll to selected bounding box when user selects from ResultsPanel
+  useEffect(() => {
+    if (selectedIdx !== null && bboxRefs.current[selectedIdx]) {
+      bboxRefs.current[selectedIdx]?.scrollIntoView({
+        behavior: "smooth",
+        block: "nearest",
+        inline: "nearest"
+      })
+    }
+  }, [selectedIdx])
+
+  const handleImageLoad = (e: React.SyntheticEvent<HTMLImageElement>) => {
+    const { naturalWidth, naturalHeight } = e.currentTarget
+    setNaturalSize({ w: naturalWidth, h: naturalHeight })
+    // For long vertical documents (e.g. height/width > 1.15), default to width-fit for smooth reading
+    if (naturalHeight / naturalWidth > 1.15) {
+      setViewMode("width")
+    } else {
+      setViewMode("fit")
+    }
+  }
+
+  const zoomIn = () => setZoom(prev => Math.min(prev + 25, 300))
+  const zoomOut = () => setZoom(prev => Math.max(prev - 25, 50))
+  const resetZoom = () => setZoom(100)
+
+  // Determine wrapper container sizing strictly locking to the rendered image bounds
+  const getWrapperStyle = (): React.CSSProperties => {
+    if (viewMode === "fit") {
+      return {
+        width: "fit-content",
+        height: "fit-content",
+        maxWidth: "100%",
+        maxHeight: "100%",
+        transform: zoom !== 100 ? `scale(${zoom / 100})` : undefined,
+        transformOrigin: "top center",
+      }
+    }
+    if (viewMode === "actual" && naturalSize) {
+      const w = naturalSize.w * (zoom / 100)
+      return {
+        width: `${w}px`,
+        maxWidth: "none",
+        flexShrink: 0,
+      }
+    }
+    // "width" mode: scale strictly with pane width and optional zoom multiplier
+    return {
+      width: zoom === 100 ? "100%" : `${zoom}%`,
+      maxWidth: zoom <= 100 ? "100%" : undefined,
+      flexShrink: 0,
+    }
+  }
+
+  const getImageClass = () => {
+    if (viewMode === "fit") {
+      return "block max-w-full max-h-[640px] w-auto h-auto rounded-lg select-none pointer-events-none"
+    }
+    return "block w-full h-auto rounded-lg select-none pointer-events-none"
+  }
+
+  return (
+    <div className="rounded-3xl border border-border bg-[#141414]/90 p-4 flex flex-col gap-3 h-full min-h-0">
+      {/* Refined Image View Toolbar */}
+      <div className="flex items-center justify-between flex-none">
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] font-bold uppercase tracking-[0.2em] text-muted-foreground">Image</span>
+          {naturalSize && (
+            <span className="text-[10px] text-muted-foreground/60 font-mono">
+              {naturalSize.w} × {naturalSize.h}px
+            </span>
+          )}
+        </div>
+
+        <div className="flex items-center gap-1 bg-secondary/40 p-1 rounded-xl border border-border">
+          <button
+            onClick={() => { setViewMode("width"); setZoom(100) }}
+            className={cn(
+              "px-2 py-0.5 rounded-lg text-[10px] font-semibold transition-all",
+              viewMode === "width" ? "bg-primary text-primary-foreground shadow" : "text-muted-foreground hover:text-foreground"
+            )}
+            title="Fit to pane width (scroll vertically for long screenshots and documents)"
+          >
+            Fit Width
+          </button>
+          <button
+            onClick={() => { setViewMode("actual"); setZoom(100) }}
+            className={cn(
+              "px-2 py-0.5 rounded-lg text-[10px] font-semibold transition-all",
+              viewMode === "actual" ? "bg-primary text-primary-foreground shadow" : "text-muted-foreground hover:text-foreground"
+            )}
+            title="View at 100% actual resolution"
+          >
+            100%
+          </button>
+          <div className="w-[1px] h-3 bg-border mx-0.5" />
+          <button
+            onClick={zoomOut}
+            disabled={zoom <= 50}
+            className="p-1 rounded-md text-muted-foreground hover:text-foreground disabled:opacity-30 transition-colors"
+            title="Zoom out (-25%)"
+          >
+            <ZoomOut size={12} />
+          </button>
+          <span className="text-[10px] font-mono px-1 min-w-[34px] text-center text-muted-foreground">
+            {zoom}%
+          </span>
+          <button
+            onClick={zoomIn}
+            disabled={zoom >= 300}
+            className="p-1 rounded-md text-muted-foreground hover:text-foreground disabled:opacity-30 transition-colors"
+            title="Zoom in (+25%)"
+          >
+            <ZoomIn size={12} />
+          </button>
+          {zoom !== 100 && (
+            <button
+              onClick={resetZoom}
+              className="p-1 rounded-md text-muted-foreground hover:text-foreground transition-colors"
+              title="Reset zoom to 100%"
+            >
+              <RotateCcw size={11} />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Scrollable image viewport */}
+      <div
+        ref={scrollContainerRef}
+        className="flex-1 overflow-auto rounded-2xl border border-border bg-black/40 p-3 flex justify-center items-start min-h-0 relative select-none"
+      >
+        <div
+          className="relative inline-block transition-all duration-150"
+          style={getWrapperStyle()}
+        >
+          <img
+            src={src}
+            alt="Uploaded"
+            onLoad={handleImageLoad}
+            className={getImageClass()}
+          />
+
+          {/* Bbox overlays — strictly anchored to image bitmap space */}
           {results.map((r, i) => {
             if (!r.bbox_norm) return null
+            if (r.grounded === false) return null
             if (r.confidence < minConfidence / 100) return null
             const { left, top, width, height } = r.bbox_norm
             const isSelected = i === selectedIdx
@@ -389,6 +494,7 @@ function ImagePane({
             return (
               <div
                 key={i}
+                ref={el => { bboxRefs.current[i] = el }}
                 onClick={() => onBboxClick(i)}
                 onMouseEnter={() => onBboxHover(i)}
                 onMouseLeave={() => onBboxHover(null)}
@@ -406,10 +512,12 @@ function ImagePane({
                 {/* Tooltip on hover */}
                 {isHovered && (
                   <div
-                    className="absolute -top-6 left-0 whitespace-nowrap rounded-t-md px-2 py-0.5 text-[10px] font-semibold text-primary-foreground z-20 pointer-events-none"
+                    className="absolute -top-6 left-0 whitespace-nowrap rounded-t-md px-2 py-0.5 text-[10px] font-semibold text-primary-foreground z-20 pointer-events-none shadow"
                     style={{ backgroundColor: "var(--primary)" }}
                   >
-                    {r.text.length > 40 ? r.text.slice(0, 40) + "…" : r.text}
+                    {r.engine ? `[${r.engine.toUpperCase()}] ` : ""}
+                    {r.category ? `[${r.category}] ` : ""}
+                    {r.text.length > 35 ? r.text.slice(0, 35) + "…" : r.text}
                   </div>
                 )}
               </div>
@@ -450,7 +558,7 @@ function ResizerPane({ leftChild, rightChild }: { leftChild: React.ReactNode, ri
   }, [isResizing])
 
   return (
-    <div ref={containerRef} className="flex w-full items-stretch min-h-0 select-none relative h-[720px]">
+    <div ref={containerRef} className="flex w-full items-stretch min-h-0 select-none relative h-[calc(100vh-170px)] min-h-[640px]">
       <div style={{ width: `calc(${leftWidth}% - 8px)` }} className="flex-none flex flex-col min-w-0">
         {leftChild}
       </div>
@@ -473,10 +581,22 @@ function ResizerPane({ leftChild, rightChild }: { leftChild: React.ReactNode, ri
 // Extraction Screen
 // ─────────────────────────────────────────────────────────────────────────────
 
-function ExtractionScreen({ history, onHistoryChange }: { history: OcrJob[]; onHistoryChange: () => void }) {
+function ExtractionScreen({
+  history,
+  status,
+  onHistoryChange,
+  onStatusChange,
+}: {
+  history: OcrJob[]
+  status: OcrStatus | null
+  onHistoryChange: () => void
+  onStatusChange?: (newStatus: OcrStatus) => void
+}) {
+  const router = useRouter()
   const [file, setFile] = useState<File | null>(null)
   const [preview, setPreview] = useState<string | null>(null)
   const [extracting, setExtracting] = useState(false)
+  const [clearing, setClearing] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [job, setJob] = useState<(OcrJob & { img_width?: number; img_height?: number }) | null>(null)
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null)
@@ -484,7 +604,22 @@ function ExtractionScreen({ history, onHistoryChange }: { history: OcrJob[]; onH
   const [minConfidence, setMinConfidence] = useState(0)
   const [isDragging, setIsDragging] = useState(false)
   const [activeView, setActiveView] = useState<"list" | "detail">("list")
+  const [modelDropdown, setModelDropdown] = useState(false)
+  const [isSwitchingModel, setIsSwitchingModel] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const handleClearAllHistory = async () => {
+    if (!window.confirm("Are you sure you want to clear all OCR extraction history?")) return
+    try {
+      setClearing(true)
+      await OCR.clearHistory()
+      onHistoryChange()
+    } catch (e: any) {
+      console.error("Failed to clear OCR history:", e)
+    } finally {
+      setClearing(false)
+    }
+  }
 
   const handleFile = (f: File) => {
     setFile(f); setJob(null); setError(null); setSelectedIdx(null); setHoveredIdx(null)
@@ -502,7 +637,8 @@ function ExtractionScreen({ history, onHistoryChange }: { history: OcrJob[]; onH
     if (!file) return
     setExtracting(true); setError(null); setSelectedIdx(null)
     try {
-      const result = await OCR.extract(file)
+      const activeModelId = status?.active_model_id || status?.model_id
+      const result = await OCR.extract(file, activeModelId)
       setJob(result as any)
       onHistoryChange()
     } catch (e: any) {
@@ -522,6 +658,8 @@ function ExtractionScreen({ history, onHistoryChange }: { history: OcrJob[]; onH
 
   const results: OcrResultWithNorm[] = (job?.results as OcrResultWithNorm[]) ?? []
 
+  const activeModelDisplay = status?.active_model_name || status?.model_name || "RapidOCR (Production DBNet)"
+
   return (
     <div className="flex flex-col h-full bg-[#0a0a0a] relative overflow-hidden text-foreground">
       {/* Refined Header */}
@@ -540,25 +678,126 @@ function ExtractionScreen({ history, onHistoryChange }: { history: OcrJob[]; onH
               <span className="text-sm font-bold text-foreground">
                 OCR — Text Extraction
               </span>
-              <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
+              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
             </div>
             <div className="text-[10px] text-muted-foreground font-medium">
-              Local PaddleOCR Model
+              Active: <span className="text-foreground font-semibold">{activeModelDisplay}</span>
             </div>
           </div>
         </div>
-        {activeView === "list" && (
-          <div>
+
+        {/* Right Header Actions: Model Switcher Dropdown (matching ChatView) + Add Image */}
+        <div className="flex items-center gap-2.5">
+          {/* Model Switcher Dropdown exactly like Chat header */}
+          <div className="relative">
             <button
-              onClick={() => fileInputRef.current?.click()}
-              className="inline-flex items-center gap-2 rounded-xl bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground hover:bg-primary/90 transition-all shadow-lg shadow-primary/20"
+              onClick={() => setModelDropdown((v) => !v)}
+              disabled={isSwitchingModel}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border text-xs font-semibold text-muted-foreground hover:text-foreground hover:bg-secondary transition-all"
             >
-              <Plus size={14} /> Add Image
+              {isSwitchingModel ? (
+                <Loader2 size={12} className="animate-spin text-primary" />
+              ) : (
+                <Zap size={12} className="text-primary" />
+              )}
+              <span>{activeModelDisplay}</span>
+              <ChevronDown size={12} className={cn("transition-transform duration-200", modelDropdown && "rotate-180")} />
             </button>
-            <input ref={fileInputRef} type="file" accept="image/png,image/jpeg,image/jpg,image/webp,image/bmp,image/tiff" className="hidden"
-              onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f) }} />
+
+            {modelDropdown && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setModelDropdown(false)} />
+                <div className="absolute right-0 top-10 w-72 bg-[#1e1e1e] border border-border rounded-xl shadow-2xl p-2 z-50 animate-fade-in-up">
+                  {/* OCR Models Section Header */}
+                  <div className="px-2 py-1.5 text-[10px] font-bold text-muted-foreground uppercase tracking-wider bg-secondary/30 rounded-t-lg">
+                    OCR Models
+                  </div>
+                  <div className="max-h-[40vh] overflow-y-auto pt-1">
+                    {(status?.models && status.models.length > 0
+                      ? status.models
+                      : [
+                          { id: "rapidocr", name: "RapidOCR (Production DBNet)", params: "15M", quant: "INT8/FP32", ready: true, installed: true },
+                          { id: "auto", name: "Auto (Hybrid DBNet + VLM)", params: "Hybrid", quant: "Optimal", ready: true, installed: true },
+                          { id: "dots-ocr", name: "dots.ocr 1.7B", params: "1.7B", quant: "Q8_0", ready: true, installed: true },
+                          { id: "deepseek-ocr-3b", name: "DeepSeek-OCR 3B", params: "3B", quant: "Q8_0", ready: false, installed: false },
+                          { id: "glm-ocr", name: "GLM-OCR", params: "0.9B", quant: "Q8_0", ready: false, installed: false },
+                        ]
+                    ).map((m) => {
+                      const isActive = m.id === (status?.active_model_id || status?.model_id)
+                      const isReady = m.ready
+                      const isInstalled = m.installed
+
+                      return (
+                        <button
+                          key={m.id}
+                          onClick={async () => {
+                            setModelDropdown(false)
+                            if (isReady && !isActive) {
+                              setIsSwitchingModel(true)
+                              try {
+                                const newStatus = await OCR.selectModel(m.id)
+                                onStatusChange?.(newStatus)
+                                if (typeof window !== "undefined") {
+                                  localStorage.setItem("oprel_ocr_model_id", m.id)
+                                }
+                              } catch (err) {
+                                console.error("Failed to select OCR model:", err)
+                              } finally {
+                                setIsSwitchingModel(false)
+                              }
+                            } else if (!isInstalled) {
+                              router.push("/models?category=OCR")
+                            }
+                          }}
+                          className={cn(
+                            "w-full text-left px-3 py-2 rounded-lg text-xs transition-all flex items-center justify-between gap-2 my-0.5",
+                            isActive
+                              ? "bg-primary/10 text-primary font-bold"
+                              : "text-muted-foreground hover:bg-secondary hover:text-foreground"
+                          )}
+                        >
+                          <div className="min-w-0">
+                            <div className="font-semibold truncate">{m.name}</div>
+                            <div className="text-[10px] opacity-60">
+                              {m.params || "OCR"} · {m.quant || "Q8_0"}
+                            </div>
+                          </div>
+
+                          {isActive ? (
+                            <span className="text-[9px] px-1.5 py-0.5 rounded-md bg-primary/10 text-primary font-bold shrink-0">
+                              ACTIVE
+                            </span>
+                          ) : isReady ? (
+                            <span className="text-[9px] px-1.5 py-0.5 rounded-md bg-green-500/10 text-green-500 font-bold shrink-0">
+                              READY
+                            </span>
+                          ) : (
+                            <span className="text-[9px] px-1.5 py-0.5 rounded-md bg-secondary text-muted-foreground font-semibold shrink-0 hover:text-primary">
+                              INSTALL
+                            </span>
+                          )}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              </>
+            )}
           </div>
-        )}
+
+          {activeView === "list" && (
+            <div>
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                className="inline-flex items-center gap-2 rounded-xl bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground hover:bg-primary/90 transition-all shadow-lg shadow-primary/20"
+              >
+                <Plus size={14} /> Add Image
+              </button>
+              <input ref={fileInputRef} type="file" accept="image/png,image/jpeg,image/jpg,image/webp,image/bmp,image/tiff" className="hidden"
+                onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f) }} />
+            </div>
+          )}
+        </div>
       </header>
 
       <div className="relative flex-1 overflow-y-auto bg-[linear-gradient(180deg,#0e0e0e_0%,#111_50%,#0b0b0b_100%)]">
@@ -566,7 +805,20 @@ function ExtractionScreen({ history, onHistoryChange }: { history: OcrJob[]; onH
           <div className="mx-auto max-w-7xl px-6 py-6 lg:px-8 lg:py-8 space-y-6">
             <div className="rounded-3xl border border-border bg-[#141414]/90 p-6 space-y-4">
               <div className="flex items-center justify-between">
-                <div className="text-sm font-semibold text-foreground">Recent Extractions</div>
+                <div className="flex items-center gap-3">
+                  <div className="text-sm font-semibold text-foreground">Recent Extractions</div>
+                  {history.length > 0 && (
+                    <button
+                      onClick={handleClearAllHistory}
+                      disabled={clearing}
+                      className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-red-400 transition-colors px-2.5 py-1 rounded-lg hover:bg-red-500/10 border border-transparent hover:border-red-500/20"
+                      title="Clear all OCR extraction history"
+                    >
+                      {clearing ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
+                      <span>Clear All</span>
+                    </button>
+                  )}
+                </div>
                 <div className="rounded-full border border-border bg-secondary/40 px-3 py-1 text-[11px] font-semibold text-muted-foreground">
                   {history.length} item{history.length === 1 ? "" : "s"}
                 </div>
@@ -708,7 +960,7 @@ function ExtractionScreen({ history, onHistoryChange }: { history: OcrJob[]; onH
                         ) : extracting ? (
                           <div className="flex-1 flex flex-col items-center justify-center gap-4 text-sm text-muted-foreground p-8 text-center h-full">
                             <Loader2 size={24} className="animate-spin text-primary" />
-                            Running PaddleOCR...
+                            Analyzing with OCR Engine...
                           </div>
                         ) : (
                           <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground p-8 text-center h-full">
@@ -738,9 +990,22 @@ export function OcrView() {
   const [history, setHistory] = useState<OcrJob[]>([])
 
   const fetchStatus = async () => {
-    try { setStatus(await OCR.fetchStatus()) }
-    catch { setStatus({ ready: false, model_dir: "", size_mb: 0, gpu: false, installed: false }) }
-    finally { setLoading(false) }
+    try {
+      const s = await OCR.fetchStatus()
+      const savedId = typeof window !== "undefined" ? localStorage.getItem("oprel_ocr_model_id") : null
+      if (savedId && s.active_model_id !== savedId && s.models?.some(m => m.id === savedId && m.ready)) {
+        try {
+          const updated = await OCR.selectModel(savedId)
+          setStatus(updated)
+          return
+        } catch {}
+      }
+      setStatus(s)
+    } catch {
+      setStatus({ ready: false, model_dir: "", size_mb: 0, gpu: false, installed: false })
+    } finally {
+      setLoading(false)
+    }
   }
 
   const fetchHistory = async () => {
@@ -757,9 +1022,18 @@ export function OcrView() {
     )
   }
 
-  if (!status?.ready) {
+  const hasAnyModel = status?.ready || status?.installed || (status?.models && status.models.some(m => m.ready || m.installed))
+
+  if (!hasAnyModel) {
     return <SetupScreen onReady={() => { fetchStatus(); fetchHistory() }} />
   }
 
-  return <ExtractionScreen history={history} onHistoryChange={fetchHistory} />
+  return (
+    <ExtractionScreen
+      history={history}
+      status={status}
+      onHistoryChange={fetchHistory}
+      onStatusChange={setStatus}
+    />
+  )
 }

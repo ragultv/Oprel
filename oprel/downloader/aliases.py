@@ -122,12 +122,17 @@ OFFICIAL_REPOS = {
         "all-minilm-l6-v2": "faldor/all-MiniLM-L6-v2-gguf",
         "e5-small": "intfloat/e5-small-v2-gguf",
     },
-    
+    "OCR": {
+        "glm-ocr": "ggml-org/GLM-OCR-GGUF",
+        "deepseek-ocr-3b": "ggml-org/DeepSeek-OCR-GGUF",
+        "dots-ocr": "ggml-org/dots.ocr-GGUF"
+    },
+
     # GGUF-only image models for stable-diffusion.cpp backend
     "text-to-image": {
         "ideation" : "HamSFL/Ideation",
-        "z-image-turbo":"unsloth/Z-Image-Turbo-GGUF"
-    },
+        "z-image-turbo":"unsloth/Z-Image-Turbo-GGUF"  
+  },
 }
 
 # Flatten all models into a single dict for backward compatibility

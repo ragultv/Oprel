@@ -366,6 +366,7 @@ async def v1_list_models():
         "coding": ["coding"],
         "reasoning": ["reasoning"],
         "vision": ["vision llms", "text+vision"],
+        "Text + Vision": ["vision llms", "ocr", "vlm", "text+vision"],
         "text-to-image": ["image", "text-to-image"],
     }
 

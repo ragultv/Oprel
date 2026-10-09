@@ -110,14 +110,20 @@ class HTTPClient(BaseClient):
         url = f"{self.base_url}/v1/completions"
 
         model = kwargs.pop("model", None)
+        cache_prompt = kwargs.pop("cache_prompt", True)
+        id_slot = kwargs.pop("id_slot", None)
 
         payload = {
             "prompt": prompt,
             "max_tokens": max_tokens,
             "temperature": temperature,
             "stream": stream,
+            "cache_prompt": cache_prompt,
             **kwargs,
         }
+        if id_slot is not None:
+            payload["id_slot"] = id_slot
+
         if model:
             payload["model"] = model
         
@@ -151,8 +157,11 @@ class HTTPClient(BaseClient):
                 "max_tokens": max_tokens,
                 "temperature": temperature,
                 "stream": stream,
+                "cache_prompt": cache_prompt,
                 **kwargs,
             }
+            if id_slot is not None:
+                payload["id_slot"] = id_slot
             
             # Debug: Log that we're sending images
             import logging

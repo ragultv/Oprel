@@ -37,6 +37,7 @@ from oprel.server.routes import (
     system,
     skills,
     ocr,
+    auth,
 )
 
 
@@ -194,6 +195,7 @@ app.include_router(providers.router)
 app.include_router(system.router)
 app.include_router(skills.router)
 app.include_router(ocr.router)
+app.include_router(auth.router)
 
 
 def run_server(host: str = "127.0.0.1", port: int = 11435):

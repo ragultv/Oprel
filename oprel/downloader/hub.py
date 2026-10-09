@@ -34,12 +34,44 @@ def _enable_fast_transfer() -> None:
     Enable Hugging Face fast transfer (hf_transfer/hf_xet) if installed.
     Accelerates downloads via multi-threaded chunked transfer.
     """
+    os.environ["HF_XET_HIGH_PERFORMANCE"] = "1"
     try:
         import hf_transfer  # noqa: F401
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
         logger.debug("Fast chunked downloader (hf_transfer) enabled via HF_HUB_ENABLE_HF_TRANSFER=1")
     except ImportError:
         logger.debug("hf_transfer not installed; using standard HuggingFace Hub downloader")
+
+
+def get_active_hf_token() -> Optional[str]:
+    """
+    Resolve active Hugging Face user access token.
+    Checks environment variable, database hf_auth table, and config.
+    """
+    env_token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+    if env_token:
+        return env_token.strip()
+
+    try:
+        from oprel.server import db
+        auth = db.get_hf_auth()
+        if auth and auth.get("token"):
+            token = auth["token"].strip()
+            os.environ["HF_TOKEN"] = token
+            return token
+    except Exception as e:
+        logger.debug(f"Could not read HF token from db: {e}")
+
+    try:
+        from oprel.core.config import Config
+        cfg = Config()
+        cfg_token = getattr(cfg, "hf_token", None)
+        if cfg_token:
+            return cfg_token.strip()
+    except Exception:
+        pass
+
+    return None
 
 
 @contextmanager
@@ -387,7 +419,8 @@ def _ensure_mmproj_downloaded(model_id: str, model_path: Path, cache_dir: Path, 
     
     # List files in repo to find mmproj
     try:
-        files = list_repo_files(model_id)
+        token = get_active_hf_token()
+        files = list_repo_files(model_id, token=token)
         mmproj_files = [f for f in files if (f.startswith("mmproj-") or "vision" in f or "clip" in f) and f.endswith(".gguf")]
         
         if mmproj_files:
@@ -421,6 +454,7 @@ def _ensure_mmproj_downloaded(model_id: str, model_path: Path, cache_dir: Path, 
                 cache_dir=str(cache_dir),
                 resume_download=True,
                 force_download=force_download,
+                token=token,
             )
             
             mmproj_file = Path(mmproj_path)
@@ -556,7 +590,8 @@ def _download_model_attempt(
     logger.info(f"[Attempt {attempt}] Searching for {quantization} version of {model_id}")
     
     # List available files in the repo
-    files = list_repo_files(model_id)
+    token = get_active_hf_token()
+    files = list_repo_files(model_id, token=token)
     
     # Find matching GGUF file
     matching_files = [
@@ -619,6 +654,7 @@ def _download_model_attempt(
     
     logger.info(f"Downloading {filename} from {model_id}")
     
+    token = get_active_hf_token()
     # M1.14: Download with resume support
     # M1.13: hf_hub_download handles timeouts and streaming internally
     model_path = hf_hub_download(
@@ -627,6 +663,7 @@ def _download_model_attempt(
         cache_dir=str(cache_dir),
         resume_download=True,  # M1.14: Resume interrupted downloads
         force_download=force_download,
+        token=token,
         # Note: huggingface_hub handles progress internally but we can customize
     )
     
@@ -664,7 +701,7 @@ def list_available_quantizations(model_id: str) -> list[str]:
         List of quantization strings (e.g., ["Q4_K_M", "Q5_K_M", "Q8_0"])
     """
     try:
-        files = list_repo_files(model_id)
+        files = list_repo_files(model_id, token=get_active_hf_token())
         gguf_files = [f for f in files if f.endswith(".gguf")]
 
         # Extract quantization from filenames
@@ -813,6 +850,7 @@ def download_model_with_progress(
     # ------------------------------------------------------------------
     _enable_fast_transfer()
 
+    token = get_active_hf_token()
     last_error = None
     for attempt in range(MAX_RETRIES):
         try:
@@ -824,6 +862,7 @@ def download_model_with_progress(
                     force_download=force_download,
                     resume_download=True,
                     tqdm_class=tqdm_class_to_use,
+                    token=token,
                 )
             break
         except (requests.exceptions.RequestException, TimeoutError, ConnectionError, socket.timeout) as e:
