@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time as time_module
 from typing import Any, AsyncIterator
 
@@ -75,6 +76,49 @@ def _message_content_to_text(content: Any) -> str:
                     parts.append("[image]")
         return "\n".join(parts)
     return str(content)
+
+
+def _strip_citations(text: str) -> str:
+    """Strip <citations>...</citations> block from prior turns to avoid context token bloat."""
+    if not text or "<citations>" not in text:
+        return text
+    return re.sub(r"<citations>[\s\S]*?</citations>\s*", "", text).strip()
+
+
+def _clean_message_text(content: Any) -> str:
+    """Extract plain text from message content and strip citations XML blocks."""
+    text = _message_content_to_text(content)
+    return _strip_citations(text)
+
+
+async def _record_turn_supermemory(conv_id: str, user_text: str, assistant_text: str) -> None:
+    """Store completed conversational turn in Supermemory long-term memory."""
+    try:
+        from oprel.core.config import Config
+        from oprel.knowledge.supermemory import SuperMemoryStore
+        from oprel.downloader.aliases import resolve_model_id
+        from oprel.server.services.generation import get_embeddings, EmbeddingParams
+
+        if not getattr(Config(), "supermemory_enabled", True) or not conv_id:
+            return
+
+        clean_user = _clean_message_text(user_text)
+        clean_assistant = _clean_message_text(assistant_text)
+        if not clean_user or not clean_assistant:
+            return
+
+        async def memory_embed(text: str) -> list[float]:
+            try:
+                resolved_model = resolve_model_id("nomic-embed-text")
+                res = await get_embeddings(EmbeddingParams(input=text, model=resolved_model))
+                return res.embedding or []
+            except Exception:
+                return []
+
+        mem_store = SuperMemoryStore(embed_func=memory_embed)
+        await mem_store.record_turn(conv_id, clean_user, clean_assistant)
+    except Exception as exc:
+        logger.debug(f"Failed to record turn into Supermemory: {exc}")
 
 
 def list_providers() -> list[dict[str, Any]]:
@@ -196,10 +240,73 @@ async def fetch_provider_models(provider_id: str) -> list[str]:
 
 # ─── Context Preparation Helper ──────────────────────────────────────────────
 
-async def _prepare_chat_context(body: Any, raw_messages: list[dict], p_type: str) -> tuple[list[dict], str]:
-    messages = [dict(msg) for msg in raw_messages]
+async def _prepare_chat_context(body: Any, raw_messages: list[dict], p_type: str, conv_id: str | None = None) -> tuple[list[dict], str]:
+    effective_conv_id = conv_id or getattr(body, "conversation_id", None)
+
+    # 1. Sanitize past messages: strip citation XML blocks to keep token payload lightweight
+    messages: list[dict[str, Any]] = []
+    for msg in raw_messages:
+        m = dict(msg)
+        if m.get("role") == "assistant" and isinstance(m.get("content"), str):
+            m["content"] = _clean_message_text(m["content"])
+        messages.append(m)
+
     rag_html_block = ""
 
+    # 2. Supermemory: recency window + semantic long-term retrieval for cloud conversations
+    from oprel.core.config import Config
+    config = Config()
+
+    if getattr(config, "supermemory_enabled", True) and effective_conv_id and len(messages) > 1:
+        recency_window = getattr(config, "supermemory_recency_window", 6)
+
+        has_system = messages[0].get("role") == "system"
+        system_turn = [messages[0]] if has_system else []
+        dialogue = messages[1:] if has_system else messages
+
+        if len(dialogue) > recency_window:
+            active_dialogue = dialogue[-recency_window:]
+            messages = system_turn + active_dialogue
+
+            last_user_msg = next((m for m in reversed(active_dialogue) if m.get("role") == "user"), None)
+            search_query = _clean_message_text(last_user_msg.get("content", "")) if last_user_msg else ""
+
+            context_hint = None
+            if len(active_dialogue) >= 2:
+                context_hint = _clean_message_text(active_dialogue[-2].get("content", ""))
+
+            if search_query:
+                try:
+                    from oprel.knowledge.supermemory import SuperMemoryStore
+                    from oprel.downloader.aliases import resolve_model_id
+                    from oprel.server.services.generation import get_embeddings, EmbeddingParams
+
+                    async def memory_embed(text: str) -> list[float]:
+                        try:
+                            resolved_model = resolve_model_id("nomic-embed-text")
+                            res = await get_embeddings(EmbeddingParams(input=text, model=resolved_model))
+                            return res.embedding or []
+                        except Exception:
+                            return []
+
+                    mem_store = SuperMemoryStore(embed_func=memory_embed)
+                    recalled = await mem_store.search_memories(
+                        conversation_id=effective_conv_id,
+                        query=search_query,
+                        top_k=getattr(config, "supermemory_top_k", 3),
+                        context_hint=context_hint,
+                    )
+                    if recalled:
+                        memory_block = mem_store.format_memory_context(recalled)
+                        if messages and messages[0].get("role") == "system":
+                            messages[0]["content"] = f"{messages[0]['content']}\n\n{memory_block}"
+                        else:
+                            messages.insert(0, {"role": "system", "content": memory_block})
+                        logger.info(f"Provider Supermemory: Injected {len(recalled)} recalled historical turns into context")
+                except Exception as mem_exc:
+                    logger.warning(f"Provider Supermemory recall failed: {mem_exc}")
+
+    # 3. Knowledge Grounding (RAG)
     if body.rag and messages:
         last_user_index = next((i for i in range(len(messages) - 1, -1, -1) if messages[i]["role"] == "user"), None)
 
@@ -208,87 +315,63 @@ async def _prepare_chat_context(body: Any, raw_messages: list[dict], p_type: str
             messages[last_user_index]["_original_content"] = query
 
             try:
-                from oprel.knowledge.knowledge_store import KnowledgeStore
+                from oprel.knowledge.orchestration.knowledge_service import KnowledgeService
                 from oprel.downloader.aliases import resolve_model_id
                 from oprel.server.services.generation import get_embeddings, EmbeddingParams
 
-                async def internal_embed(text: str, model: str | None = None) -> list[float]:
-                    res = await get_embeddings(EmbeddingParams(input=text, model=resolve_model_id(model or "nomic-embed-text")))
+                async def internal_embed(text: str | list[str], model: str | None = None) -> list[float] | list[list[float]]:
+                    resolved_embed_model = resolve_model_id(model or "nomic-embed-text")
+                    if isinstance(text, list):
+                        res = await get_embeddings(EmbeddingParams(input=text, model=resolved_embed_model))
+                        return res.embeddings or []
+                    res = await get_embeddings(EmbeddingParams(input=text, model=resolved_embed_model))
                     return res.embedding or []
 
-                try:
-                    from oprel.knowledge.config import TOP_K
-                except ImportError:
-                    TOP_K = 5
+                provider_model = str(body.model or "")
+                reply_reserve = max(body.max_tokens or 1024, 1024)
+                request_token_budget = 11000 if p_type == "groq" else 12000
 
-                store = KnowledgeStore(embed_func=internal_embed)
-                search_results = await store.search(query, top_k=TOP_K)
+                existing_tokens = sum(
+                    _estimate_tokens(_message_content_to_text(message.get("content", "")), provider_model)
+                    for message in messages
+                )
+                wrapper_overhead_tokens = 120
+                available_tokens = max(1000, request_token_budget - reply_reserve - existing_tokens - wrapper_overhead_tokens)
 
-                if search_results:
-                    provider_model = str(body.model or "")
-                    reply_reserve = max(body.max_tokens or 1024, 1024)
-                    request_token_budget = 11000 if p_type == "groq" else 12000
+                service = KnowledgeService(embed_func=internal_embed)
+                grounded = await service.ground_query(
+                    query=query,
+                    model_ctx_size=available_tokens,
+                    conv_id=effective_conv_id,
+                    force_rag=True,
+                )
 
-                    existing_tokens = sum(
-                        _estimate_tokens(_message_content_to_text(message.get("content", "")), provider_model)
-                        for message in messages
-                    )
-                    wrapper_overhead_tokens = 120
-                    available_tokens = max(0, request_token_budget - reply_reserve - existing_tokens - wrapper_overhead_tokens)
+                if grounded.evidence:
+                    messages[last_user_index]["content"] = grounded.prompt_text
+                    logger.info(f"Provider RAG: Injected {len(grounded.evidence)} chunks, est ~{grounded.estimated_context_tokens} tokens")
 
-                    context_parts: list[str] = []
-                    used_tokens = 0
+                    import json
+                    import base64
+                    import os
+                    citations_data = []
+                    for ev in grounded.evidence:
+                        source_path = ev.metadata.get('source') if ev.metadata else None
+                        full_text = ""
+                        if source_path and os.path.exists(source_path):
+                            try:
+                                with open(source_path, 'r', encoding='utf-8', errors='ignore') as f:
+                                    full_text = f.read()
+                            except:
+                                pass
 
-                    for i, result in enumerate(search_results):
-                        source = result.get("metadata", {}).get("filename", "Unknown source")
-                        chunk = f"Source [{i+1}] ({source}):\n{result['text']}"
-                        chunk_tokens = _estimate_tokens(chunk, provider_model)
-
-                        if used_tokens + chunk_tokens > available_tokens:
-                            remaining = available_tokens - used_tokens
-                            if remaining > 50:
-                                context_parts.append(_truncate_text_to_tokens(chunk, remaining, provider_model))
-                            break
-
-                        context_parts.append(chunk)
-                        used_tokens += chunk_tokens + 8
-
-                    if context_parts:
-                        context_text = "\n\n".join(context_parts)
-                        messages[last_user_index]["content"] = (
-                            "CONTEXT FROM LOCAL KNOWLEDGE BASE:\n"
-                            "----------------------------------------\n"
-                            f"{context_text}\n"
-                            "----------------------------------------\n\n"
-                            f"QUESTION: {query}\n\n"
-                            "INSTRUCTION: Use ONLY the provided context above to answer. "
-                            "Cite source labels [1], [2], etc. If the answer isn't firmly supported by the context, "
-                            "state that you don't have enough information."
-                        )
-                        logger.info(f"Provider RAG: Injected {len(context_parts)} chunks, ~{used_tokens} tokens")
-                        
-                        import json
-                        import base64
-                        import os
-                        citations_data = []
-                        for i in range(len(context_parts)):
-                            meta = search_results[i].get('metadata', {})
-                            source_path = meta.get('source')
-                            full_text = ""
-                            if source_path and os.path.exists(source_path):
-                                try:
-                                    with open(source_path, 'r', encoding='utf-8', errors='ignore') as f:
-                                        full_text = f.read()
-                                except:
-                                    pass
-                            
-                            citations_data.append({
-                                "name": meta.get('filename', 'Unknown'),
-                                "text": search_results[i]['text'],
-                                "full_text": full_text
-                            })
-                        encoded_citations = base64.b64encode(json.dumps(citations_data).encode('utf-8')).decode('utf-8')
-                        rag_html_block = f'<citations>{encoded_citations}</citations>\n\n'
+                        citations_data.append({
+                            "name": ev.filename or "Unknown",
+                            "text": ev.text,
+                            "full_text": full_text,
+                            "source_label": ev.source_label,
+                        })
+                    encoded_citations = base64.b64encode(json.dumps(citations_data).encode('utf-8')).decode('utf-8')
+                    rag_html_block = f'<citations>{encoded_citations}</citations>\n\n'
             except Exception as exc:
                 logger.error(f"Provider RAG search failed: {exc}")
 
@@ -609,7 +692,7 @@ async def provider_chat_proxy(provider_id: str, body: Any) -> GenerateResult | S
         effective_conv_id = db.create_conversation(model_id=body.model, title=title)
 
     # Context Preparation (RAG search, prompt trimming, limits processing)
-    prepared_messages, rag_html_block = await _prepare_chat_context(body, body.messages, p_type)
+    prepared_messages, rag_html_block = await _prepare_chat_context(body, body.messages, p_type, conv_id=effective_conv_id)
 
     # Save User message to history (use the original content before context wrapper expansion)
     user_msg = prepared_messages[-1] if prepared_messages else None
@@ -642,6 +725,8 @@ async def provider_chat_proxy(provider_id: str, body: Any) -> GenerateResult | S
                 state.last_gen_speed = tps
 
             db.add_message(effective_conv_id, "assistant", full_response)
+            user_orig_text = user_msg.get("_original_content", user_msg.get("content", "")) if user_msg else ""
+            await _record_turn_supermemory(effective_conv_id, user_orig_text, full_response)
             db.add_inference_log(
                 model_id=body.model,
                 prompt_tokens=_estimate_tokens(_message_content_to_text(prepared_messages[-1]["content"] if prepared_messages else ""), body.model),
@@ -717,6 +802,8 @@ async def provider_chat_proxy(provider_id: str, body: Any) -> GenerateResult | S
                 state.last_gen_speed = tps
 
             db.add_message(conv_id, "assistant", full_response)
+            user_orig_text = user_msg.get("_original_content", user_msg.get("content", "")) if user_msg else ""
+            await _record_turn_supermemory(conv_id, user_orig_text, full_response)
             db.add_inference_log(
                 model_id=body.model,
                 prompt_tokens=_estimate_tokens(_message_content_to_text(prepared_messages[-1]["content"] if prepared_messages else ""), body.model),

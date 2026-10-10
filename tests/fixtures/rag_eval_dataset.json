@@ -1,0 +1,51 @@
+{
+  "dataset_version": "1.0.0",
+  "documents": [
+    {
+      "id": "doc_arch_01",
+      "filename": "server_architecture.md",
+      "content": "Oprel daemon exposes a high-performance local inference runtime. The server uses Unix domain sockets on Linux and macOS for zero-overhead local IPC, while falling back to HTTP localhost:11435 on Windows systems. State is persisted in SQLite at ~/.cache/oprel/models/chat_history.db with WAL mode enabled."
+    },
+    {
+      "id": "doc_rag_02",
+      "filename": "rag_pipeline.md",
+      "content": "Oprel hybrid search uses ChromaDB for dense cosine embeddings and BM25Okapi for keyword matching. The candidate lists from both stores are fused using Reciprocal Rank Fusion (RRF) with constant k=60. Dense vector weight defaults to 0.7 while keyword weight defaults to 0.3."
+    },
+    {
+      "id": "doc_mem_03",
+      "filename": "supermemory.md",
+      "content": "Supermemory maintains persistent conversational context across daemon restarts. It isolates recent dialogue within a sliding window of 6 turns. Older conversational turns are indexed into a dedicated Chroma collection oprel_supermemory and SQLite table conversation_memories."
+    },
+    {
+      "id": "doc_quant_04",
+      "filename": "quantization_guide.md",
+      "content": "Oprel supports GGUF quantization formats including Q4_K_M, Q5_K_M, and Q8_0. On devices with limited Unified Memory or VRAM, Q4_K_M provides the optimal tradeoff between memory footprint and perplexity."
+    }
+  ],
+  "queries": [
+    {
+      "id": "q1",
+      "query": "How does Oprel perform local IPC on Linux and Windows?",
+      "expected_doc_ids": ["doc_arch_01"],
+      "expected_keywords": ["Unix domain sockets", "11435", "Windows"]
+    },
+    {
+      "id": "q2",
+      "query": "What algorithm fuses dense and keyword search in Oprel RAG?",
+      "expected_doc_ids": ["doc_rag_02"],
+      "expected_keywords": ["Reciprocal Rank Fusion", "RRF", "ChromaDB", "BM25"]
+    },
+    {
+      "id": "q3",
+      "query": "How many recent turns are kept in active context before Supermemory archiving?",
+      "expected_doc_ids": ["doc_mem_03"],
+      "expected_keywords": ["sliding window", "6 turns", "conversation_memories"]
+    },
+    {
+      "id": "q4",
+      "query": "Which GGUF quantization level is recommended for low memory systems?",
+      "expected_doc_ids": ["doc_quant_04"],
+      "expected_keywords": ["Q4_K_M", "Unified Memory"]
+    }
+  ]
+}

@@ -67,3 +67,8 @@ site/
 ROADMAP.md
 
 oprel/webui-react/out/
+
+# Databases
+*.db
+*.sqlite
+*.sqlite3

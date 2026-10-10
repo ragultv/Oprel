@@ -291,60 +291,36 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
     context_text = ""
     if params.rag:
         try:
-            from oprel.knowledge.knowledge_store import KnowledgeStore
-            from oprel.knowledge.config import TOP_K
+            from oprel.knowledge.orchestration.knowledge_service import KnowledgeService
             from oprel.downloader.aliases import resolve_model_id
 
-            async def internal_embed(text: str, model: str | None = None) -> list[float]:
+            async def internal_embed(text: str | list[str], model: str | None = None) -> list[float] | list[list[float]]:
                 resolved_embed_model = resolve_model_id(model or "nomic-embed-text")
+                if isinstance(text, list):
+                    res = await get_embeddings(EmbeddingParams(input=text, model=resolved_embed_model))
+                    return res.embeddings or []
                 res = await get_embeddings(EmbeddingParams(input=text, model=resolved_embed_model))
                 return res.embedding or []
 
-            store = KnowledgeStore(embed_func=internal_embed)
-            try:
-                search_results = await store.search(text_prompt, top_k=TOP_K)
-            except Exception as exc:
-                logger.error(f"RAG search error: {exc}", exc_info=True)
-                search_results = []
-                
+            service = KnowledgeService(embed_func=internal_embed)
+            grounded = await service.ground_query(
+                query=text_prompt,
+                model_ctx_size=getattr(CONFIG, "ctx_size", 8192),
+                conv_id=conv_id,
+                force_rag=True,
+            )
+
             rag_html_block = ""
+            if grounded.evidence:
+                text_prompt = grounded.prompt_text
+                logger.info(f"RAG: Grounded with {len(grounded.evidence)} relevant chunks (est {grounded.estimated_context_tokens} tokens)")
 
-            if search_results:
-                context_parts = []
-                max_chars = 4000
-                current_chars = 0
-                for i, res in enumerate(search_results):
-                    source = res.get("metadata", {}).get("filename", "Unknown source")
-                    chunk_text = res['text']
-                    if current_chars + len(chunk_text) > max_chars:
-                        chunk_text = chunk_text[:max_chars - current_chars] + "..."
-                    
-                    context_parts.append(f"Source [{i+1}] ({source}):\n{chunk_text}")
-                    current_chars += len(chunk_text)
-                    if current_chars >= max_chars:
-                        break
-
-                context_text = "\n\n".join(context_parts)
-                logger.info(f"RAG: Found {len(search_results)} relevant chunks")
-
-                text_prompt = (
-                    "CONTEXT FROM LOCAL KNOWLEDGE BASE:\n"
-                    "----------------------------------------\n"
-                    f"{context_text}\n"
-                    "----------------------------------------\n\n"
-                    f"QUESTION: {text_prompt}\n\n"
-                    "INSTRUCTION: Use ONLY the provided context above to answer. "
-                    "Cite source labels [1], [2], etc. If the answer isn't firmly supported by the context, "
-                    "state that you don't have enough information."
-                )
-                
                 import json
                 import base64
                 import os
                 citations_data = []
-                for i in range(len(context_parts)):
-                    meta = search_results[i].get('metadata', {})
-                    source_path = meta.get('source')
+                for ev in grounded.evidence:
+                    source_path = ev.metadata.get('source')
                     full_text = ""
                     if source_path and os.path.exists(source_path):
                         try:
@@ -352,13 +328,14 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
                                 full_text = f.read()
                         except:
                             pass
-                    
+
                     citations_data.append({
-                        "name": meta.get('filename', 'Unknown'),
-                        "text": search_results[i]['text'],
-                        "full_text": full_text
+                        "name": ev.filename,
+                        "text": ev.text,
+                        "full_text": full_text,
+                        "source_label": ev.source_label,
                     })
-                
+
                 encoded_citations = base64.b64encode(json.dumps(citations_data).encode('utf-8')).decode('utf-8')
                 rag_html_block = f'<citations>{encoded_citations}</citations>\n\n'
 
