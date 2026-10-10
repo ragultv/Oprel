@@ -101,18 +101,18 @@ class LlamaCppBackend(BaseBackend):
             model_dir = self.model_path.parent
             mmproj_path = detect_mmproj_file(model_dir)
 
-            if is_vision_model(model_id) or mmproj_path is not None:
+            if mmproj_path is not None:
                 self.is_vision = True
-                
-                if mmproj_path:
-                    cmd.extend(["--mmproj", str(mmproj_path)])
-                    logger.info(f"Vision/OCR model detected - using mmproj: {mmproj_path.name}")
-                else:
-                    logger.warning(
-                        f"Vision/OCR model detected but no mmproj file found. "
-                        f"Vision features may not work properly. "
-                        f"Download the complete model package including vision encoder."
-                    )
+                cmd.extend(["--mmproj", str(mmproj_path)])
+                logger.info(f"Vision/OCR model detected - using mmproj: {mmproj_path.name}")
+            elif is_vision_model(model_id):
+                # Model is classified as a vision model but missing mmproj encoder
+                logger.warning(
+                    f"Vision/OCR model detected ('{model_id}') but no mmproj file found. "
+                    f"Vision features may not work without the vision projector. "
+                    f"Running in standard text mode."
+                )
+                self.is_vision = False
         except Exception as e:
             logger.debug(f"Vision model check failed: {e}")
 

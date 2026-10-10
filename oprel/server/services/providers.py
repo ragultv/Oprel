@@ -159,8 +159,8 @@ async def fetch_provider_models(provider_id: str) -> list[str]:
         "gemini": "https://generativelanguage.googleapis.com/v1beta",
         "groq": "https://api.groq.com/openai/v1",
         "openrouter": "https://openrouter.ai/api/v1",
+        "huggingface": "https://router.huggingface.co/v1",
     }
-
     url = base_url or presets.get(p_type, "")
     if not url and p_type != "gemini":
         raise ValueError("Base URL is missing")
@@ -267,16 +267,28 @@ async def _prepare_chat_context(body: Any, raw_messages: list[dict], p_type: str
                         )
                         logger.info(f"Provider RAG: Injected {len(context_parts)} chunks, ~{used_tokens} tokens")
                         
-                        html_chunks = "\n\n".join(
-                            f"**Source [{i+1}] ({search_results[i].get('metadata', {}).get('filename', 'Unknown')})**\n```text\n{search_results[i]['text']}\n```"
-                            for i in range(len(context_parts))
-                        )
-                        rag_html_block = (
-                            f'<details style="font-size: 0.8rem; margin-bottom: 1rem; opacity: 0.8; border-left: 2px solid #555; padding-left: 12px;">\n'
-                            f'<summary style="cursor: pointer; font-weight: 500;">🔍 Used {len(context_parts)} knowledge base chunks</summary>\n\n'
-                            f'{html_chunks}\n\n'
-                            f'</details>\n\n'
-                        )
+                        import json
+                        import base64
+                        import os
+                        citations_data = []
+                        for i in range(len(context_parts)):
+                            meta = search_results[i].get('metadata', {})
+                            source_path = meta.get('source')
+                            full_text = ""
+                            if source_path and os.path.exists(source_path):
+                                try:
+                                    with open(source_path, 'r', encoding='utf-8', errors='ignore') as f:
+                                        full_text = f.read()
+                                except:
+                                    pass
+                            
+                            citations_data.append({
+                                "name": meta.get('filename', 'Unknown'),
+                                "text": search_results[i]['text'],
+                                "full_text": full_text
+                            })
+                        encoded_citations = base64.b64encode(json.dumps(citations_data).encode('utf-8')).decode('utf-8')
+                        rag_html_block = f'<citations>{encoded_citations}</citations>\n\n'
             except Exception as exc:
                 logger.error(f"Provider RAG search failed: {exc}")
 

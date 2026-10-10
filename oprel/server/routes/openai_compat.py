@@ -367,6 +367,7 @@ async def v1_list_models():
         "reasoning": ["reasoning"],
         "vision": ["vision llms", "text+vision"],
         "Text + Vision": ["vision llms", "ocr", "vlm", "text+vision"],
+        "OCR": ["ocr"],
         "text-to-image": ["image", "text-to-image"],
     }
 
@@ -393,17 +394,16 @@ async def v1_list_models():
             if "mmproj" in fname_lower or fname_lower.startswith("vision-") or fname_lower.startswith("clip-"):
                 continue
 
+            # Only models downloaded via oprel have metadata
             repo_id = get_repo_id_from_filename(CONFIG.cache_dir, filename)
-            repo_id = repo_id or infer_repo_id_from_cache(CONFIG.cache_dir, filename)
+            if not repo_id:
+                continue
 
-            if repo_id:
-                best_alias = get_best_alias_for_repo(repo_id)
-                if best_alias:
-                    downloaded_aliases.add(best_alias)
-                else:
-                    unregistered_cached.append((repo_id, model_info))
+            best_alias = get_best_alias_for_repo(repo_id)
+            if best_alias:
+                downloaded_aliases.add(best_alias)
             else:
-                unregistered_cached.append((filename, model_info))
+                unregistered_cached.append((repo_id, model_info))
 
         for loaded_id in list(state.models.keys()):
             best_alias = get_best_alias_for_repo(loaded_id)
@@ -448,11 +448,7 @@ async def v1_list_models():
             seen_unregistered.add(raw_id)
 
             cat = get_model_category(raw_id)
-
-            raw_id_lower = raw_id.lower()
-            is_embedding = any(kw in raw_id_lower for kw in ["embed", "embedding", "nomic-embed", "bge-m3", "minilm"])
-
-            if is_embedding or cat in skip_categories:
+            if cat in skip_categories or (cat and "embed" in cat.lower()):
                 continue
 
             tags = category_to_tags.get(cat, ["text"])

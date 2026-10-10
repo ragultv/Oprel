@@ -528,6 +528,7 @@ export default function SettingsPage() {
       setHfStatus(res)
       setHfTokenInput('')
       setHfSuccessMsg(`Connected successfully as @${res.username}!`)
+      window.dispatchEvent(new Event('userProfileUpdated'))
     } catch (err: any) {
       setHfError(err?.message || "Failed to connect token")
     } finally {
@@ -542,6 +543,7 @@ export default function SettingsPage() {
       await HF.disconnect()
       setHfStatus({ connected: false, username: null, display_name: null, avatar_url: null, email: null, masked_token: null, connected_at: null })
       setHfSuccessMsg("Disconnected Hugging Face account")
+      window.dispatchEvent(new Event('userProfileUpdated'))
     } catch (err: any) {
       setHfError(err?.message || "Failed to disconnect")
     } finally {

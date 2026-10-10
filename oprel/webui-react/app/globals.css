@@ -117,6 +117,42 @@
     @apply bg-background text-foreground font-sans antialiased;
     -webkit-font-smoothing: antialiased;
   }
+
+  /* Interactive Cursor System */
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]):not([data-disabled="true"]),
+  input[type="button"]:not(:disabled),
+  input[type="submit"]:not(:disabled),
+  input[type="reset"]:not(:disabled),
+  input[type="checkbox"]:not(:disabled),
+  input[type="radio"]:not(:disabled),
+  select:not(:disabled),
+  summary,
+  a[href],
+  label[for],
+  label:has(input[type="file"]),
+  label:has(input[type="checkbox"]),
+  label:has(input[type="radio"]),
+  [role="tab"]:not([aria-disabled="true"]),
+  [role="switch"]:not([aria-disabled="true"]),
+  [role="slider"]:not([aria-disabled="true"]),
+  [role="menuitem"]:not([aria-disabled="true"]):not([data-disabled]),
+  [role="menuitemcheckbox"]:not([aria-disabled="true"]):not([data-disabled]),
+  [role="menuitemradio"]:not([aria-disabled="true"]):not([data-disabled]),
+  [role="option"]:not([aria-disabled="true"]):not([data-disabled]) {
+    cursor: pointer;
+  }
+
+  button:disabled,
+  [role="button"][aria-disabled="true"],
+  [role="button"][data-disabled="true"],
+  input:disabled,
+  select:disabled,
+  [aria-disabled="true"],
+  [data-disabled="true"],
+  [data-disabled] {
+    cursor: not-allowed;
+  }
 }
 
 /* Custom scrollbar */

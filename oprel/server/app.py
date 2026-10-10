@@ -172,6 +172,13 @@ if webui_dir:
     @app.get("/gui/chat")
     @app.get("/gui/chat/{path:path}")
     async def chat_ui_fallback(path: str = ""):
+        # If this is a static file that exists on disk, serve it directly
+        file_path = Path(webui_dir) / "chat" / path
+        if path and file_path.is_file():
+            return FileResponse(file_path)
+        # If path has a file extension (like .txt, .js, .css, .json), do not return HTML
+        if "." in Path(path).name:
+            return Response(status_code=404)
         chat_index = Path(webui_dir) / "chat" / "index.html"
         if chat_index.exists():
             return FileResponse(chat_index)

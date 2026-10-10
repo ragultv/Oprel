@@ -381,17 +381,9 @@ def _is_vision_model(model_id: str) -> bool:
     """
     from oprel.downloader.aliases import get_model_category, REPO_TO_ALIAS
     
-    # 1. Check if it's an alias or repo in our official categories
     alias = REPO_TO_ALIAS.get(model_id, model_id)
     category = get_model_category(alias)
-    
-    if category in ["Text + Vision", "OCR"]:
-        return True
-        
-    # 2. Fuzzy matching for external models
-    id_lower = model_id.lower()
-    vision_keywords = ["vl", "vision", "llava", "clip", "ocr", "multimodal", "mllm"]
-    return any(kw in id_lower for kw in vision_keywords)
+    return category in ["Text + Vision", "OCR"]
 
 
 def _ensure_mmproj_downloaded(model_id: str, model_path: Path, cache_dir: Path, force_download: bool = False) -> Optional[Path]:

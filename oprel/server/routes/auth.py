@@ -109,9 +109,28 @@ async def connect_hf_token(body: HfTokenRequest):
         email=email,
     )
 
+    existing_user = db.get_user()
+    role = existing_user.get("role", "Hugging Face User") if existing_user else "Hugging Face User"
+    db.set_user(name=display_name, role=role)
+
     # Export to environment for huggingface_hub and enable fast transfer
     os.environ["HF_TOKEN"] = raw_token
     _enable_fast_transfer()
+
+    # Auto-configure the AI Provider for cloud inference
+    try:
+        db.upsert_provider({
+            "id": "huggingface",
+            "name": "Hugging Face Inference",
+            "type": "huggingface",
+            "api_key": raw_token,
+            "base_url": "https://router.huggingface.co/v1",
+            "enabled": True,
+            "enabled_model_ids": [],
+            "available_model_ids": []
+        })
+    except Exception as e:
+        logger.error(f"Failed to auto-configure HF Inference provider: {e}")
 
     logger.info(f"Successfully connected Hugging Face account: @{username}")
 

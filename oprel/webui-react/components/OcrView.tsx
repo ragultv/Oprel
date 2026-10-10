@@ -100,7 +100,7 @@ function SetupScreen({ onReady }: { onReady: () => void }) {
         <div className="space-y-3">
           <h1 className="text-4xl font-black tracking-tight">OCR — Text Extraction</h1>
           <p className="text-muted-foreground text-base leading-7 max-w-lg">
-            Extract text from images, screenshots, invoices, and documents using <strong className="text-foreground">dedicated OCR models (GLM-OCR, DeepSeek-OCR, dots.ocr)</strong>.
+            Extract text from images, screenshots, invoices, and documents using <strong className="text-foreground">dedicated OCR models</strong>.
             Install an OCR model from your local model library to begin.
           </p>
         </div>
@@ -713,16 +713,7 @@ function ExtractionScreen({
                     OCR Models
                   </div>
                   <div className="max-h-[40vh] overflow-y-auto pt-1">
-                    {(status?.models && status.models.length > 0
-                      ? status.models
-                      : [
-                          { id: "rapidocr", name: "RapidOCR (Production DBNet)", params: "15M", quant: "INT8/FP32", ready: true, installed: true },
-                          { id: "auto", name: "Auto (Hybrid DBNet + VLM)", params: "Hybrid", quant: "Optimal", ready: true, installed: true },
-                          { id: "dots-ocr", name: "dots.ocr 1.7B", params: "1.7B", quant: "Q8_0", ready: true, installed: true },
-                          { id: "deepseek-ocr-3b", name: "DeepSeek-OCR 3B", params: "3B", quant: "Q8_0", ready: false, installed: false },
-                          { id: "glm-ocr", name: "GLM-OCR", params: "0.9B", quant: "Q8_0", ready: false, installed: false },
-                        ]
-                    ).map((m) => {
+                    {(status?.models || []).map((m) => {
                       const isActive = m.id === (status?.active_model_id || status?.model_id)
                       const isReady = m.ready
                       const isInstalled = m.installed
@@ -855,7 +846,15 @@ function ExtractionScreen({
                     </thead>
                     <tbody className="divide-y divide-border/50">
                       {history.map(h => (
-                        <tr key={h.id} className="hover:bg-secondary/10 transition-colors group">
+                        <tr
+                          key={h.id}
+                          onClick={() => {
+                            setJob({ ...h } as any); setPreview(h.image_data)
+                            setFile(null); setSelectedIdx(null)
+                            setActiveView("detail")
+                          }}
+                          className="hover:bg-secondary/10 transition-colors group cursor-pointer"
+                        >
                           <td className="px-4 py-3">
                             <div className="h-10 w-10 overflow-hidden rounded-lg border border-border/50 bg-black/30">
                               <img src={h.image_data} alt={h.filename} className="h-full w-full object-cover" />
@@ -870,7 +869,8 @@ function ExtractionScreen({
                           <td className="px-4 py-3 text-right">
                             <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
                               <button
-                                onClick={() => {
+                                onClick={(e) => {
+                                  e.stopPropagation()
                                   setJob({ ...h } as any); setPreview(h.image_data)
                                   setFile(null); setSelectedIdx(null)
                                   setActiveView("detail")
@@ -880,7 +880,7 @@ function ExtractionScreen({
                                 View
                               </button>
                               <button
-                                onClick={async () => { await OCR.deleteJob(h.id); onHistoryChange() }}
+                                onClick={async (e) => { e.stopPropagation(); await OCR.deleteJob(h.id); onHistoryChange() }}
                                 className="rounded-lg border border-red-500/20 bg-red-500/8 p-1.5 text-red-400 hover:bg-red-500/15 transition-all"
                               >
                                 <Trash2 size={13} />

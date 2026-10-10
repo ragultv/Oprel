@@ -29,6 +29,7 @@ import {
   ChevronRight,
   Film,
   Layout,
+  ExternalLink,
 } from "lucide-react"
 import { useRouter } from "next/navigation"
 import ReactMarkdown from "react-markdown"
@@ -236,21 +237,33 @@ async function generateConvTitle(
   }
 }
 
-function isVisionModel(model: AIModel | undefined) {
+function isVisionModel(model: AIModel | undefined): boolean {
   if (!model) return false;
-  const visionKeywords = ['vl', 'vision', 'llava', 'qwen2-vl', 'qwen2.5-vl', 'pixtral'];
-  return visionKeywords.some(kw => model.id.toLowerCase().includes(kw) || model.name.toLowerCase().includes(kw));
+  const cat = (model.category || '').toLowerCase();
+  return cat === 'text + vision' || cat === 'vision' || cat === 'multimodal';
 }
 
 function isImageGenerationModel(model: AIModel | undefined): boolean {
   if (!model) return false;
-  if (model.category === 'text-to-image' || model.category === 'image-to-image') return true;
-  if (model.architecture === 'stable-diffusion.cpp' || model.architecture === 'diffusers') return true;
-  const idLower = (model.id || '').toLowerCase();
-  const nameLower = (model.name || '').toLowerCase();
-  const repoLower = (model.modelRepoId || '').toLowerCase();
-  const imageKeywords = ['z-image', 'ideation', 'flux-', 'sdxl', 'stable-diffusion', 'imagen-', 'dall-e'];
-  return imageKeywords.some(kw => idLower.includes(kw) || nameLower.includes(kw) || repoLower.includes(kw));
+  const cat = (model.category || '').toLowerCase();
+  return cat === 'text-to-image' || cat === 'image-to-image' || cat === 'image';
+}
+
+function isOcrModel(model: AIModel | undefined): boolean {
+  if (!model) return false;
+  const cat = (model.category || '').toLowerCase();
+  return cat === 'ocr';
+}
+
+function isEmbeddingModel(model: AIModel | undefined): boolean {
+  if (!model) return false;
+  const cat = (model.category || '').toLowerCase();
+  return cat === 'embeddings' || cat === 'embedding';
+}
+
+function isChatModel(model: AIModel | undefined): boolean {
+  if (!model) return false;
+  return !isImageGenerationModel(model) && !isOcrModel(model) && !isEmbeddingModel(model);
 }
 
 function ThinkingBlock({ content, renderers }: { content: string, renderers: any }) {
@@ -275,6 +288,46 @@ function ThinkingBlock({ content, renderers }: { content: string, renderers: any
       {isExpanded && (
         <div className="px-4 text-muted-foreground italic text-sm border-t border-primary/5 pt-3 animate-in fade-in slide-in-from-top-2 duration-300">
           <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} rehypePlugins={[rehypeRaw]} components={renderers}>{content}</ReactMarkdown>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CitationsBlock({ content, onOpenArtifact }: { content: string, onOpenArtifact?: (a: Artifact) => void }) {
+  const [isExpanded, setIsExpanded] = useState(false);
+  
+  const citations = useMemo(() => {
+    try {
+      return JSON.parse(atob(content)) as {name: string, text: string, full_text?: string}[];
+    } catch {
+      return [];
+    }
+  }, [content]);
+
+  if (!citations.length) return null;
+
+  return (
+    <div className="mb-4">
+      <button 
+        onClick={() => setIsExpanded(!isExpanded)}
+        className="flex items-center gap-2 text-foreground/70 hover:text-foreground transition-colors font-medium text-[13px]"
+      >
+        Using {citations.length} citations
+        <ChevronDown size={14} className={cn("transition-transform", isExpanded && "rotate-180")} />
+      </button>
+      
+      {isExpanded && (
+        <div className="mt-3 flex flex-col gap-2.5 animate-in fade-in slide-in-from-top-1 duration-200">
+          {citations.map((c, i) => (
+            <div 
+              key={i}
+              className="text-foreground/80 text-[13px] flex items-center gap-2 w-fit"
+            >
+              <FileText size={12} className="opacity-70 text-emerald-400" />
+              {c.name}
+            </div>
+          ))}
         </div>
       )}
     </div>
@@ -314,10 +367,56 @@ function MessageBubble({
     setTimeout(() => setCopied(false), 2000)
   }
 
+  // Extract citations early so renderers can use them for inline pills
+  const citationsList = useMemo(() => {
+    const rawText = getContentText(message.content);
+    const citStart = rawText.indexOf("<citations>");
+    if (citStart !== -1) {
+      const citEnd = rawText.indexOf("</citations>", citStart + 11);
+      if (citEnd !== -1) {
+        const b64 = rawText.substring(citStart + 11, citEnd).trim();
+        try {
+          return JSON.parse(atob(b64)) as {name: string, text: string, full_text?: string}[];
+        } catch {}
+      }
+    }
+    return [];
+  }, [message.content]);
+
   // Build renderers — two modes just like ClaraVerse:
   //   STREAMING  → plain <pre><code> (fast, never crashes on partial tokens)
   //   COMPLETED  → react-syntax-highlighter with vscDarkPlus (full colors)
   const renderers = useMemo(() => ({
+    cite({ node, id, ...props }: any) {
+      const index = parseInt(id) - 1;
+      const citation = citationsList[index];
+      if (!citation) return <span className="text-muted-foreground text-xs opacity-70">[{id}]</span>;
+      
+      return (
+        <span className="inline-block relative group/cite mx-1">
+          <span 
+            className="inline-flex items-center gap-1 px-2 py-[1px] rounded-md bg-white/5 border border-white/10 text-muted-foreground text-[11.5px] font-medium cursor-default hover:bg-primary/20 hover:text-primary transition-colors hover:border-primary/30"
+          >
+            {citation.name.length > 20 ? citation.name.slice(0, 20) + '...' : citation.name}
+          </span>
+
+          <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-[340px] bg-[#1a1a1a] border border-white/10 rounded-xl shadow-2xl p-4 opacity-0 pointer-events-none group-hover/cite:opacity-100 group-hover/cite:pointer-events-auto transition-all -translate-y-1 group-hover/cite:translate-y-0 z-[100] text-left flex flex-col gap-1.5 cursor-default">
+             <div className="flex items-start justify-between gap-3">
+               <div className="font-semibold text-[13px] text-foreground leading-tight">{citation.name}</div>
+               <div className="text-[10px] text-muted-foreground whitespace-nowrap bg-white/5 px-1.5 py-0.5 rounded">{index + 1}/{citationsList.length}</div>
+             </div>
+             <div className="text-[11px] text-emerald-400/80 truncate font-mono">{citation.name}</div>
+             <div className="text-[12.5px] text-foreground/70 leading-[1.6] line-clamp-4 mt-1 font-normal whitespace-pre-wrap">
+               {citation.text}
+             </div>
+             {/* Tooltip triangle */}
+             <div className="absolute bottom-full left-1/2 -translate-x-1/2 border-[6px] border-transparent border-b-[#1a1a1a]" />
+             {/* Hidden bridge to prevent losing hover when moving mouse */}
+             <div className="absolute bottom-full left-0 w-full h-3 bg-transparent" />
+          </div>
+        </span>
+      )
+    },
     code({ node, inline, className, children, ...props }: any) {
       const langMatch = /language-(\w+)/.exec(className || '');
       const lang = langMatch ? langMatch[1] : null;
@@ -399,7 +498,7 @@ function MessageBubble({
         </code>
       );
     },
-  }), [isStreaming]);
+  }), [isStreaming, citationsList, onOpenArtifact]);
 
   // Handle thinking tags + clean LLM output quirks
   const processedContent = useMemo(() => {
@@ -459,10 +558,30 @@ function MessageBubble({
       }
     }
 
+    // Extract <citations>…</citations> block
+    let citationsBase64 = "";
+    const citStart = cleaned.indexOf("<citations>");
+    if (citStart !== -1) {
+      const citEnd = cleaned.indexOf("</citations>", citStart + 11);
+      if (citEnd !== -1) {
+        citationsBase64 = cleaned.substring(citStart + 11, citEnd).trim();
+        cleaned = cleaned.substring(0, citStart).trim() + "\n\n" + cleaned.substring(citEnd + 12).trim();
+      } else {
+        // Stream interrupted or ongoing (don't show until complete to avoid broken JSON)
+        cleaned = cleaned.substring(0, citStart).trim();
+      }
+    }
+
+    if (citationsList.length > 0) {
+      // Replace inline brackets [1] or 【1】 with cite tags
+      cleaned = cleaned.replace(/(?:\[|【)(\d+)(?:\]|】)/g, '<cite id="$1"></cite>');
+    }
+
     return (
       <div className="oprel-response">
         {images}
         {thinking && <ThinkingBlock content={thinking} renderers={renderers} />}
+        {citationsBase64 && <CitationsBlock content={citationsBase64} onOpenArtifact={onOpenArtifact} />}
         {cleaned && (
           <div className="oprel-markdown">
             <ReactMarkdown
@@ -580,10 +699,10 @@ function MessageBubble({
   return (
     <div className="mb-6 group">
       <div className="flex items-start gap-4 max-w-[780px]">
-        <div className="w-7 h-7 rounded-full overflow-hidden shrink-0 mt-1 border border-border bg-secondary">
+        <div className="w-7 h-7 rounded-full overflow-hidden shrink-0 border border-border bg-secondary">
           <img src="/gui/logo1.png" alt="AI" className="w-full h-full object-cover" />
         </div>
-        <div className="flex-1 min-w-0">
+        <div className="flex-1 min-w-0 pt-0.5">
           {processedContent}
         </div>
       </div>
@@ -774,13 +893,40 @@ export function ChatView({
 
   const activeConv = useMemo(() => conversations.find((c) => c.id === activeConversationId), [conversations, activeConversationId]);
   const chatLocalModels = useMemo(
-    () => localModels.filter((m) => !isImageGenerationModel(m)),
+    () => localModels.filter((m) => isChatModel(m)),
     [localModels]
   );
   const chatModels = useMemo(
-    () => models.filter((m) => !isImageGenerationModel(m)),
+    () => models.filter((m) => isChatModel(m)),
     [models]
   );
+
+  // Active Model Persistence Fallback:
+  // If localStorage or initial state has an activeModelId that is NOT a valid chat model (e.g. OCR, Image, Embedding),
+  // automatically fall back to the first available chat model and sync localStorage.
+  useEffect(() => {
+    if (chatLocalModels.length === 0 && chatModels.length === 0) return;
+
+    const isValidChatModel =
+      chatLocalModels.some((m) => m.id === activeModelId || m.id.split("::")[0] === activeModelId) ||
+      chatModels.some((m) => m.id === activeModelId);
+
+    if (!isValidChatModel) {
+      const fallback =
+        chatLocalModels.find((m) => m.status === "loaded") ||
+        chatModels.find((m) => m.status === "loaded") ||
+        chatLocalModels[0] ||
+        chatModels[0];
+
+      if (fallback) {
+        setActiveModelId(fallback.id);
+        if (typeof window !== "undefined") {
+          localStorage.setItem("oprel_active_model", fallback.id);
+        }
+      }
+    }
+  }, [activeModelId, chatLocalModels, chatModels, setActiveModelId]);
+
   // Prefer localModels (which have alias·quant names) for the active model display.
   // localModels IDs are "repo_id::QUANT", so match by activeModelId first, then by loaded status.
   const activeModel = useMemo(() => {
@@ -891,7 +1037,7 @@ export function ChatView({
         if (!isVisionModel(activeModel)) {
           toast({
             title: 'Vision model required',
-            description: `"${file.name}" is an image. Switch to a vision model (e.g. Qwen2.5-VL) to attach images.`,
+            description: `"${file.name}" is an image. Switch to a vision model to attach images.`,
             variant: 'destructive',
           });
           continue;

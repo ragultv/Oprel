@@ -636,16 +636,29 @@ export function ModelsView() {
     }
   }, [categoryParam, models, selectedModelDetail, setSelectedModelDetail])
 
-  const filtered = (filterStatus === "available" ? localModels : models).filter((m) => {
-    const matchSearch =
-      m.name.toLowerCase().includes(search.toLowerCase()) ||
-      m.family.toLowerCase().includes(search.toLowerCase())
+  const isEmbeddingCategory = (cat?: string) => {
+    const c = (cat || "").toLowerCase()
+    return c === "embeddings" || c === "embedding"
+  }
 
-    if (filterStatus === "loaded") return m.status === "loaded" && matchSearch
-    return matchSearch
-  })
+  const filtered = (filterStatus === "available" ? localModels : models)
+    .filter((m) => !isEmbeddingCategory(m.category))
+    .filter((m) => {
+      const matchSearch =
+        m.name.toLowerCase().includes(search.toLowerCase()) ||
+        m.family.toLowerCase().includes(search.toLowerCase())
 
-  const categories = [...new Set(models.map((m) => m.category || "General LLM"))]
+      if (filterStatus === "loaded") return m.status === "loaded" && matchSearch
+      return matchSearch
+    })
+
+  const categories = [
+    ...new Set(
+      models
+        .filter((m) => !isEmbeddingCategory(m.category))
+        .map((m) => m.category || "General LLM")
+    ),
+  ]
 
   const categoryLabels: Record<string, string> = {
     "text-generation": "Text LLMs",

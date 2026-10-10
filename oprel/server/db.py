@@ -449,11 +449,15 @@ def get_active_conversation_count():
 def get_user():
     conn = get_db()
     cursor = conn.cursor()
+    cursor.execute("SELECT avatar_url FROM hf_auth WHERE id = 1")
+    hf_row = cursor.fetchone()
+    avatar_url = hf_row["avatar_url"] if hf_row and hf_row["avatar_url"] else None
+
     cursor.execute("SELECT name, role, avatar_initials FROM users WHERE id = 1")
     row = cursor.fetchone()
     conn.close()
     if row:
-        return {"name": row["name"], "role": row["role"], "initials": row["avatar_initials"]}
+        return {"name": row["name"], "role": row["role"], "initials": row["avatar_initials"], "avatar_url": avatar_url}
     return None
 
 def set_user(name: str, role: str):
@@ -466,9 +470,14 @@ def set_user(name: str, role: str):
         INSERT OR REPLACE INTO users (id, name, role, avatar_initials, updated_at)
         VALUES (1, ?, ?, ?, ?)
     """, (name, role, initials, datetime.now().isoformat()))
+    
+    cursor.execute("SELECT avatar_url FROM hf_auth WHERE id = 1")
+    hf_row = cursor.fetchone()
+    avatar_url = hf_row["avatar_url"] if hf_row and hf_row["avatar_url"] else None
+
     conn.commit()
     conn.close()
-    return {"name": name, "role": role, "initials": initials}
+    return {"name": name, "role": role, "initials": initials, "avatar_url": avatar_url}
 
 def get_user_settings():
     conn = get_db()
