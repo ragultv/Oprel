@@ -8,9 +8,11 @@ import {
   Plus, Trash2, RefreshCw, Eye, EyeOff, Check, X,
   Loader2, Zap, ChevronDown, ChevronUp, RotateCcw,
   Globe, KeyRound, Server, BookOpen, Save, Sparkles, Lock,
+  ExternalLink, ShieldCheck,
 } from 'lucide-react'
 import { useApp } from '@/services/context'
 import { type Skill } from '@/services/skills'
+import { HF, type HfAuthStatus } from '@/services/api'
 import {
   type ProviderConfig, type ProviderType,
   PROVIDER_PRESETS, fetchProviderModels,
@@ -52,6 +54,7 @@ const TABS = [
   { id: 'config', label: 'Generation', icon: SlidersHorizontal },
   { id: 'providers', label: 'AI Providers', icon: Globe },
   { id: 'skills', label: 'Skills', icon: Sparkles },
+  { id: 'huggingface', label: 'Hugging Face', icon: KeyRound },
 ] as const
 
 type TabId = (typeof TABS)[number]['id']
@@ -491,6 +494,63 @@ export default function SettingsPage() {
   const [panelOpen, setPanelOpen] = useState(false)
   const [validationError, setValidationError] = useState<string | null>(null)
 
+  // Hugging Face Auth State
+  const [hfStatus, setHfStatus] = useState<HfAuthStatus | null>(null)
+  const [hfLoading, setHfLoading] = useState(false)
+  const [hfTokenInput, setHfTokenInput] = useState('')
+  const [hfShowToken, setHfShowToken] = useState(false)
+  const [hfError, setHfError] = useState<string | null>(null)
+  const [hfSuccessMsg, setHfSuccessMsg] = useState<string | null>(null)
+
+  const fetchHfStatus = useCallback(async () => {
+    try {
+      const status = await HF.getStatus()
+      setHfStatus(status)
+    } catch (e) {
+      console.warn("Could not fetch HF status", e)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (activeTab === 'huggingface') {
+      fetchHfStatus()
+    }
+  }, [activeTab, fetchHfStatus])
+
+  const handleConnectHf = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!hfTokenInput.trim()) return
+    setHfLoading(true)
+    setHfError(null)
+    setHfSuccessMsg(null)
+    try {
+      const res = await HF.connectToken(hfTokenInput.trim())
+      setHfStatus(res)
+      setHfTokenInput('')
+      setHfSuccessMsg(`Connected successfully as @${res.username}!`)
+      window.dispatchEvent(new Event('userProfileUpdated'))
+    } catch (err: any) {
+      setHfError(err?.message || "Failed to connect token")
+    } finally {
+      setHfLoading(false)
+    }
+  }
+
+  const handleDisconnectHf = async () => {
+    if (!confirm("Are you sure you want to disconnect your Hugging Face account?")) return
+    setHfLoading(true)
+    try {
+      await HF.disconnect()
+      setHfStatus({ connected: false, username: null, display_name: null, avatar_url: null, email: null, masked_token: null, connected_at: null })
+      setHfSuccessMsg("Disconnected Hugging Face account")
+      window.dispatchEvent(new Event('userProfileUpdated'))
+    } catch (err: any) {
+      setHfError(err?.message || "Failed to disconnect")
+    } finally {
+      setHfLoading(false)
+    }
+  }
+
   const handleOpenSkill = (skill: Skill) => {
     setActiveSkill(skill)
     setEditSkill(skill)
@@ -899,6 +959,195 @@ export default function SettingsPage() {
                 })}
               </div>
             </>
+          )}
+
+          {/* ── Hugging Face Settings ── */}
+          {activeTab === 'huggingface' && (
+            <div className="space-y-6">
+              <div>
+                <h1 className="text-xl font-bold text-foreground">Hugging Face Account</h1>
+                <p className="text-sm text-muted-foreground mt-0.5">
+                  Connect your personal Hugging Face access token for high-speed downloads, gated models access, and higher rate limits.
+                </p>
+              </div>
+
+              {hfStatus?.connected ? (
+                <div className="space-y-4">
+                  {/* Connected Profile Card */}
+                  <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/5 p-6 space-y-5">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-4">
+                        {hfStatus.avatar_url ? (
+                          <img
+                            src={hfStatus.avatar_url}
+                            alt={hfStatus.username || "HF User"}
+                            className="w-14 h-14 rounded-2xl border border-border object-cover"
+                          />
+                        ) : (
+                          <div className="w-14 h-14 rounded-2xl border border-amber-500/30 bg-amber-500/10 flex items-center justify-center text-3xl">
+                            🤗
+                          </div>
+                        )}
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <h2 className="text-lg font-bold text-foreground">
+                              {hfStatus.display_name || hfStatus.username}
+                            </h2>
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/20">
+                              Connected ✓
+                            </span>
+                          </div>
+                          <p className="text-xs text-muted-foreground font-mono">
+                            @{hfStatus.username}
+                          </p>
+                        </div>
+                      </div>
+
+                      <button
+                        onClick={handleDisconnectHf}
+                        disabled={hfLoading}
+                        className="px-3.5 py-2 text-xs font-semibold rounded-xl border border-destructive/30 hover:border-destructive text-destructive hover:bg-destructive/10 transition-all flex items-center gap-1.5"
+                      >
+                        <Trash2 size={13} />
+                        <span>Disconnect</span>
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3 pt-3 border-t border-border/40 text-xs">
+                      <div>
+                        <span className="text-muted-foreground block text-[10px] uppercase font-bold tracking-wider">Masked Token</span>
+                        <span className="font-mono text-foreground">{hfStatus.masked_token}</span>
+                      </div>
+                      <div>
+                        <span className="text-muted-foreground block text-[10px] uppercase font-bold tracking-wider">Connected On</span>
+                        <span className="text-foreground">
+                          {hfStatus.connected_at ? new Date(hfStatus.connected_at).toLocaleDateString() : "Active"}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Active Perks Card */}
+                  <div className="rounded-xl border border-border bg-card/40 p-5 space-y-3">
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                      Active Account Benefits
+                    </h3>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+                      <div className="flex items-start gap-2.5 p-3 rounded-lg bg-secondary/30 border border-border/50">
+                        <Zap size={16} className="text-amber-400 shrink-0 mt-0.5" />
+                        <div>
+                          <p className="font-semibold text-foreground">Fast Transfers</p>
+                          <p className="text-muted-foreground text-[11px]">Multi-threaded chunked downloads enabled</p>
+                        </div>
+                      </div>
+                      <div className="flex items-start gap-2.5 p-3 rounded-lg bg-secondary/30 border border-border/50">
+                        <ShieldCheck size={16} className="text-emerald-400 shrink-0 mt-0.5" />
+                        <div>
+                          <p className="font-semibold text-foreground">Gated Models</p>
+                          <p className="text-muted-foreground text-[11px]">Llama 3, Gemma, Mistral unlocked</p>
+                        </div>
+                      </div>
+                      <div className="flex items-start gap-2.5 p-3 rounded-lg bg-secondary/30 border border-border/50">
+                        <Lock size={16} className="text-cyan-400 shrink-0 mt-0.5" />
+                        <div>
+                          <p className="font-semibold text-foreground">High Rate Limits</p>
+                          <p className="text-muted-foreground text-[11px]">10,000 requests/hour authenticated</p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-5">
+                  {/* Connect Token Form */}
+                  <div className="rounded-2xl border border-border bg-card/40 p-6 space-y-5">
+                    <div className="flex items-start gap-4">
+                      <div className="w-12 h-12 rounded-2xl border border-amber-500/30 bg-amber-500/10 flex items-center justify-center text-2xl shrink-0">
+                        🤗
+                      </div>
+                      <div>
+                        <h2 className="text-base font-bold text-foreground">Connect with Hugging Face</h2>
+                        <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">
+                          Enter your personal Hugging Face user access token. Your token is stored locally on this machine in your private SQLite database.
+                        </p>
+                      </div>
+                    </div>
+
+                    <form onSubmit={handleConnectHf} className="space-y-4">
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between text-xs">
+                          <label className="font-semibold text-foreground">User Access Token</label>
+                          <a
+                            href="https://huggingface.co/settings/tokens/new?token_name=Oprel+Studio&scopes=read"
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1 text-primary hover:underline"
+                          >
+                            <span>Generate Token on Hugging Face</span>
+                            <ExternalLink size={11} />
+                          </a>
+                        </div>
+                        <div className="relative">
+                          <input
+                            type={hfShowToken ? "text" : "password"}
+                            value={hfTokenInput}
+                            onChange={(e) => {
+                              setHfTokenInput(e.target.value)
+                              if (hfError) setHfError(null)
+                            }}
+                            placeholder="hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                            className="w-full bg-secondary/60 border border-border rounded-xl px-3.5 py-2.5 pr-10 text-sm font-mono text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setHfShowToken(!hfShowToken)}
+                            className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                          >
+                            {hfShowToken ? <EyeOff size={15} /> : <Eye size={15} />}
+                          </button>
+                        </div>
+                      </div>
+
+                      {hfError && (
+                        <div className="p-3 rounded-xl border border-destructive/30 bg-destructive/10 text-destructive text-xs">
+                          {hfError}
+                        </div>
+                      )}
+
+                      {hfSuccessMsg && (
+                        <div className="p-3 rounded-xl border border-emerald-500/30 bg-emerald-500/10 text-emerald-400 text-xs">
+                          {hfSuccessMsg}
+                        </div>
+                      )}
+
+                      <button
+                        type="submit"
+                        disabled={hfLoading || !hfTokenInput.trim()}
+                        className={cn(
+                          "px-5 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2",
+                          hfLoading || !hfTokenInput.trim()
+                            ? "bg-secondary text-muted-foreground cursor-not-allowed"
+                            : "bg-primary text-primary-foreground hover:bg-primary/90 shadow-md shadow-primary/20"
+                        )}
+                      >
+                        {hfLoading && <Loader2 size={14} className="animate-spin" />}
+                        <span>{hfLoading ? "Verifying..." : "Connect Hugging Face Token"}</span>
+                      </button>
+                    </form>
+                  </div>
+
+                  {/* Informational Guidance */}
+                  <div className="rounded-xl border border-border/60 bg-secondary/15 p-4 space-y-2 text-xs text-muted-foreground">
+                    <p className="font-semibold text-foreground">How to create your free token in 30 seconds:</p>
+                    <ol className="list-decimal list-inside space-y-1 text-muted-foreground leading-relaxed">
+                      <li>Log in to <a href="https://huggingface.co" target="_blank" rel="noreferrer" className="text-primary hover:underline">huggingface.co</a>.</li>
+                      <li>Go to <strong>Settings → Access Tokens</strong> (or click the link above).</li>
+                      <li>Create a new token with <strong>Read</strong> permissions and paste it here.</li>
+                    </ol>
+                  </div>
+                </div>
+              )}
+            </div>
           )}
 
         </div>

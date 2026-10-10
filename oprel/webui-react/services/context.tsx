@@ -170,31 +170,39 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const refreshModels = useCallback(async () => {
     try {
+      const isEmbeddingCategory = (cat?: string) => {
+        const c = (cat || "").toLowerCase();
+        return c === "embeddings" || c === "embedding";
+      };
+
       // 1. Fetch Local Models (Registry & Loaded status)
       const apiModels = await API.fetchModels();
-      const mappedLocalRegistry: AIModel[] = apiModels.map(m => ({
-        id: m.model_id,
-        name: m.name || m.model_id,
-        family: m.name.includes('-') ? m.name.split('-')[0] : m.name,
-        size: "—",
-        quantization: "Managed",
-        contextLength: 0,
-        ramRequired: 0,
-        status: m.status as any,
-        tags: m.tags || [],
-        description: `${m.category || 'Text'} model`,
-        publisher: m.model_id.includes('/') ? m.model_id.split('/')[0] : (m.name || '').split('-')[0],
-        architecture: m.backend || "llama.cpp",
-        parameters: "Unknown",
-        license: "Proprietary",
-        compatibility: "compatible",
-        downloaded: !!m.downloaded,
-        category: m.category,
-      }));
+      const mappedLocalRegistry: AIModel[] = apiModels
+        .filter(m => !isEmbeddingCategory(m.category))
+        .map(m => ({
+          id: m.model_id,
+          name: m.name || m.model_id,
+          family: m.name.includes('-') ? m.name.split('-')[0] : m.name,
+          size: "—",
+          quantization: "Managed",
+          contextLength: 0,
+          ramRequired: 0,
+          status: m.status as any,
+          tags: m.tags || [],
+          description: `${m.category || 'Text'} model`,
+          publisher: m.model_id.includes('/') ? m.model_id.split('/')[0] : (m.name || '').split('-')[0],
+          architecture: m.backend || "llama.cpp",
+          parameters: "Unknown",
+          license: "Proprietary",
+          compatibility: "compatible",
+          downloaded: !!m.downloaded,
+          category: m.category,
+        }));
 
       // 2. Fetch specific GGUF/Quantized local models for the switchers
       const perQuantLocal = await API.fetchLocalModels().catch(() => []);
       const mappedQuants: AIModel[] = (perQuantLocal || [])
+        .filter(m => !isEmbeddingCategory(m.category))
         .filter(m => m.quantization && m.quantization !== 'Unknown' && m.quantization !== 'API')
         .filter(m => !isProviderModel(m.model_id))
         .map(m => ({
@@ -239,28 +247,42 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // 4. Update Global Unified Models List
       setModels([...mappedLocalRegistry.filter(m => m.category !== 'external'), ...providerModels]);
 
-      // 5. Active Model Logic
-      const loadedInference = mappedLocalRegistry.find(m => m.status === 'loaded');
-      const loadedInLocal = finalLocal.find(m => m.status === 'loaded');
-      
-      let candidateId = activeModelId;
-      if (!candidateId && (loadedInference || loadedInLocal)) {
-        candidateId = (loadedInLocal || loadedInference)!.id;
+      // 5. Active Model Logic — Ensure active model falls back to a valid chat model
+      const isChatEligible = (m: AIModel) => {
+        const c = (m.category || "").toLowerCase();
+        return c !== "ocr" && c !== "text-to-image" && c !== "image-to-image" && c !== "image" && c !== "embeddings" && c !== "embedding";
+      };
+
+      const chatLocalCandidates = finalLocal.filter(isChatEligible);
+      const chatRegistryCandidates = mappedLocalRegistry.filter(isChatEligible);
+      const chatProviderCandidates = providerModels.filter(isChatEligible);
+
+      const loadedChatLocal = chatLocalCandidates.find(m => m.status === 'loaded');
+      const loadedChatInference = chatRegistryCandidates.find(m => m.status === 'loaded');
+
+      let candidate: AIModel | undefined = undefined;
+      if (activeModelId) {
+        candidate = chatLocalCandidates.find(m => m.id === activeModelId || m.id.split('::')[0] === activeModelId) ||
+                    chatRegistryCandidates.find(m => m.id === activeModelId) ||
+                    chatProviderCandidates.find(m => m.id === activeModelId);
       }
 
-      const candidate = finalLocal.find(m => m.id === candidateId) || 
-                        finalLocal.find(m => m.id.split('::')[0] === candidateId) ||
-                        mappedLocalRegistry.find(m => m.id === candidateId) ||
-                        providerModels.find(m => m.id === candidateId) ||
-                        loadedInLocal || loadedInference;
+      if (!candidate) {
+        candidate = loadedChatLocal || loadedChatInference || chatLocalCandidates[0] || chatRegistryCandidates[0] || chatProviderCandidates[0];
+      }
 
       if (candidate) {
-        if (!activeModelId) setActiveModelId(candidate.id);
+        if (activeModelId !== candidate.id) {
+          setActiveModelId(candidate.id);
+          if (typeof window !== 'undefined') {
+            localStorage.setItem('oprel_active_model', candidate.id);
+          }
+        }
         setSelectedModelDetail(candidate);
       }
 
       // Auto-load Logic
-      if (!loadedInLocal && !loadedInference && !initialLoadAttempted.current && candidate && candidate.downloaded && !candidate.id.includes('::')) {
+      if (!loadedChatLocal && !loadedChatInference && !initialLoadAttempted.current && candidate && candidate.downloaded && !candidate.id.includes('::')) {
         initialLoadAttempted.current = true;
         setIsModelLoading(true);
         API.loadModel(candidate.id).finally(() => {

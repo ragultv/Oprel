@@ -778,12 +778,32 @@ export const API = {
 // OCR Types
 // ─────────────────────────────────────────────────────────────────────────────
 
+export interface OcrModelInfo {
+  id: string;
+  name: string;
+  repo_id: string;
+  architecture: string;
+  params: string;
+  quant: string;
+  description: string;
+  installed: boolean;
+  has_mmproj: boolean;
+  ready: boolean;
+  size_mb: number;
+  file_path?: string | null;
+}
+
 export interface OcrStatus {
   ready: boolean;
   model_dir: string;
   size_mb: number;
   gpu: boolean;
   installed: boolean;
+  model_id?: string;
+  model_name?: string;
+  active_model_id?: string;
+  active_model_name?: string;
+  models?: OcrModelInfo[];
 }
 
 export interface OcrResult {
@@ -796,6 +816,9 @@ export interface OcrResult {
     width: number;
     height: number;
   };
+  category?: string;
+  grounded?: boolean;
+  engine?: string;
 }
 
 export interface OcrJob {
@@ -808,6 +831,7 @@ export interface OcrJob {
   created_at: string;
   img_width?: number;   // present in fresh /extract response
   img_height?: number;
+  engine?: string;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -815,10 +839,28 @@ export interface OcrJob {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const OCR = {
-  /** Check whether PaddleOCR models are ready. */
+  /** Check whether Vision OCR models are ready. */
   async fetchStatus(): Promise<OcrStatus> {
     const res = await fetch(`${API_BASE}/v1/ocr/status`);
     if (!res.ok) throw new Error(`OCR status fetch failed: ${res.status}`);
+    return res.json();
+  },
+
+  /** Fetch all OCR models and their status. */
+  async fetchModels(): Promise<OcrModelInfo[]> {
+    const res = await fetch(`${API_BASE}/v1/ocr/models`);
+    if (!res.ok) throw new Error(`OCR models fetch failed: ${res.status}`);
+    return res.json();
+  },
+
+  /** Switch active OCR model. */
+  async selectModel(modelId: string): Promise<OcrStatus> {
+    const res = await fetch(`${API_BASE}/v1/ocr/select-model`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model_id: modelId }),
+    });
+    if (!res.ok) throw new Error(`Failed to select OCR model: ${res.status}`);
     return res.json();
   },
 
@@ -858,9 +900,12 @@ export const OCR = {
   },
 
   /** Upload an image and extract text. Returns full job result. */
-  async extract(file: File): Promise<OcrJob> {
+  async extract(file: File, modelId?: string): Promise<OcrJob> {
     const form = new FormData();
     form.append('file', file);
+    if (modelId) {
+      form.append('model_id', modelId);
+    }
     const res = await fetch(`${API_BASE}/v1/ocr/extract`, { method: 'POST', body: form });
     if (!res.ok) {
       const err = await res.json().catch(() => ({ detail: 'Unknown error' }));
@@ -880,4 +925,46 @@ export const OCR = {
   async deleteJob(jobId: string): Promise<void> {
     await fetch(`${API_BASE}/v1/ocr/history/${jobId}`, { method: 'DELETE' });
   },
+
+  /** Clear all OCR history jobs from the DB. */
+  async clearHistory(): Promise<void> {
+    await fetch(`${API_BASE}/v1/ocr/history`, { method: 'DELETE' });
+  },
 };
+
+export interface HfAuthStatus {
+  connected: boolean;
+  username: string | null;
+  display_name: string | null;
+  avatar_url: string | null;
+  email: string | null;
+  masked_token: string | null;
+  connected_at: string | null;
+}
+
+export const HF = {
+  async getStatus(): Promise<HfAuthStatus> {
+    const res = await fetch(`${API_BASE}/v1/auth/hf/status`);
+    if (!res.ok) throw new Error('Failed to fetch Hugging Face auth status');
+    return res.json();
+  },
+
+  async connectToken(token: string): Promise<HfAuthStatus> {
+    const res = await fetch(`${API_BASE}/v1/auth/hf/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Failed to verify token' }));
+      throw new Error(err.detail || 'Failed to verify token with Hugging Face');
+    }
+    return res.json();
+  },
+
+  async disconnect(): Promise<void> {
+    const res = await fetch(`${API_BASE}/v1/auth/hf/token`, { method: 'DELETE' });
+    if (!res.ok) throw new Error('Failed to disconnect Hugging Face account');
+  },
+};
+

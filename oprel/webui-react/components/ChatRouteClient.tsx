@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect } from "react"
+import { useEffect, useRef } from "react"
 import { useSearchParams } from "next/navigation"
 import { ChatView } from "@/components/ChatView"
 import { useApp } from "@/services/context"
@@ -8,18 +8,30 @@ import { useApp } from "@/services/context"
 export function ChatRouteClient() {
   const searchParams = useSearchParams()
   const { activeConversationId, setActiveConversationId } = useApp()
-  const conversationId = searchParams.get("conversationId")
+  const urlConvId = searchParams.get("conversationId")
+  const initialSyncDone = useRef(false)
 
+  // 1. Initial URL synchronization on mount
   useEffect(() => {
-    if (conversationId && conversationId !== activeConversationId) {
-      setActiveConversationId(conversationId)
-      return
+    if (!initialSyncDone.current) {
+      initialSyncDone.current = true
+      if (urlConvId && urlConvId !== activeConversationId) {
+        setActiveConversationId(urlConvId)
+      }
+    }
+  }, [urlConvId, activeConversationId, setActiveConversationId])
+
+  // 2. Handle browser Back/Forward navigation
+  useEffect(() => {
+    const handlePopState = () => {
+      const params = new URLSearchParams(window.location.search)
+      const convId = params.get("conversationId")
+      setActiveConversationId(convId || null)
     }
 
-    if (!conversationId && activeConversationId) {
-      setActiveConversationId(null)
-    }
-  }, [conversationId, activeConversationId, setActiveConversationId])
+    window.addEventListener("popstate", handlePopState)
+    return () => window.removeEventListener("popstate", handlePopState)
+  }, [setActiveConversationId])
 
   return (
     <ChatView />

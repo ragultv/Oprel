@@ -103,6 +103,9 @@ def format_chat_prompt(
         return format_mistral_prompt(user_message, system_prompt, conversation_history)
     elif model_type == "phi":
         return format_phi_prompt(user_message, system_prompt, conversation_history)
+    elif "ocr" in model_id.lower() or "glm" in model_id.lower():
+        # Specialized OCR models use direct prompt input
+        return user_message
     else:
         # Unknown model - return raw prompt with warning
         logger.warning(f"Unknown model type for '{model_id}', using raw prompt")

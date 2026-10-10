@@ -25,6 +25,7 @@ export type ProviderType =
   | 'nvidia'
   | 'groq'
   | 'openrouter'
+  | 'huggingface'
 
 export interface ProviderConfig {
   /** Stable slug, e.g. "openai", "my-groq", "local-llm" */
@@ -99,9 +100,18 @@ export const PROVIDER_PRESETS: Record<ProviderType, ProviderPreset> = {
     color: '#7c3aed',
     description: '200+ models from many providers',
   },
+  
+  huggingface: {
+    type: 'huggingface',
+    name: 'Hugging Face Inference',
+    baseUrl: 'https://router.huggingface.co/v1',
+    docsUrl: 'https://huggingface.co/settings/tokens',
+    color: '#FFD21E',
+    description: 'Serverless Inference API',
+  },
   'openai-compatible': {
     type: 'openai-compatible',
-    name: 'Custom (OpenAI-compatible)',
+    name: 'Custom',
     baseUrl: '',
     docsUrl: '',
     color: '#f97316',

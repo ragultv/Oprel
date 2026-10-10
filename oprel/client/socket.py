@@ -69,13 +69,19 @@ class UnixSocketClient(BaseClient):
             raise BackendError("Socket not connected")
 
         # Build request payload (OpenAI-compatible format)
+        cache_prompt = kwargs.pop("cache_prompt", True)
+        id_slot = kwargs.pop("id_slot", None)
+
         request = {
             "prompt": prompt,
             "max_tokens": max_tokens,
             "temperature": temperature,
             "stream": stream,
+            "cache_prompt": cache_prompt,
             **kwargs,
         }
+        if id_slot is not None:
+            request["id_slot"] = id_slot
 
         try:
             # Send request as JSON with newline delimiter

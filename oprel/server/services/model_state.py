@@ -218,21 +218,14 @@ def scan_cached_models() -> list[ModelInfoData]:
             if "mmproj" in filename_lower or filename_lower.startswith("vision-") or filename_lower.startswith("clip-"):
                 continue
 
-            repo_id = (
-                get_repo_id_from_filename(cache_dir, filename)
-                or infer_repo_id_from_cache(cache_dir, filename)
-                or filename
-            )
-            # Determine category for the repo_id (works even if repo_id == filename)
+            # Only show models downloaded via oprel with valid metadata
+            repo_id = get_repo_id_from_filename(cache_dir, filename)
+            if not repo_id:
+                continue
+
+            # Determine category for the repo_id
             cat = get_model_category(repo_id)
-            repo_id_lower = repo_id.lower()
-            is_unwanted = any(
-                kw in repo_id_lower
-                for kw in [
-                    "embed", "embedding", "nomic-embed", "bge-m3",
-                ]
-            )
-            if is_unwanted or cat in ["embeddings", "text-to-video"]:
+            if cat in ["embeddings", "text-to-video"] or (cat and "embed" in cat.lower()):
                 continue
 
             file_key = (repo_id, filename)

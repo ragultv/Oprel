@@ -79,6 +79,22 @@ class HTTPClient(BaseClient):
         adapter = HTTPAdapter(max_retries=retry_strategy)
         self.session.mount("http://", adapter)
 
+    def _extract_error_detail(self, response: requests.Response) -> str:
+        """Extract a meaningful error message from backend HTTP response."""
+        try:
+            data = response.json()
+            if isinstance(data, dict):
+                err = data.get("error")
+                if isinstance(err, dict) and "message" in err:
+                    return str(err["message"])
+                if "message" in data:
+                    return str(data["message"])
+                if "detail" in data:
+                    return str(data["detail"])
+        except Exception:
+            pass
+        return response.text.strip() or f"HTTP {response.status_code}"
+
     def generate(
         self,
         prompt: str,
@@ -110,14 +126,20 @@ class HTTPClient(BaseClient):
         url = f"{self.base_url}/v1/completions"
 
         model = kwargs.pop("model", None)
+        cache_prompt = kwargs.pop("cache_prompt", True)
+        id_slot = kwargs.pop("id_slot", None)
 
         payload = {
             "prompt": prompt,
             "max_tokens": max_tokens,
             "temperature": temperature,
             "stream": stream,
+            "cache_prompt": cache_prompt,
             **kwargs,
         }
+        if id_slot is not None:
+            payload["id_slot"] = id_slot
+
         if model:
             payload["model"] = model
         
@@ -151,8 +173,11 @@ class HTTPClient(BaseClient):
                 "max_tokens": max_tokens,
                 "temperature": temperature,
                 "stream": stream,
+                "cache_prompt": cache_prompt,
                 **kwargs,
             }
+            if id_slot is not None:
+                payload["id_slot"] = id_slot
             
             # Debug: Log that we're sending images
             import logging
@@ -176,6 +201,9 @@ class HTTPClient(BaseClient):
                 "Check: 1) Backend is running, 2) Port is correct"
             ) from e
         except requests.RequestException as e:
+            if hasattr(e, "response") and e.response is not None:
+                detail = self._extract_error_detail(e.response)
+                raise BackendError(f"Backend error ({e.response.status_code}): {detail}") from e
             raise BackendError(f"HTTP request failed: {e}") from e
 
     def _complete_response(
@@ -201,7 +229,9 @@ class HTTPClient(BaseClient):
         )
         
         response = self.session.post(url, json=payload, timeout=effective_timeout)
-        response.raise_for_status()
+        if response.status_code >= 400:
+            error_detail = self._extract_error_detail(response)
+            raise BackendError(f"Backend error ({response.status_code}): {error_detail}")
 
         data = response.json()
         
@@ -256,7 +286,9 @@ class HTTPClient(BaseClient):
             stream=True,
             timeout=effective_timeout,
         )
-        response.raise_for_status()
+        if response.status_code >= 400:
+            error_detail = self._extract_error_detail(response)
+            raise BackendError(f"Backend error ({response.status_code}): {error_detail}")
 
         # UTF-8 buffer for incomplete multi-byte sequences (M1.12)
         utf8_buffer = b""
