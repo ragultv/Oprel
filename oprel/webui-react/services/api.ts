@@ -636,6 +636,22 @@ export const API = {
     return res.json();
   },
 
+  async deleteDocument(filename: string): Promise<any> {
+    const res = await fetch(`${API_BASE}/index/documents/${encodeURIComponent(filename)}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) throw new Error('Failed to delete document');
+    return res.json();
+  },
+
+  async deleteAllDocuments(): Promise<any> {
+    const res = await fetch(`${API_BASE}/index/documents`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) throw new Error('Failed to delete all documents');
+    return res.json();
+  },
+
   async generateImage(payload: {
     model?: string;
     prompt: string;

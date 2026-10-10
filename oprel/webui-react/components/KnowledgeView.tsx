@@ -55,6 +55,53 @@ export function KnowledgeView() {
   const [previewContent, setPreviewContent] = useState<string | null>(null)
   const [previewFilename, setPreviewFilename] = useState<string | null>(null)
   const [previewLoading, setPreviewLoading] = useState(false)
+  const [fileToDelete, setFileToDelete] = useState<IndexedFile | null>(null)
+  const [isDeleting, setIsDeleting] = useState(false)
+  const [showDeleteAllModal, setShowDeleteAllModal] = useState(false)
+  const [isDeletingAll, setIsDeletingAll] = useState(false)
+
+  const handleConfirmDelete = async () => {
+    if (!fileToDelete) return
+    setIsDeleting(true)
+    try {
+      await API.deleteDocument(fileToDelete.filename)
+      toast({
+        title: "Document Deleted",
+        description: `Successfully removed ${fileToDelete.filename} from the knowledge base.`,
+      })
+      setFileToDelete(null)
+      refreshFiles()
+    } catch (err: any) {
+      toast({
+        title: "Delete Failed",
+        description: err.message || "Could not delete document.",
+        variant: "destructive",
+      })
+    } finally {
+      setIsDeleting(false)
+    }
+  }
+
+  const handleConfirmDeleteAll = async () => {
+    setIsDeletingAll(true)
+    try {
+      await API.deleteAllDocuments()
+      toast({
+        title: "Knowledge Base Cleared",
+        description: "All documents and vectors have been successfully removed.",
+      })
+      setShowDeleteAllModal(false)
+      refreshFiles()
+    } catch (err: any) {
+      toast({
+        title: "Clear Failed",
+        description: err.message || "Could not clear knowledge base.",
+        variant: "destructive",
+      })
+    } finally {
+      setIsDeletingAll(false)
+    }
+  }
 
   const refreshFiles = async () => {
     try {
@@ -155,6 +202,17 @@ export function KnowledgeView() {
         </div>
 
         <div className="flex items-center gap-2">
+          {files.length > 0 && (
+            <button 
+              onClick={() => setShowDeleteAllModal(true)}
+              disabled={loading || isDeletingAll}
+              className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-red-400 transition-colors px-2.5 py-1.5 rounded-lg hover:bg-red-500/10 border border-transparent hover:border-red-500/20"
+              title="Clear all indexed documents"
+            >
+              {isDeletingAll ? <RefreshCcw size={13} className="animate-spin" /> : <Trash2 size={13} />}
+              <span>Delete All</span>
+            </button>
+          )}
           <button 
             onClick={refreshFiles}
             className="p-2 rounded-lg hover:bg-secondary text-muted-foreground transition-all"
@@ -334,7 +392,11 @@ export function KnowledgeView() {
                                 >
                                   {previewLoading && previewFilename === file.filename ? <RefreshCcw size={14} className="animate-spin" /> : <Eye size={14} />}
                                 </button>
-                                <button className="p-1.5 rounded-lg text-muted-foreground hover:bg-red-500/10 hover:text-red-400 transition-all">
+                                <button 
+                                  onClick={() => setFileToDelete(file)}
+                                  className="p-1.5 rounded-lg text-muted-foreground hover:bg-red-500/10 hover:text-red-400 transition-all"
+                                  title="Delete Document"
+                                >
                                   <Trash2 size={14} />
                                 </button>
                               </div>
@@ -427,6 +489,79 @@ export function KnowledgeView() {
                   {previewContent}
                 </pre>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Delete Single File Modal (matching Delete Chat dialog style) */}
+      {fileToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in duration-150">
+          <div className="bg-[#1e1e1e] border border-border rounded-xl p-6 w-[380px] shadow-2xl animate-fade-in-up">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-xl bg-destructive/10 flex items-center justify-center shrink-0 border border-destructive/20">
+                <Trash2 size={18} className="text-destructive" />
+              </div>
+              <div className="min-w-0">
+                <h3 className="text-sm font-bold text-foreground">Delete Document</h3>
+                <p className="text-xs text-muted-foreground truncate">{fileToDelete.filename}</p>
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground mb-5 leading-relaxed">
+              Are you sure you want to delete <span className="text-foreground font-semibold">"{fileToDelete.filename}"</span>? It will be permanently removed from the knowledge base and vector store.
+            </p>
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setFileToDelete(null)}
+                disabled={isDeleting}
+                className="px-4 py-2 text-xs font-semibold rounded-lg bg-secondary text-foreground hover:bg-secondary/80 transition-all cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleConfirmDelete}
+                disabled={isDeleting}
+                className="px-4 py-2 text-xs font-semibold rounded-lg bg-destructive text-white hover:bg-destructive/90 transition-all flex items-center gap-1.5 shadow-md shadow-destructive/20 cursor-pointer"
+              >
+                {isDeleting ? <RefreshCcw size={12} className="animate-spin" /> : <Trash2 size={12} />}
+                <span>Delete</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete All Modal (matching OCR clear history style) */}
+      {showDeleteAllModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in duration-150">
+          <div className="bg-[#1e1e1e] border border-border rounded-xl p-6 w-[400px] shadow-2xl animate-fade-in-up">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-xl bg-destructive/10 flex items-center justify-center shrink-0 border border-destructive/20">
+                <Trash2 size={18} className="text-destructive" />
+              </div>
+              <div className="min-w-0">
+                <h3 className="text-sm font-bold text-foreground">Delete All Documents</h3>
+                <p className="text-xs text-muted-foreground">Clear entire knowledge base</p>
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground mb-5 leading-relaxed">
+              Are you sure you want to delete all <span className="text-foreground font-semibold">{files.length} indexed documents</span>? All text chunks, full-text indexes, and vector embeddings will be permanently erased.
+            </p>
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setShowDeleteAllModal(false)}
+                disabled={isDeletingAll}
+                className="px-4 py-2 text-xs font-semibold rounded-lg bg-secondary text-foreground hover:bg-secondary/80 transition-all cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleConfirmDeleteAll}
+                disabled={isDeletingAll}
+                className="px-4 py-2 text-xs font-semibold rounded-lg bg-destructive text-white hover:bg-destructive/90 transition-all flex items-center gap-1.5 shadow-md shadow-destructive/20 cursor-pointer"
+              >
+                {isDeletingAll ? <RefreshCcw size={12} className="animate-spin" /> : <Trash2 size={12} />}
+                <span>Delete All</span>
+              </button>
             </div>
           </div>
         </div>
