@@ -119,8 +119,20 @@ export function KnowledgeView() {
     refreshFiles()
   }, [])
 
+  const [dragging, setDragging] = useState(false)
+
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const selectedFiles = Array.from(e.target.files || [])
+    await uploadFiles(Array.from(e.target.files || []))
+  }
+
+  const handleDrop = async (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    setDragging(false)
+    if (uploading) return
+    await uploadFiles(Array.from(e.dataTransfer.files || []))
+  }
+
+  const uploadFiles = async (selectedFiles: File[]) => {
     if (!selectedFiles.length) return
 
     setUploading(true)
@@ -183,7 +195,25 @@ export function KnowledgeView() {
   )
 
   return (
-    <div className="flex flex-col h-full bg-[#0a0a0a] relative overflow-hidden">
+    <div
+      className="flex flex-col h-full bg-[#0a0a0a] relative overflow-hidden"
+      onDragOver={(e) => {
+        e.preventDefault()
+        setDragging(true)
+      }}
+      onDragLeave={(e) => {
+        if (e.currentTarget === e.target) setDragging(false)
+      }}
+      onDrop={handleDrop}
+    >
+      {dragging && (
+        <div
+          className="absolute inset-0 z-50 flex items-center justify-center bg-background/80 border-2 border-dashed border-primary pointer-events-none"
+          role="status"
+        >
+          <p className="text-sm font-medium">Drop files to add them to your knowledge base</p>
+        </div>
+      )}
       <div className="absolute inset-x-0  pointer-events-none" />
       {/* Refined Header */}
       <header className="h-14 border-b border-border flex items-center justify-between px-5 shrink-0 bg-background/95 backdrop-blur-sm sticky top-0 z-20">

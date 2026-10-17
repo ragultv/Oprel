@@ -13,6 +13,7 @@ from oprel.server.schemas.openai import OpenAIChatRequest, OpenAICompletionReque
 from oprel.server.services.generation import GenerateParams, StreamResult, generate_text
 from oprel.server.services.context import CONFIG, logger
 from oprel.server import db
+from oprel.utils.chat_templates import _strip_citations
 
 router = APIRouter()
 
@@ -108,7 +109,10 @@ async def _handle_chat_completions(request: OpenAIChatRequest, referer: str):
             if content.strip():
                 system_prompt = content
         else:
-            conversation_history.append({"role": msg.role, "content": msg.content})
+            c = msg.content
+            if isinstance(c, str):
+                c = _strip_citations(c)
+            conversation_history.append({"role": msg.role, "content": c})
 
     gen_params = GenerateParams(
         model_id=request.model,

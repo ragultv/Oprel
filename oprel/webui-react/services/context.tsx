@@ -281,8 +281,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setSelectedModelDetail(candidate);
       }
 
-      // Auto-load Logic
-      if (!loadedChatLocal && !loadedChatInference && !initialLoadAttempted.current && candidate && candidate.downloaded && !candidate.id.includes('::')) {
+      // Auto-load Logic (Only for Chat pages, skip on dedicated studio pages like Audio)
+      const isNonChatStudioRoute = typeof window !== 'undefined' && 
+        (window.location.pathname.includes('/audio') || window.location.pathname.includes('/images') || window.location.pathname.includes('/ocr'));
+      if (!isNonChatStudioRoute && !loadedChatLocal && !loadedChatInference && !initialLoadAttempted.current && candidate && candidate.downloaded && !candidate.id.includes('::')) {
         initialLoadAttempted.current = true;
         setIsModelLoading(true);
         API.loadModel(candidate.id).finally(() => {

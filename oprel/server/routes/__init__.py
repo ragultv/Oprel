@@ -16,6 +16,8 @@ from . import (
     system,
     skills,
     ocr,
+    speech,
+    preflight,
 )
 
 __all__ = [
@@ -34,4 +36,6 @@ __all__ = [
     "system",
     "skills",
     "ocr",
+    "speech",
+    "preflight",
 ]

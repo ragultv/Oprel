@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
+from oprel.utils.auth import get_api_token
 
 from oprel.core.config import Config
 from oprel.downloader.hub import get_active_hf_token
@@ -77,7 +78,7 @@ def test_get_active_hf_token_resolution(temp_db, monkeypatch):
 def test_auth_routes_status_flow(temp_db, monkeypatch):
     """Verify GET /v1/auth/hf/status when disconnected vs connected."""
     monkeypatch.delenv("HF_TOKEN", raising=False)
-    client = TestClient(app)
+    client = TestClient(app, base_url="http://127.0.0.1", headers={"Authorization": f"Bearer {get_api_token()}"})
 
     # Disconnected
     db.delete_hf_auth()
@@ -106,7 +107,7 @@ def test_auth_routes_status_flow(temp_db, monkeypatch):
 def test_connect_hf_token_success(temp_db, monkeypatch):
     """Verify POST /v1/auth/hf/token with valid token."""
     monkeypatch.delenv("HF_TOKEN", raising=False)
-    client = TestClient(app)
+    client = TestClient(app, base_url="http://127.0.0.1", headers={"Authorization": f"Bearer {get_api_token()}"})
 
     mock_hf_response = MagicMock()
     mock_hf_response.status_code = 200
@@ -135,7 +136,7 @@ def test_connect_hf_token_success(temp_db, monkeypatch):
 def test_connect_hf_token_invalid_rejected(temp_db, monkeypatch):
     """Verify POST /v1/auth/hf/token with invalid token returns 400."""
     monkeypatch.delenv("HF_TOKEN", raising=False)
-    client = TestClient(app)
+    client = TestClient(app, base_url="http://127.0.0.1", headers={"Authorization": f"Bearer {get_api_token()}"})
 
     mock_hf_response = MagicMock()
     mock_hf_response.status_code = 401
@@ -151,7 +152,7 @@ def test_disconnect_hf_token(temp_db, monkeypatch):
     monkeypatch.setenv("HF_TOKEN", "hf_existing")
     db.save_hf_auth("hf_existing", "alice")
 
-    client = TestClient(app)
+    client = TestClient(app, base_url="http://127.0.0.1", headers={"Authorization": f"Bearer {get_api_token()}"})
     res = client.delete("/v1/auth/hf/token")
     assert res.status_code == 200
     assert res.json()["connected"] is False

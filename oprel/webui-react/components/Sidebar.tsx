@@ -16,6 +16,7 @@ import {
   Image,
   RefreshCw,
   ScanText,
+  AudioLines,
 } from "lucide-react"
 import { usePathname, useRouter } from "next/navigation"
 import Link from "next/link"
@@ -188,6 +189,7 @@ export function Sidebar() {
   const isImagesRoute = pathname.startsWith("/images")
   const isOcrRoute = pathname.startsWith("/ocr")
   const isKnowledgeRoute = pathname.startsWith("/knowledge")
+  const isAudioRoute = pathname.startsWith("/audio")
   const isDevRoute = pathname.startsWith("/dev")
 
   const [search, setSearch] = useState("")
@@ -322,9 +324,21 @@ export function Sidebar() {
               <span className="text-[10px]">Knowledge</span>
             </Link>
             <Link
+              href="/audio/"
+              className={cn(
+                "flex flex-col items-center gap-1.5 py-3 rounded-lg border border-border text-xs font-semibold transition-all text-center",
+                isAudioRoute
+                  ? "bg-secondary text-foreground border-border"
+                  : "text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
+              )}
+            >
+              <AudioLines size={18} />
+              <span className="text-[10px]">Audio</span>
+            </Link>
+            <Link
               href="/dev/"
               className={cn(
-                "flex flex-col items-center gap-1.5 py-3 rounded-lg border border-border text-xs font-semibold transition-all col-span-2 text-center",
+                "flex flex-col items-center gap-1.5 py-3 rounded-lg border border-border text-xs font-semibold transition-all  text-center",
                 isDevRoute
                   ? "bg-secondary text-foreground border-border"
                   : "text-muted-foreground hover:bg-secondary/60 hover:text-foreground"

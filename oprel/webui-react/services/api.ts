@@ -104,7 +104,7 @@ export interface ModelDetailedInfo {
 }
 
 const API_BASE = (typeof window !== 'undefined' && window.location.port === '3000') 
-? 'http://localhost:11435' 
+? 'http://127.0.0.1:11435' 
 : ''; 
 
 export const API = {
@@ -210,6 +210,24 @@ export const API = {
     if (!res.ok) return [];
     const data = await res.json();
     return data.logs || [];
+  },
+
+  async getOnboarding(): Promise<{
+    first_run: boolean;
+    hardware: {
+      os: string | null;
+      cpu_threads: number | null;
+      ram_total_gb: number;
+      ram_available_gb: number;
+      gpu_name: string | null;
+      vram_total_gb: number | null;
+    };
+    tier: 'A' | 'B' | 'C';
+    recommended: { alias: string; quantization: string; approx_size_gb: number; reason: string };
+  }> {
+    const res = await fetch(`${API_BASE}/system/onboarding`);
+    if (!res.ok) throw new Error('Could not read hardware information');
+    return res.json();
   },
 
   async pullModel(modelId: string, quantization?: string): Promise<{
@@ -577,8 +595,8 @@ export const API = {
       }
       
       try {
-        const json = JSON.parse(dataStr);
-        const content = json.choices[0]?.delta?.content || '';
+        const parsed = JSON.parse(dataStr);
+        const content = parsed.choices?.[0]?.delta?.content || '';
         if (content) onToken(content);
       } catch (e) {
         if (dataStr !== '[DONE]') {
@@ -983,4 +1001,194 @@ export const HF = {
     if (!res.ok) throw new Error('Failed to disconnect Hugging Face account');
   },
 };
+
+export interface SpeechModel {
+  id: string;
+  name: string;
+  type: 'tts' | 'stt';
+  engine: string;
+  description: string;
+  tags_supported: boolean;
+  acceleration: string;
+  is_downloaded: boolean;
+  size: string;
+  hf_repo: string;
+  voices: Array<{
+    id: string;
+    name: string;
+    gender: string;
+    avatar: string;
+  }>;
+}
+
+export interface SpeechTag {
+  tag: string;
+  label: string;
+  category: string;
+}
+
+export const AudioAPI = {
+  async getModels(): Promise<SpeechModel[]> {
+    const res = await fetch(`${API_BASE}/v1/audio/models`);
+    if (!res.ok) throw new Error('Failed to fetch speech models');
+    const data = await res.json();
+    return data.data;
+  },
+
+  async getTags(model?: string): Promise<SpeechTag[]> {
+    const url = model ? `${API_BASE}/v1/audio/tags?model=${encodeURIComponent(model)}` : `${API_BASE}/v1/audio/tags`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('Failed to fetch speech tags');
+    const data = await res.json();
+    return data.tags;
+  },
+
+  async downloadModel(modelId: string): Promise<{ job_id: string; status: string }> {
+    const res = await fetch(`${API_BASE}/v1/audio/models/download`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: modelId }),
+    });
+    if (!res.ok) throw new Error('Failed to initiate model download');
+    return res.json();
+  },
+
+  async getDownloadJob(jobId: string): Promise<{ job_id: string; status: string; progress: number; message: string; error?: string }> {
+    const res = await fetch(`${API_BASE}/v1/audio/models/jobs/${jobId}`);
+    if (!res.ok) throw new Error('Failed to check download job');
+    return res.json();
+  },
+
+  async generateSpeech(model: string, input: string, voice?: string, speed: number = 1.0): Promise<Blob> {
+    const res = await fetch(`${API_BASE}/v1/audio/speech`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, input, voice, speed, response_format: 'wav' }),
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`Speech synthesis failed: ${err}`);
+    }
+    return res.blob();
+  },
+
+  async startSpeechJob(model: string, input: string, voice?: string, speed: number = 1.0): Promise<{ job_id: string; status: string }> {
+    const res = await fetch(`${API_BASE}/v1/audio/speech/jobs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, input, voice, speed }),
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`Failed to start speech job: ${err}`);
+    }
+    return res.json();
+  },
+
+  async getSpeechJob(jobId: string): Promise<{
+    job_id: string;
+    model_id: string;
+    status: 'queued' | 'processing' | 'completed' | 'failed' | 'cancelled';
+    progress: number;
+    current_chunk: number;
+    total_chunks: number;
+    message: string;
+    error?: string;
+    audio_url?: string;
+  }> {
+    const res = await fetch(`${API_BASE}/v1/audio/speech/jobs/${jobId}`);
+    if (!res.ok) throw new Error('Failed to check speech job status');
+    return res.json();
+  },
+
+  async getSpeechJobResultBlob(jobId: string): Promise<Blob> {
+    const res = await fetch(`${API_BASE}/v1/audio/speech/jobs/${jobId}/result`);
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`Failed to fetch synthesized audio: ${err}`);
+    }
+    return res.blob();
+  },
+
+  async cancelSpeechJob(jobId: string): Promise<{ job_id: string; cancelled: boolean }> {
+    const res = await fetch(`${API_BASE}/v1/audio/speech/jobs/${jobId}/cancel`, {
+      method: 'POST',
+    });
+    if (!res.ok) throw new Error('Failed to cancel speech job');
+    return res.json();
+  },
+
+  async transcribeAudio(audioBlob: Blob, fast: boolean = false): Promise<string> {
+    const formData = new FormData();
+    const mime = audioBlob.type || '';
+    const ext = mime.includes('webm') ? 'webm' : mime.includes('ogg') ? 'ogg' : mime.includes('mp3') ? 'mp3' : 'wav';
+    formData.append('file', audioBlob, `recording.${ext}`);
+    const url = fast ? `${API_BASE}/v1/audio/transcriptions?fast=true` : `${API_BASE}/v1/audio/transcriptions`;
+    const res = await fetch(url, {
+      method: 'POST',
+      body: formData,
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`Speech transcription failed: ${err}`);
+    }
+    const data = await res.json();
+    return data.text;
+  },
+
+  async whisperWarmup(): Promise<{ status: string; message: string }> {
+    const res = await fetch(`${API_BASE}/v1/audio/whisper/warmup`, { method: 'POST' });
+    if (!res.ok) throw new Error('Whisper warmup failed');
+    return res.json();
+  },
+
+  async whisperStatus(): Promise<{ ready: boolean; status: string }> {
+    const res = await fetch(`${API_BASE}/v1/audio/whisper/status`);
+    if (!res.ok) return { ready: false, status: 'loading' };
+    return res.json();
+  },
+
+  async getHistory(days?: number): Promise<AudioHistoryItem[]> {
+    const url = days && days > 0 ? `${API_BASE}/v1/audio/history?days=${days}` : `${API_BASE}/v1/audio/history`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('Failed to fetch audio history');
+    const data = await res.json();
+    return data.data;
+  },
+
+  getHistoryAudioUrl(id: string): string {
+    return `${API_BASE}/v1/audio/history/${id}/audio`;
+  },
+
+  async deleteHistoryItem(id: string): Promise<boolean> {
+    const res = await fetch(`${API_BASE}/v1/audio/history/${id}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) throw new Error('Failed to delete audio history item');
+    const data = await res.json();
+    return data.success;
+  },
+
+  async clearHistory(): Promise<boolean> {
+    const res = await fetch(`${API_BASE}/v1/audio/history`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) throw new Error('Failed to clear audio history');
+    const data = await res.json();
+    return data.success;
+  },
+};
+
+export interface AudioHistoryItem {
+  id: string;
+  model_id: string;
+  model_name: string;
+  voice_id: string;
+  voice_name: string;
+  text: string;
+  audio_path?: string;
+  duration_seconds: number;
+  speed: number;
+  created_at: string;
+}
 

@@ -123,7 +123,7 @@ export const PROVIDER_PRESETS: Record<ProviderType, ProviderPreset> = {
 
 const API_BASE =
   typeof window !== 'undefined' && window.location.port === '3000'
-    ? 'http://localhost:11435'
+    ? 'http://127.0.0.1:11435'
     : ''
 
 // ─── DB-backed CRUD (via backend REST) ───────────────────────────────────────

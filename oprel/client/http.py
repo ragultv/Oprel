@@ -65,6 +65,8 @@ class HTTPClient(BaseClient):
         
         # Create session with connection pooling
         self.session = requests.Session()
+        from oprel.utils.auth import auth_headers
+        self.session.headers.update(auth_headers())
         
         # Configure retry adapter for resilience
         from urllib3.util.retry import Retry

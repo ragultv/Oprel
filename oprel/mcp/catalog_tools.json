@@ -1,0 +1,164 @@
+{
+ "filesystem": {
+  "checked_version": "1.0.0",
+  "tools": [
+   {
+    "name": "read_file",
+    "description": "Read the complete contents of a file as text. DEPRECATED: Use read_text_file instead.",
+    "read_only": true,
+    "destructive": false
+   },
+   {
+    "name": "read_text_file",
+    "description": "Read the complete contents of a file from the file system as text. Handles various text encodings and provides detailed error messages if the file cannot be read. Use this tool when you need to examine the contents of a single file. Use the 'head' parameter to read only the first N lines of a file, or the 'tail' parameter to read only the last N lines of a file. Operates on the file as text regardless of extension. Only works within allowed directories.",
+    "read_only": true,
+    "destructive": false
+   },
+   {
+    "name": "read_media_file",
+    "description": "Read a file and return it as a base64-encoded content block with its MIME type. Image and audio files are returned as image/audio content; any other file type is returned as an embedded resource. Only works within allowed directories.",
+    "read_only": true,
+    "destructive": false
+   },
+   {
+    "name": "read_multiple_files",
+    "description": "Read the contents of multiple files simultaneously. This is more efficient than reading files one by one when you need to analyze or compare multiple files. Each file's content is returned with its path as a reference. Failed reads for individual files won't stop the entire operation. Only works within allowed directories.",
+    "read_only": true,
+    "destructive": false
+   },
+   {
+    "name": "write_file",
+    "description": "Create a new file or completely overwrite an existing file with new content. Use with caution as it will overwrite existing files without warning. Handles text content with proper encoding. Only works within allowed directories.",
+    "read_only": false,
+    "destructive": true
+   },
+   {
+    "name": "edit_file",
+    "description": "Make line-based edits to a text file. Each edit replaces exact line sequences with new content. Returns a git-style diff showing the changes made. Only works within allowed directories.",
+    "read_only": false,
+    "destructive": true
+   },
+   {
+    "name": "create_directory",
+    "description": "Create a new directory or ensure a directory exists. Can create multiple nested directories in one operation. If the directory already exists, this operation will succeed silently. Perfect for setting up directory structures for projects or ensuring required paths exist. Only works within allowed directories.",
+    "read_only": false,
+    "destructive": false
+   },
+   {
+    "name": "list_directory",
+    "description": "Get a detailed listing of all files and directories in a specified path. Results clearly distinguish between files and directories with [FILE] and [DIR] prefixes. This tool is essential for understanding directory structure and finding specific files within a directory. Only works within allowed directories.",
+    "read_only": true,
+    "destructive": false
+   },
+   {
+    "name": "list_directory_with_sizes",
+    "description": "Get a detailed listing of all files and directories in a specified path, including sizes. Results clearly distinguish between files and directories with [FILE] and [DIR] prefixes. This tool is useful for understanding directory structure and finding specific files within a directory. Only works within allowed directories.",
+    "read_only": true,
+    "destructive": false
+   },
+   {
+    "name": "directory_tree",
+    "description": "Get a recursive tree view of files and directories as a JSON structure. Each entry includes 'name', 'type' (file/directory), and 'children' for directories. Files have no children array, while directories always have a children array (which may be empty). The output is formatted with 2-space indentation for readability. Only works within allowed directories.",
+    "read_only": true,
+    "destructive": false
+   },
+   {
+    "name": "move_file",
+    "description": "Move or rename files and directories. Can move files between directories and rename them in a single operation. If the destination exists, the operation will fail. Works across different directories and can be used for simple renaming within the same directory. Both source and destination must be within allowed directories.",
+    "read_only": false,
+    "destructive": true
+   },
+   {
+    "name": "search_files",
+    "description": "Recursively search for files and directories matching a pattern. The patterns should be glob-style patterns that match paths relative to the working directory. Use pattern like '*.ext' to match files in current directory, and '**/*.ext' to match files in all subdirectories. Returns full paths to all matching items. Great for finding files when you don't know their exact location. Only searches within allowed directories.",
+    "read_only": true,
+    "destructive": false
+   },
+   {
+    "name": "get_file_info",
+    "description": "Retrieve detailed metadata about a file or directory. Returns comprehensive information including size, creation time, last modified time, permissions, and type. This tool is perfect for understanding file characteristics without reading the actual content. Only works within allowed directories.",
+    "read_only": true,
+    "destructive": false
+   },
+   {
+    "name": "list_allowed_directories",
+    "description": "Returns the list of directories that this server is allowed to access. Subdirectories within these allowed directories are also accessible. Use this to understand which directories and their nested paths are available before trying to access files.",
+    "read_only": true,
+    "destructive": false
+   }
+  ],
+  "prompts": []
+ },
+ "memory": {
+  "checked_version": "1.0.0",
+  "tools": [
+   {
+    "name": "create_entities",
+    "description": "Create multiple new entities in the knowledge graph. An entity whose name already exists, or repeats an earlier entity in the same call, is skipped and its observations are not added; the result lists the skipped names in `skipped`. Use add_observations to add observations to an existing entity.",
+    "read_only": false,
+    "destructive": false
+   },
+   {
+    "name": "create_relations",
+    "description": "Create multiple new relations between entities in the knowledge graph. Relations should be in active voice",
+    "read_only": false,
+    "destructive": false
+   },
+   {
+    "name": "add_observations",
+    "description": "Add new observations to existing entities in the knowledge graph",
+    "read_only": false,
+    "destructive": false
+   },
+   {
+    "name": "delete_entities",
+    "description": "Delete multiple entities and their associated relations from the knowledge graph",
+    "read_only": false,
+    "destructive": true
+   },
+   {
+    "name": "delete_observations",
+    "description": "Delete specific observations from entities in the knowledge graph",
+    "read_only": false,
+    "destructive": true
+   },
+   {
+    "name": "delete_relations",
+    "description": "Delete multiple relations from the knowledge graph",
+    "read_only": false,
+    "destructive": true
+   },
+   {
+    "name": "read_graph",
+    "description": "Read the entire knowledge graph",
+    "read_only": true,
+    "destructive": false
+   },
+   {
+    "name": "search_nodes",
+    "description": "Search for nodes in the knowledge graph based on a query",
+    "read_only": true,
+    "destructive": false
+   },
+   {
+    "name": "open_nodes",
+    "description": "Open specific nodes in the knowledge graph by their names",
+    "read_only": true,
+    "destructive": false
+   }
+  ],
+  "prompts": []
+ },
+ "sequential-thinking": {
+  "checked_version": "1.0.0",
+  "tools": [
+   {
+    "name": "sequentialthinking",
+    "description": "A detailed tool for dynamic and reflective problem-solving through thoughts. This tool helps analyze problems through a flexible thinking process that can adapt and evolve. Each thought can build on, question, or revise previous insights as understanding deepens. When to use this tool: - Breaking down complex problems into steps - Planning and design with room for revision - Analysis that might need course correction - Problems where the full scope might not be clear initially - Problems that require a multi-step solution - Tasks that need to maintain context over multiple steps - Situations where irrelevant information needs to be filtered out Key features: - You can adjust total_thoughts up or down as you progress - You can question or revise previous thoughts - You can add more thoughts even after reaching what seemed like the end - You can express uncertainty and explore alternative approaches - Not every thought needs to build linearly - you can branch or backtrack - Generates a solution hypothesis - Verifies the hypothesis based on the Chain of Thought steps - Repeats the process until satisfied - Provides a correct answer Parameters explained: - thought: Your current thinking step, which can include: * Regular analytical steps * Revisions of previous thoughts * Questions about previous decisions * Realizations about needing more analysis * Changes in approach * Hypothesis generation * Hypothesis verification - nextThoughtNeeded: True if you need more thinking, even if at what seemed like the end - thoughtNumber: Current number in sequence (can go beyond initial total if needed) - totalThoughts: Current estimate of thoughts needed (can be adjusted up/down) - isRevision: A boolean indicating if this thought revises previous thinking - revisesThought: If is_revision is true, which thought number is being reconsidered - branchFromThought: If branching, which thought number is the branching point - branchId: Identifier for the current branch (if any) - needsMoreThoughts: If reaching end but realizing more thoughts needed You should: 1. Start with an initial estimate of needed thoughts, but be ready to adjust 2. Feel free to question or revise previous thoughts 3. Don't hesitate to add more thoughts if needed, even at the \"end\" 4. Express uncertainty when present 5. Mark thoughts that revise previous thinking or branch into new paths 6. Ignore information that is irrelevant to the current step 7. Generate a solution hypothesis when appropriate 8. Verify the hypothesis based on the Chain of Thought steps 9. Repeat the process until satisfied with the solution 10. Provide a single, ideally correct answer as the final output 11. Only set nextThoughtNeeded to false when truly done and a satisfactory answer is reached",
+    "read_only": false,
+    "destructive": false
+   }
+  ],
+  "prompts": []
+ }
+}

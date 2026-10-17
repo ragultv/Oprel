@@ -44,15 +44,29 @@ _download_error: str | None = None
 
 _rapidocr_engine = None
 _rapidocr_lock = threading.Lock()
+_rapidocr_available_cache: Optional[bool] = None
+_gpu_detected_cache: Optional[bool] = None
+_ocr_models_status_cache: Optional[list[dict[str, Any]]] = None
+_ocr_models_status_time: float = 0
+
+
+def invalidate_ocr_cache():
+    global _ocr_models_status_cache, _ocr_models_status_time
+    _ocr_models_status_cache = None
+    _ocr_models_status_time = 0
 
 
 def is_rapidocr_available() -> bool:
-    """Return True if rapidocr_onnxruntime is installed and available."""
+    """Return True if rapidocr_onnxruntime is installed and available (cached)."""
+    global _rapidocr_available_cache
+    if _rapidocr_available_cache is not None:
+        return _rapidocr_available_cache
     try:
         import rapidocr_onnxruntime  # type: ignore # noqa: F401
-        return True
+        _rapidocr_available_cache = True
     except Exception:
-        return False
+        _rapidocr_available_cache = False
+    return _rapidocr_available_cache
 
 
 def get_rapidocr_engine():
@@ -124,13 +138,17 @@ _active_ocr_model_id: str | None = None
 
 
 def detect_gpu() -> bool:
-    """Return True if GPU hardware is detected via telemetry."""
+    """Return True if GPU hardware is detected via telemetry (cached)."""
+    global _gpu_detected_cache
+    if _gpu_detected_cache is not None:
+        return _gpu_detected_cache
     try:
         from oprel.telemetry.hardware import detect_gpu as _detect_gpu
         gpu_info = _detect_gpu()
-        return bool(gpu_info)
+        _gpu_detected_cache = bool(gpu_info)
     except Exception:
-        return False
+        _gpu_detected_cache = False
+    return _gpu_detected_cache
 
 
 def get_active_ocr_model_id() -> str:
@@ -185,6 +203,7 @@ def set_active_ocr_model(model_id: str) -> dict:
 
     _active_ocr_model_id = model_id
     setattr(CONFIG, "ocr_model_id", model_id)
+    invalidate_ocr_cache()
     return get_ocr_status()
 
 
@@ -245,6 +264,12 @@ def get_cached_vlm_files(target_model_id: str | None = None) -> tuple[Path | Non
 
 def get_ocr_models_status() -> list[dict[str, Any]]:
     """Scan and return status for each model in the OCR family."""
+    global _ocr_models_status_cache, _ocr_models_status_time
+    import time as _time
+    now = _time.time()
+    if _ocr_models_status_cache is not None and (now - _ocr_models_status_time < 30.0):
+        return _ocr_models_status_cache
+
     from oprel.downloader.aliases import OFFICIAL_REPOS, resolve_model_id
     from oprel.downloader.hub import _find_cached_model_for_repo
     from oprel.runtime.backends.vision import detect_mmproj_file
@@ -321,6 +346,8 @@ def get_ocr_models_status() -> list[dict[str, Any]]:
             "file_path": str(model_path) if model_path else None,
         })
 
+    _ocr_models_status_cache = results
+    _ocr_models_status_time = now
     return results
 
 
@@ -425,6 +452,7 @@ def _run_download() -> None:
                 f"VLM download completed but model or mmproj could not be verified in {CONFIG.cache_dir}"
             )
 
+        invalidate_ocr_cache()
         _emit("done", "OCR VLM setup complete ✓", done=True)
     except Exception as exc:
         _download_error = str(exc)

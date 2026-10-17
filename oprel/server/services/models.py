@@ -185,6 +185,27 @@ def load_model(
             "message": f"Model is provided by external provider: {provider['name']}",
         }
 
+    if not is_embedding:
+        # Refuse early, with a plain-language reason, when the model cannot fit even
+        # with CPU offload.  Any failure of the check itself must not block loading.
+        try:
+            from oprel.server.services.preflight import run_preflight
+
+            fit = run_preflight(
+                model_id,
+                quantization,
+                CONFIG.ctx_size if "ctx_size" in CONFIG.model_fields_set else None,
+                CONFIG.kv_cache_type,
+            )
+            if fit["verdict"] == "insufficient":
+                raise RuntimeError(" ".join(fit["messages"]) or "Not enough memory to load this model.")
+        except FileNotFoundError:
+            pass  # not downloaded yet; the loader will download it
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            logger.debug(f"Preflight skipped for {model_id}: {exc}")
+
     try:
         from oprel.core.model import Model
 

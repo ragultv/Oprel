@@ -105,6 +105,7 @@ dependencies = [
     "google-genai>=2.0.0",
     "groq>=0.9.0",
     "Pillow>=10.0.0",
+    "keyring>=24.0.0",  # OS credential store for API keys and tokens
 ]
 
 [project.optional-dependencies]
@@ -158,6 +159,8 @@ oprel = "oprel.cli.main:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["oprel*"]
+# The MCP connectors are parked (see docs/internal/mcp_connectors.md) and are not shipped yet.
+exclude = ["oprel.mcp*"]
 
 [tool.setuptools]
 include-package-data = true

@@ -61,8 +61,10 @@ def test_resolve_kv_cache_type_turboquant():
     assert _resolve_kv_cache_type(cfg_extreme, "Q8_0", is_vision=False) == "q4_0"
 
     cfg_auto = Config(kv_cache_type="auto")
-    assert _resolve_kv_cache_type(cfg_auto, "Q4_K_M", is_vision=False) == "q4_0"
+    # auto never picks the lossy q4_0 KV cache; q4_0 is opt-in only.
+    assert _resolve_kv_cache_type(cfg_auto, "Q4_K_M", is_vision=False) == "q8_0"
     assert _resolve_kv_cache_type(cfg_auto, "Q8_0", is_vision=False) == "q8_0"
+    assert _resolve_kv_cache_type(cfg_auto, "Q4_K_M", is_vision=True) == "f16"
 
 
 def test_llama_cpp_build_command_turboquant_and_prompt_cache(tmp_path):
@@ -116,6 +118,7 @@ def test_http_client_cache_prompt_payload():
 
     with patch.object(client.session, "post") as mock_post:
         mock_response = MagicMock()
+        mock_response.status_code = 200
         mock_response.json.return_value = {"choices": [{"text": "Hello"}]}
         mock_response.raise_for_status.return_value = None
         mock_post.return_value = mock_response

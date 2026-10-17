@@ -45,7 +45,9 @@ class UIStaticFiles(StaticFiles):
         full_path = Path(self.directory) / path
         if full_path.is_file():
             response = await super().get_response(path, scope)
-            if not path or path.endswith(".html") or "." not in Path(path).name:
+            if "_next/static/" in path or "/static/chunks/" in path:
+                response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+            elif not path or path.endswith(".html") or "." not in Path(path).name:
                 response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
                 response.headers["Pragma"] = "no-cache"
                 response.headers["Expires"] = "0"
@@ -57,11 +59,12 @@ class UIStaticFiles(StaticFiles):
             if (Path(self.directory) / alt_path).is_file():
                 return await super().get_response(alt_path, scope)
 
-        # 3. Only return chat/index.html if path is clean route (no file extension)
-        if path == "chat" or (path.startswith("chat/") and "." not in Path(path).name):
-            chat_index = Path(self.directory) / "chat" / "index.html"
-            if chat_index.is_file():
-                response = FileResponse(chat_index)
+        # 3. Direct index.html resolution for clean routes (audio, chat, dev, models, etc.)
+        clean_path = path.strip("/")
+        if "." not in Path(clean_path).name:
+            subpage_index = Path(self.directory) / clean_path / "index.html"
+            if subpage_index.is_file():
+                response = FileResponse(subpage_index)
                 response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
                 response.headers["Pragma"] = "no-cache"
                 response.headers["Expires"] = "0"
