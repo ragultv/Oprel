@@ -281,6 +281,33 @@ def scan_cached_models() -> list[ModelInfoData]:
                 )
             )
 
+        # Check for cached speech models (Kokoro ONNX)
+        try:
+            from oprel.server.services.speech import check_kokoro_installed, _kokoro_engine
+            if check_kokoro_installed():
+                file_key = ("hexgrad/Kokoro-82M", "kokoro-82m")
+                if file_key not in seen_files:
+                    seen_files.add(file_key)
+                    kokoro_dir = cache_dir / "kokoro-82m"
+                    kokoro_size_gb = 0.35
+                    if kokoro_dir.exists():
+                        total_bytes = sum(f.stat().st_size for f in kokoro_dir.glob("*") if f.is_file())
+                        if total_bytes > 0:
+                            kokoro_size_gb = round(total_bytes / (1024 ** 3), 2)
+                    available.append(
+                        ModelInfoData(
+                            model_id="hexgrad/Kokoro-82M",
+                            quantization="ONNX",
+                            backend="kokoro",
+                            loaded=_kokoro_engine is not None,
+                            size_gb=kokoro_size_gb,
+                            name="kokoro-82m",
+                            category="speech",
+                        )
+                    )
+        except Exception as speech_scan_exc:
+            logger.debug(f"Could not scan cached speech models: {speech_scan_exc}")
+
     except Exception as exc:
         logger.error(f"Error scanning cache: {exc}")
 

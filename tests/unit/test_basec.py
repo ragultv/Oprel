@@ -10,7 +10,8 @@ from oprel.core.config import Config
 from oprel.core.exceptions import OprelError, ModelNotFoundError, MemoryError
 from oprel.telemetry.hardware import get_hardware_info
 from oprel.telemetry.recommender import recommend_quantization
-from oprel.downloader.cache import get_cache_path, sanitize_filename
+from oprel.downloader.cache import get_cache_path
+from oprel.utils.paths import sanitize_filename
 from oprel.utils.paths import expand_path, ensure_dir, get_file_size_mb
 from oprel.utils.platform import get_platform, is_64bit
 

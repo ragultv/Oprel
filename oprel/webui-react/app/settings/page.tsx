@@ -54,6 +54,7 @@ const TABS = [
   { id: 'config', label: 'Generation', icon: SlidersHorizontal },
   { id: 'providers', label: 'AI Providers', icon: Globe },
   { id: 'skills', label: 'Skills', icon: Sparkles },
+  { id: 'connectors', label: 'Connectors', icon: Icons.Plug },
   { id: 'huggingface', label: 'Hugging Face', icon: KeyRound },
 ] as const
 
@@ -482,6 +483,11 @@ export default function SettingsPage() {
     skills, saveSkill, deleteSkill,
   } = useApp()
   const [activeTab, setActiveTab] = useState<TabId>('config')
+  useEffect(() => {
+    if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('tab') === 'connectors') {
+      setActiveTab('connectors')
+    }
+  }, [])
   const [localSettings, setLocalSettings] = useState(settings)
   const [dirty, setDirty] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -699,7 +705,7 @@ export default function SettingsPage() {
       <main className="flex-1 min-w-0 overflow-y-auto">
         <div className={cn(
           "mx-auto px-6 py-8 space-y-6 transition-all duration-300",
-          activeTab === 'skills' ? 'max-w-5xl' : 'max-w-2xl'
+          activeTab === 'skills' ? 'max-w-5xl' : activeTab === 'connectors' ? 'max-w-3xl' : 'max-w-2xl'
         )}>
 
           {/* ── Generation Config ── */}
@@ -854,6 +860,17 @@ export default function SettingsPage() {
                 </p>
               )}
             </>
+          )}
+
+          {/* ── Connectors Tab (coming soon) ── */}
+          {activeTab === 'connectors' && (
+            <div className="flex flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-border px-6 py-16 text-center">
+              <Icons.Plug size={28} className="text-muted-foreground" />
+              <h1 className="text-xl font-bold text-foreground">Connectors are coming soon</h1>
+              <p className="max-w-md text-sm text-muted-foreground">
+                Soon you will be able to connect tools and apps to your local models, with your approval for every action.
+              </p>
+            </div>
           )}
 
           {/* ── Skills Tab ── */}

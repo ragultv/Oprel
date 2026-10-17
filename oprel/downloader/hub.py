@@ -56,9 +56,9 @@ def get_active_hf_token() -> Optional[str]:
         from oprel.server import db
         auth = db.get_hf_auth()
         if auth and auth.get("token"):
-            token = auth["token"].strip()
-            os.environ["HF_TOKEN"] = token
-            return token
+            # Returned explicitly; not exported to os.environ so child processes
+            # (llama.cpp and other helpers) never inherit it.
+            return auth["token"].strip()
     except Exception as e:
         logger.debug(f"Could not read HF token from db: {e}")
 
@@ -114,6 +114,35 @@ def _create_robust_session() -> requests.Session:
     session.mount("https://", adapter)
     
     return session
+
+
+def _fetch_expected_file_info(model_id: str, filename: str, token: Optional[str]):
+    """Return (size_bytes, sha256) published by the Hub for a repo file, or (None, None)."""
+    try:
+        from huggingface_hub import HfApi
+
+        infos = HfApi().get_paths_info(model_id, [filename], token=token)
+        if not infos:
+            return None, None
+        info = infos[0]
+        lfs = getattr(info, "lfs", None)
+        sha = None
+        if lfs is not None:
+            sha = lfs.get("sha256") if isinstance(lfs, dict) else getattr(lfs, "sha256", None)
+        return getattr(info, "size", None), sha
+    except Exception as exc:
+        logger.warning(f"Could not fetch published checksum for {filename}: {exc}")
+        return None, None
+
+
+def _verify_download(file_path: Path, expected_size: Optional[int], expected_sha256: Optional[str]) -> bool:
+    """Check a downloaded file against the size and SHA256 published by the Hub."""
+    if expected_size is not None and file_path.stat().st_size != expected_size:
+        logger.error(
+            f"Size mismatch for {file_path.name}: expected {expected_size}, got {file_path.stat().st_size}"
+        )
+        return False
+    return _verify_file_checksum(file_path, expected_sha256)
 
 
 def _verify_file_checksum(file_path: Path, expected_hash: Optional[str] = None) -> bool:
@@ -663,7 +692,8 @@ def _download_model_attempt(
     file_size_mb = downloaded_file.stat().st_size / (1024 * 1024)
     
     # M1.17: Verify downloaded file integrity
-    if not _verify_file_checksum(downloaded_file):
+    expected_size, expected_sha = _fetch_expected_file_info(model_id, filename, token)
+    if not _verify_download(downloaded_file, expected_size, expected_sha):
         logger.error(f"Downloaded file appears corrupted, removing {downloaded_file}")
         downloaded_file.unlink()
         raise ModelNotFoundError("Downloaded file failed integrity check")

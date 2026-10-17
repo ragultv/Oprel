@@ -13,6 +13,7 @@ from oprel.server.schemas.openai import OpenAIChatRequest, OpenAICompletionReque
 from oprel.server.services.generation import GenerateParams, StreamResult, generate_text
 from oprel.server.services.context import CONFIG, logger
 from oprel.server import db
+from oprel.utils.chat_templates import _strip_citations
 
 router = APIRouter()
 
@@ -108,7 +109,10 @@ async def _handle_chat_completions(request: OpenAIChatRequest, referer: str):
             if content.strip():
                 system_prompt = content
         else:
-            conversation_history.append({"role": msg.role, "content": msg.content})
+            c = msg.content
+            if isinstance(c, str):
+                c = _strip_citations(c)
+            conversation_history.append({"role": msg.role, "content": c})
 
     gen_params = GenerateParams(
         model_id=request.model,
@@ -369,6 +373,7 @@ async def v1_list_models():
         "Text + Vision": ["vision llms", "ocr", "vlm", "text+vision"],
         "OCR": ["ocr"],
         "text-to-image": ["image", "text-to-image"],
+        "speech": ["speech", "tts", "audio"],
     }
 
     skip_categories = ["embeddings", "text-to-video"]
@@ -417,7 +422,27 @@ async def v1_list_models():
                 continue
 
             tags = category_to_tags.get(category, ["text"])
-            backend = "stable-diffusion.cpp" if category == "text-to-image" else "llama.cpp"
+            backend = "stable-diffusion.cpp" if category == "text-to-image" else ("kokoro" if category == "speech" else "llama.cpp")
+
+            if category == "speech":
+                from oprel.server.services.speech import check_kokoro_installed, _kokoro_engine
+                kokoro_downloaded = check_kokoro_installed()
+                kokoro_loaded = _kokoro_engine is not None
+                for alias, repo_id in alias_dict.items():
+                    models.append(
+                        {
+                            "id": alias,
+                            "object": "model",
+                            "created": int(time_module.time()),
+                            "owned_by": "oprel",
+                            "tags": tags,
+                            "category": category,
+                            "backend": backend,
+                            "loaded": kokoro_loaded,
+                            "downloaded": kokoro_downloaded,
+                        }
+                    )
+                continue
 
             for alias, repo_id in alias_dict.items():
                 is_downloaded = alias in downloaded_aliases

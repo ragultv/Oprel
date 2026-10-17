@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import dataclasses
 import json
+import os
 import time as time_module
 import uuid
 from dataclasses import dataclass
@@ -189,7 +191,7 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
 
         provider = db.get_provider(p_id)
         if not provider:
-            load_model(resolved_model_id)
+            await asyncio.to_thread(load_model, resolved_model_id)
 
     if resolved_model_id in state.models:
         model = state.models[resolved_model_id]
@@ -199,7 +201,7 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
                 logger.warning(f"Backend process for {resolved_model_id} died, reloading...")
                 state.models.pop(resolved_model_id, None)
                 state.model_configs.pop(resolved_model_id, None)
-                load_model(resolved_model_id)
+                await asyncio.to_thread(load_model, resolved_model_id)
                 model = state.models[resolved_model_id]
 
         model._loaded = True
@@ -315,9 +317,6 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
                 text_prompt = grounded.prompt_text
                 logger.info(f"RAG: Grounded with {len(grounded.evidence)} relevant chunks (est {grounded.estimated_context_tokens} tokens)")
 
-                import json
-                import base64
-                import os
                 citations_data = []
                 for ev in grounded.evidence:
                     source_path = ev.metadata.get('source')
@@ -325,7 +324,9 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
                     if source_path and os.path.exists(source_path):
                         try:
                             with open(source_path, 'r', encoding='utf-8', errors='ignore') as f:
-                                full_text = f.read()
+                                full_text = f.read(32768)
+                                if len(full_text) == 32768:
+                                    full_text += "\n\n[... truncated ...]"
                         except:
                             pass
 
@@ -442,6 +443,13 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
                 logger.warning(f"[Supermemory] Context recall failed gracefully: {exc}")
     # --- END SUPERMEMORY RECALL ---
 
+    # Old chats may hold UI-only tool blocks from the parked connectors feature; never send them to a model.
+    from oprel.utils.legacy import strip_legacy_tool_cards
+
+    active_history = [
+        {**m, "content": strip_legacy_tool_cards(m.get("content"))} if isinstance(m, dict) else m for m in active_history
+    ]
+
     full_prompt = build_chat_prompt(
         resolved_model_id,
         active_history,
@@ -451,6 +459,21 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
     )
 
     model = state.models[resolved_model_id]
+
+    async def _token_stream() -> AsyncIterator[str]:
+        for tok in model._client.generate(
+            prompt=full_prompt,
+            stream=True,
+            max_tokens=params.max_tokens,
+            temperature=params.temperature,
+            top_p=params.top_p,
+            top_k=params.top_k,
+            repeat_penalty=params.repeat_penalty,
+            images=images if images else None,
+            model=resolved_model_id,
+            cache_prompt=getattr(CONFIG, "prompt_cache_enabled", True),
+        ):
+            yield tok
 
     if params.stream:
         async def generate_stream() -> AsyncIterator[str]:
@@ -463,18 +486,7 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
                     for char in full_resp:
                         yield f"data: {json.dumps(char)}\n\n"
 
-                for token in model._client.generate(
-                    prompt=full_prompt,
-                    max_tokens=params.max_tokens,
-                    temperature=params.temperature,
-                    top_p=params.top_p,
-                    top_k=params.top_k,
-                    repeat_penalty=params.repeat_penalty,
-                    stream=True,
-                    images=images if images else None,
-                    model=resolved_model_id,
-                    cache_prompt=getattr(CONFIG, "prompt_cache_enabled", True),
-                ):
+                async for token in _token_stream():
                     if token:
                         full_resp += token
                         yield f"data: {json.dumps(token)}\n\n"
@@ -506,7 +518,7 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
                             SuperMemoryStore().record_turn(
                                 conversation_id=conv_id,
                                 user_text=u_text,
-                                assistant_text=full_resp,
+                                assistant_text=strip_legacy_tool_cards(full_resp),
                                 turn_index=turn_idx,
                             )
                         )
@@ -529,7 +541,7 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
         return StreamResult(iterator=generate_stream(), conversation_id=conv_id)
 
     start_gen_time = time_module.perf_counter()
-    text = (rag_html_block if locals().get('rag_html_block') else "") + model._client.generate(
+    generated = model._client.generate(
         prompt=full_prompt,
         max_tokens=params.max_tokens,
         temperature=params.temperature,
@@ -541,6 +553,7 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
         model=resolved_model_id,
         cache_prompt=getattr(CONFIG, "prompt_cache_enabled", True),
     )
+    text = (rag_html_block if locals().get('rag_html_block') else "") + generated
 
     end_gen_time = time_module.perf_counter()
     duration = end_gen_time - start_gen_time
@@ -569,7 +582,7 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
                 SuperMemoryStore().record_turn(
                     conversation_id=conv_id,
                     user_text=u_text,
-                    assistant_text=text,
+                    assistant_text=strip_legacy_tool_cards(text),
                     turn_index=turn_idx,
                 )
             )
@@ -595,37 +608,45 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
     )
 
 
+_embedding_load_lock = asyncio.Lock()
+EMBEDDING_READY_TIMEOUT_SECONDS = 90
+
+
 async def get_embeddings(params: EmbeddingParams) -> EmbeddingResult:
     state = get_state()
     from oprel.downloader.aliases import resolve_model_id
 
     resolved_id = resolve_model_id(params.model)
 
-    load_model(resolved_id)
+    # Loading can take many seconds.  Do it off the event loop (so chat, approvals and the UI stay
+    # responsive) and let concurrent callers wait for the same load instead of racing it.
+    async with _embedding_load_lock:
+        await asyncio.to_thread(load_model, resolved_id)
 
-    if resolved_id not in state.models:
-        logger.error(f"Model '{resolved_id}' not found after loading. Available: {list(state.models.keys())}")
-        raise RuntimeError(f"Model '{resolved_id}' failed to stay in cache")
+        if resolved_id not in state.models:
+            logger.error(f"Model '{resolved_id}' not found after loading. Available: {list(state.models.keys())}")
+            raise RuntimeError(f"Model '{resolved_id}' failed to stay in cache")
 
-    model = state.models[resolved_id]
+        model = state.models[resolved_id]
 
-    if hasattr(model, "_process") and model._process:
-        backend_port = model._process.port
-        deadline = time_module.time() + 15
-        ready = False
-        while time_module.time() < deadline:
-            try:
-                async with httpx.AsyncClient(timeout=1.0) as hc:
-                    probe = await hc.get(f"http://127.0.0.1:{backend_port}/health")
-                    if probe.status_code < 500:
-                        ready = True
-                        break
-            except Exception:
-                pass
-            await asyncio.sleep(0.25)
+        if hasattr(model, "_process") and model._process:
+            backend_port = model._process.port
+            deadline = time_module.time() + EMBEDDING_READY_TIMEOUT_SECONDS
+            ready = False
+            while time_module.time() < deadline:
+                try:
+                    async with httpx.AsyncClient(timeout=1.0) as hc:
+                        probe = await hc.get(f"http://127.0.0.1:{backend_port}/health")
+                        # llama-server answers 503 while the model is still loading
+                        if probe.status_code < 500:
+                            ready = True
+                            break
+                except Exception:
+                    pass
+                await asyncio.sleep(0.25)
 
-        if not ready:
-            raise RuntimeError(f"Embedding backend on port {backend_port} did not become ready in time")
+            if not ready:
+                raise RuntimeError(f"Embedding backend on port {backend_port} did not become ready in time")
 
     is_single = isinstance(params.input, str)
     inputs = [params.input] if is_single else params.input

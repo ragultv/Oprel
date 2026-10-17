@@ -2,6 +2,7 @@
 Chat template formatting for different model types
 """
 
+import re
 from oprel.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -112,10 +113,17 @@ def format_chat_prompt(
         return user_message
 
 
+def _strip_citations(text: str) -> str:
+    """Strip <citations>...</citations> block from prior turns to avoid context token bloat."""
+    if not text or "<citations>" not in text:
+        return text
+    return re.sub(r"<citations>[\s\S]*?</citations>\s*", "", text).strip()
+
+
 def _get_content_text(content) -> str:
-    """Extract text from multimodal content if necessary"""
+    """Extract text from multimodal content if necessary and strip citations blocks."""
     if isinstance(content, str):
-        return content
+        return _strip_citations(content)
     if isinstance(content, list):
         text_parts = []
         for item in content:
@@ -124,8 +132,8 @@ def _get_content_text(content) -> str:
             elif isinstance(item, dict) and item.get("type") == "image_url":
                 # Standard tag for vision models in many GGUF implementations
                 text_parts.append("[img-0]") 
-        return " ".join(text_parts)
-    return str(content)
+        return _strip_citations(" ".join(text_parts))
+    return _strip_citations(str(content))
 
 
 def format_qwen_prompt(

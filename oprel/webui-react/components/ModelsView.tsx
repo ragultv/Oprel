@@ -20,7 +20,7 @@ import { cn } from "@/services/utils"
 import { useApp } from "@/services/context"
 import { useDownloads } from "@/services/downloadContext"
 import { useToast } from "@/hooks/use-toast"
-import { API, HF } from "@/services/api"
+import { API, HF, AudioAPI } from "@/services/api"
 import type { AIModel } from "@/services/data"
 import { QuantizationSelector } from "./QuantizationSelector"
 import { HfConnectModal } from "./HfConnectModal"
@@ -118,6 +118,7 @@ function ModelDetailPanel({ model }: { model: AIModel }) {
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   const [hasQuants, setHasQuants] = useState<boolean>(true)
   const isImageModel = model.category === "text-to-image"
+  const isSpeechModel = model.category === "speech"
   const [showHfDownloadNudge, setShowHfDownloadNudge] = useState(false)
   const [pendingDownloadFn, setPendingDownloadFn] = useState<(() => Promise<void>) | null>(null)
 
@@ -232,6 +233,40 @@ function ModelDetailPanel({ model }: { model: AIModel }) {
         downloadId: response.download_id,
       })
       setDialogOpen(true)
+    } catch (error) {
+      toast({
+        title: "Failed to Start Download",
+        description: error instanceof Error ? error.message : "Unknown error",
+        variant: "destructive",
+      })
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleSpeechDownload = async () => {
+    setLoading(true)
+    try {
+      const actualModelId = model.id === "kokoro-82m" || model.modelRepoId?.includes("Kokoro") ? "kokoro-82m" : model.id
+      const response = await AudioAPI.downloadModel(actualModelId)
+      addDownload({
+        modelId: actualModelId,
+        modelName: model.name || "Kokoro-82M",
+        quantization: "ONNX",
+        progress: 0,
+        downloaded: 0,
+        total: 350 * 1024 * 1024,
+        speed: 0,
+        timeLeft: "Downloading...",
+        status: "ongoing",
+        downloadId: response.job_id,
+      })
+      setDialogOpen(true)
+      toast({
+        title: "Download Started",
+        description: `${model.name} speech synthesis model is downloading`,
+      })
+      await refreshModels()
     } catch (error) {
       toast({
         title: "Failed to Start Download",
@@ -375,6 +410,32 @@ function ModelDetailPanel({ model }: { model: AIModel }) {
                   ) : (
                     <>
                       <Play size={14} /> Download{selectedQuantization ? ` GGUF (${selectedQuantization})` : " GGUF"}
+                    </>
+                  )}
+                </button>
+              )
+            ) : isSpeechModel ? (
+              isDownloaded ? (
+                <button
+                  onClick={() => router.push('/audio')}
+                  className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 transition-all"
+                >
+                  <MessageSquarePlus size={15} /> Open Audio Studio
+                </button>
+              ) : (
+                <button
+                  onClick={handleSpeechDownload}
+                  disabled={loading}
+                  className="flex items-center gap-2 px-4 py-2 rounded-lg bg-green-600 text-white text-sm font-semibold hover:bg-green-700 transition-all disabled:opacity-60"
+                >
+                  {loading ? (
+                    <>
+                      <div className="w-3 h-3 rounded-full border-2 border-white/30 border-t-white animate-spin" />
+                      Downloading...
+                    </>
+                  ) : (
+                    <>
+                      <Play size={14} /> Download Speech Model
                     </>
                   )}
                 </button>

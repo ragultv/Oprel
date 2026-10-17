@@ -30,6 +30,7 @@ import {
   Film,
   Layout,
   ExternalLink,
+  Plug,
 } from "lucide-react"
 import { useRouter } from "next/navigation"
 import ReactMarkdown from "react-markdown"
@@ -200,7 +201,7 @@ function getGreeting(name?: string): { text: string } {
 // ── AI-generated conversation title ─────────────────────────────────────────
 const API_BASE_URL =
   typeof window !== 'undefined' && window.location.port === '3000'
-    ? 'http://localhost:11435'
+    ? 'http://127.0.0.1:11435'
     : ''
 
 async function generateConvTitle(
@@ -576,6 +577,9 @@ function MessageBubble({
       // Replace inline brackets [1] or 【1】 with cite tags
       cleaned = cleaned.replace(/(?:\[|【)(\d+)(?:\]|】)/g, '<cite id="$1"></cite>');
     }
+
+    // Old chats may hold UI-only tool blocks from the parked connectors feature; keep them hidden.
+    cleaned = cleaned.replace(/<toolcall>[\s\S]*?<\/toolcall>/g, "").trim();
 
     return (
       <div className="oprel-response">
@@ -1152,7 +1156,13 @@ export function ChatView({
     };
 
     const currentConv = activeConvRef.current;
-    const history = (currentConv?.messages || []).map(m => ({ role: m.role, content: m.content }));
+    const history = (currentConv?.messages || []).map(m => {
+      let content = m.content;
+      if (typeof content === 'string' && content.includes('<citations>')) {
+        content = content.replace(/<citations>[\s\S]*?<\/citations>\s*/g, '').trim();
+      }
+      return { role: m.role, content };
+    });
 
     // ── Canvas mode prompt: two distinct modes ────────────────────────────────
     // CREATION (empty canvas): generate from scratch, full HTML
@@ -1933,13 +1943,13 @@ export function ChatView({
                         <button
                           onClick={() => {
                             setToolsMenuOpen(false);
-                            toast({ title: "More Tools", description: "More interactive tools coming soon!" });
+                            toast({ title: "Connectors", description: "Connectors are coming soon." });
                           }}
                           className="w-full text-left px-3 py-2 rounded-xl text-xs transition-all flex items-center gap-2.5 text-foreground/80 hover:bg-secondary hover:text-foreground cursor-pointer font-medium"
                         >
-                          <MoreHorizontal size={14} className="shrink-0 opacity-80" />
-                          <span className="flex-1">More tools</span>
-                          <ChevronRight size={12} className="opacity-40" />
+                          <Plug size={14} className="shrink-0 opacity-80" />
+                          <span className="flex-1">Connectors</span>
+                          <span className="rounded-full border border-border bg-secondary px-1.5 py-0.5 text-[9px] font-bold text-muted-foreground">Soon</span>
                         </button>
                       </div>
                     </>

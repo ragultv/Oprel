@@ -22,12 +22,9 @@ def _resolve_kv_cache_type(config: Config, model_quantization: str, is_vision: b
     if is_vision:
         return "f16"
 
-    quant = model_quantization.upper()
-    if any(level in quant for level in ["Q2", "Q3", "Q4", "IQ1", "IQ2", "IQ3", "IQ4"]):
-        return "q4_0"
-    if any(level in quant for level in ["Q5", "Q6", "Q8"]):
-        return "q8_0"
-    return "f16"
+    # q8_0 halves KV memory with negligible quality loss.  q4_0 is opt-in
+    # (kv_cache_type="q4_0"/"turboquant") because it measurably degrades long-context output.
+    return "q8_0"
 
 
 def _recommend_batch_size(ctx_size: int, gpu_enabled: bool) -> int:
@@ -134,6 +131,23 @@ class LlamaCppBackend(BaseBackend):
             model_size_gb = self.model_path.stat().st_size / (1024**3)
         except OSError:
             model_size_gb = 4.0
+        # Use what is actually free: another app (browser, game) may hold VRAM.
+        if vram_gb > 0:
+            try:
+                from oprel.telemetry.hardware import get_vram_info
+
+                live = get_vram_info()
+                if live:
+                    vram_gb = min(vram_gb, max(live["vram_free_gb"], 0.0))
+            except Exception:
+                pass
+
+        # Tier-based context default, only when the user did not set ctx_size.
+        if "ctx_size" not in getattr(self.config, "model_fields_set", {"ctx_size"}):
+            from oprel.runtime.tiers import default_context
+
+            self.config = self.config.model_copy(update={"ctx_size": default_context(vram_gb)})
+
         resolved_kv_cache_type = _resolve_kv_cache_type(
             self.config,
             metadata.quantization if metadata else "",

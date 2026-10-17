@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useEffect, type ReactNode } from "react"
+import { usePathname } from "next/navigation"
 import { Sidebar } from "@/components/Sidebar"
 import { SettingsModal } from "@/components/SettingsModal"
 import { HfConnectModal } from "@/components/HfConnectModal"
@@ -8,6 +9,8 @@ import { HF } from "@/services/api"
 
 export function AppShell({ children }: { children: ReactNode }) {
   const [showHfWelcome, setShowHfWelcome] = useState(false)
+  const pathname = usePathname()
+  const onWelcome = pathname?.startsWith("/welcome") ?? false
 
   useEffect(() => {
     // Only check if user has not seen or skipped the welcome prompt
@@ -36,7 +39,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       </main>
       <SettingsModal />
       <HfConnectModal
-        isOpen={showHfWelcome}
+        isOpen={showHfWelcome && !onWelcome}
         onClose={handleDismissWelcome}
         onSkip={handleDismissWelcome}
         onConnected={handleDismissWelcome}

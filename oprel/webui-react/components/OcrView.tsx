@@ -984,55 +984,91 @@ function ExtractionScreen({
 // Root
 // ─────────────────────────────────────────────────────────────────────────────
 
+const INITIAL_OCR_STATUS: OcrStatus = {
+  ready: true,
+  installed: true,
+  active_model_id: "rapidocr",
+  active_model_name: "RapidOCR (Production DBNet)",
+  model_id: "rapidocr",
+  model_name: "RapidOCR (Production DBNet)",
+  model_dir: "",
+  size_mb: 15,
+  gpu: false,
+  models: [
+    {
+      id: "rapidocr",
+      name: "RapidOCR (Production DBNet)",
+      repo_id: "rapidocr-onnxruntime",
+      architecture: "onnx",
+      params: "15M",
+      quant: "INT8/FP32",
+      description: "Production DBNet + SVTR pixel-grounded text detection & recognition (Default)",
+      installed: true,
+      has_mmproj: true,
+      ready: true,
+      size_mb: 15,
+    },
+    {
+      id: "auto",
+      name: "Auto (Hybrid DBNet + VLM)",
+      repo_id: "auto-hybrid",
+      architecture: "hybrid",
+      params: "Hybrid",
+      quant: "Optimal",
+      description: "Pixel-grounded RapidOCR detection with optional VLM layout structuring",
+      installed: true,
+      has_mmproj: true,
+      ready: true,
+      size_mb: 15,
+    },
+  ],
+}
+
 export function OcrView() {
-  const [status, setStatus] = useState<OcrStatus | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [status, setStatus] = useState<OcrStatus>(INITIAL_OCR_STATUS)
+  const [loading, setLoading] = useState(false)
   const [history, setHistory] = useState<OcrJob[]>([])
 
-  const fetchStatus = async () => {
+  const loadOcrData = async () => {
     try {
-      const s = await OCR.fetchStatus()
-      const savedId = typeof window !== "undefined" ? localStorage.getItem("oprel_ocr_model_id") : null
-      if (savedId && s.active_model_id !== savedId && s.models?.some(m => m.id === savedId && m.ready)) {
-        try {
-          const updated = await OCR.selectModel(savedId)
-          setStatus(updated)
-          return
-        } catch {}
+      const [s, h] = await Promise.all([
+        OCR.fetchStatus().catch(() => null),
+        OCR.fetchHistory().catch(() => []),
+      ])
+
+      if (h) setHistory(h)
+
+      if (s) {
+        const savedId = typeof window !== "undefined" ? localStorage.getItem("oprel_ocr_model_id") : null
+        if (savedId && s.active_model_id !== savedId && s.models?.some(m => m.id === savedId && m.ready)) {
+          try {
+            const updated = await OCR.selectModel(savedId)
+            setStatus(updated)
+            return
+          } catch {}
+        }
+        setStatus(s)
       }
-      setStatus(s)
-    } catch {
-      setStatus({ ready: false, model_dir: "", size_mb: 0, gpu: false, installed: false })
-    } finally {
-      setLoading(false)
+    } catch (e) {
+      console.warn("Background OCR sync:", e)
     }
   }
 
-  const fetchHistory = async () => {
-    try { setHistory(await OCR.fetchHistory()) } catch {}
-  }
-
-  useEffect(() => { fetchStatus(); fetchHistory() }, [])
-
-  if (loading) {
-    return (
-      <div className="h-full flex items-center justify-center bg-[#0e0e0e] text-muted-foreground">
-        <Loader2 size={24} className="animate-spin" />
-      </div>
-    )
-  }
+  useEffect(() => {
+    loadOcrData()
+  }, [])
 
   const hasAnyModel = status?.ready || status?.installed || (status?.models && status.models.some(m => m.ready || m.installed))
 
   if (!hasAnyModel) {
-    return <SetupScreen onReady={() => { fetchStatus(); fetchHistory() }} />
+    return <SetupScreen onReady={loadOcrData} />
   }
 
   return (
     <ExtractionScreen
       history={history}
       status={status}
-      onHistoryChange={fetchHistory}
+      onHistoryChange={() => { OCR.fetchHistory().then(setHistory).catch(() => {}) }}
       onStatusChange={setStatus}
     />
   )

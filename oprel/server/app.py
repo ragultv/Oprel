@@ -38,6 +38,8 @@ from oprel.server.routes import (
     skills,
     ocr,
     auth,
+    speech,
+    preflight,
 )
 
 
@@ -102,6 +104,9 @@ class GinStyleLoggingMiddleware(BaseHTTPMiddleware):
         return response
 
 
+from oprel.server.security import LocalGuardMiddleware, LOOPBACK_ORIGIN_REGEX
+
+
 class StripApiPrefixMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         if request.scope["path"].startswith("/api/"):
@@ -157,10 +162,11 @@ signal.signal(signal.SIGTERM, _signal_handler)
 app = FastAPI(lifespan=lifespan, title="Oprel Daemon")
 app.add_middleware(GinStyleLoggingMiddleware)
 app.add_middleware(StripApiPrefixMiddleware)
+app.add_middleware(LocalGuardMiddleware)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origin_regex=LOOPBACK_ORIGIN_REGEX,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["X-Conversation-ID"],
@@ -203,6 +209,8 @@ app.include_router(system.router)
 app.include_router(skills.router)
 app.include_router(ocr.router)
 app.include_router(auth.router)
+app.include_router(speech.router)
+app.include_router(preflight.router)
 
 
 def run_server(host: str = "127.0.0.1", port: int = 11435):

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import json
+import os
 import re
 import time as time_module
 from typing import Any, AsyncIterator
@@ -89,6 +91,9 @@ def _clean_message_text(content: Any) -> str:
     """Extract plain text from message content and strip citations XML blocks."""
     text = _message_content_to_text(content)
     return _strip_citations(text)
+
+
+from oprel.utils.legacy import strip_legacy_tool_cards  # noqa: E402
 
 
 async def _record_turn_supermemory(conv_id: str, user_text: str, assistant_text: str) -> None:
@@ -350,9 +355,6 @@ async def _prepare_chat_context(body: Any, raw_messages: list[dict], p_type: str
                     messages[last_user_index]["content"] = grounded.prompt_text
                     logger.info(f"Provider RAG: Injected {len(grounded.evidence)} chunks, est ~{grounded.estimated_context_tokens} tokens")
 
-                    import json
-                    import base64
-                    import os
                     citations_data = []
                     for ev in grounded.evidence:
                         source_path = ev.metadata.get('source') if ev.metadata else None
@@ -438,7 +440,7 @@ async def _call_openai(api_key: str, base_url: str, body: Any, messages: list[di
         if resp.status_code != 200:
             raise RuntimeError(f"OpenAI API Error: {resp.text}")
         data = resp.json()
-        return data.get("choices", [{}])[0].get("message", {}).get("content", "")
+        return _message_text(data.get("choices", [{}])[0].get("message", {}))
 
 
 async def _call_nvidia(api_key: str, base_url: str, body: Any, messages: list[dict]) -> str:
@@ -466,7 +468,15 @@ async def _call_groq(api_key: str, base_url: str, body: Any, messages: list[dict
         temperature=body.temperature,
         stream=False,
     )
-    return response.choices[0].message.content or ""
+    message = response.choices[0].message
+    text = _message_text(message)
+    if not text.strip():
+        logger.warning(
+            "Groq returned no text (finish_reason=%s, reasoning=%s)",
+            response.choices[0].finish_reason,
+            bool(getattr(message, "reasoning", None)),
+        )
+    return text
 
 
 async def _call_openrouter(api_key: str, base_url: str, body: Any, messages: list[dict]) -> str:
@@ -491,7 +501,7 @@ async def _call_openrouter(api_key: str, base_url: str, body: Any, messages: lis
         if resp.status_code != 200:
             raise RuntimeError(f"OpenRouter API Error: {resp.text}")
         data = resp.json()
-        return data.get("choices", [{}])[0].get("message", {}).get("content", "")
+        return _message_text(data.get("choices", [{}])[0].get("message", {}))
 
 
 async def _call_gemini(api_key: str, body: Any, messages: list[dict]) -> str:
@@ -672,6 +682,33 @@ async def _stream_gemini(api_key: str, body: Any, messages: list[dict]) -> Async
 
 # ─── Unified Chat Proxy Entrypoint ───────────────────────────────────────────
 
+def _drop_empty_messages(messages: list[dict]) -> list[dict]:
+    """
+    Providers reject chat messages whose content is empty or missing (e.g. 400 "messages.9.content
+    must be a string or array").  Empty turns come from earlier failed replies, so drop them.
+    """
+    cleaned = []
+    for m in messages:
+        content = strip_legacy_tool_cards(m.get("content"))
+        if isinstance(content, dict):  # an object is never valid message content; send it as text
+            content = json.dumps(content, ensure_ascii=False)
+        elif content is not None and not isinstance(content, (str, list)):
+            content = str(content)
+        m = {**m, "content": content}
+        if content is None or (isinstance(content, str) and not content.strip()) or content == []:
+            continue
+        cleaned.append(m)
+    return cleaned
+
+
+def _message_text(message: Any) -> str:
+    """Text of a chat-completion message (dict or SDK object); content parts are joined."""
+    content = message.get("content") if isinstance(message, dict) else getattr(message, "content", None)
+    if isinstance(content, list):
+        return "".join(p.get("text", "") for p in content if isinstance(p, dict))
+    return content or ""
+
+
 async def provider_chat_proxy(provider_id: str, body: Any) -> GenerateResult | StreamResult:
     p = db.get_provider(provider_id)
     if not p:
@@ -693,6 +730,9 @@ async def provider_chat_proxy(provider_id: str, body: Any) -> GenerateResult | S
 
     # Context Preparation (RAG search, prompt trimming, limits processing)
     prepared_messages, rag_html_block = await _prepare_chat_context(body, body.messages, p_type, conv_id=effective_conv_id)
+
+    # Providers reject empty or malformed turns (left by earlier failed replies); drop them.
+    prepared_messages = _drop_empty_messages(prepared_messages)
 
     # Save User message to history (use the original content before context wrapper expansion)
     user_msg = prepared_messages[-1] if prepared_messages else None
@@ -726,7 +766,7 @@ async def provider_chat_proxy(provider_id: str, body: Any) -> GenerateResult | S
 
             db.add_message(effective_conv_id, "assistant", full_response)
             user_orig_text = user_msg.get("_original_content", user_msg.get("content", "")) if user_msg else ""
-            await _record_turn_supermemory(effective_conv_id, user_orig_text, full_response)
+            await _record_turn_supermemory(effective_conv_id, user_orig_text, strip_legacy_tool_cards(full_response))
             db.add_inference_log(
                 model_id=body.model,
                 prompt_tokens=_estimate_tokens(_message_content_to_text(prepared_messages[-1]["content"] if prepared_messages else ""), body.model),
@@ -803,7 +843,7 @@ async def provider_chat_proxy(provider_id: str, body: Any) -> GenerateResult | S
 
             db.add_message(conv_id, "assistant", full_response)
             user_orig_text = user_msg.get("_original_content", user_msg.get("content", "")) if user_msg else ""
-            await _record_turn_supermemory(conv_id, user_orig_text, full_response)
+            await _record_turn_supermemory(conv_id, user_orig_text, strip_legacy_tool_cards(full_response))
             db.add_inference_log(
                 model_id=body.model,
                 prompt_tokens=_estimate_tokens(_message_content_to_text(prepared_messages[-1]["content"] if prepared_messages else ""), body.model),

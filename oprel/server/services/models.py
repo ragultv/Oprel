@@ -39,6 +39,16 @@ def get_model_detailed_info(model_id: str) -> dict[str, Any]:
         else:
             repo_id = resolve_model_id(model_id)
 
+        if "kokoro" in repo_id.lower() or "kokoro" in model_id.lower():
+            return {
+                "repo_id": "hexgrad/Kokoro-82M",
+                "alias": "kokoro-82m",
+                "parameters": "82M",
+                "quantizations": ["ONNX"],
+                "sizes": {"ONNX": 0.35},
+                "default_quantization": "ONNX",
+            }
+
         return get_model_info(repo_id, alias=model_id)
     except Exception as exc:
         logger.error(f"Failed to get model info for {model_id}: {exc}")
@@ -51,6 +61,16 @@ def get_local_quantizations(model_id: str) -> dict[str, Any]:
 
     try:
         repo_id = model_id
+
+        if "kokoro" in repo_id.lower() or "kokoro" in model_id.lower():
+            from oprel.server.services.speech import check_kokoro_installed
+            has_kokoro = check_kokoro_installed()
+            return {
+                "model_id": model_id,
+                "repo_id": "hexgrad/Kokoro-82M",
+                "local_quantizations": ["ONNX"] if has_kokoro else [],
+                "has_local": has_kokoro,
+            }
 
         if model_id.endswith(".gguf"):
             resolved_repo_id = get_repo_id_from_filename(CONFIG.cache_dir, model_id)
@@ -184,6 +204,27 @@ def load_model(
             "model_id": model_id,
             "message": f"Model is provided by external provider: {provider['name']}",
         }
+
+    if not is_embedding:
+        # Refuse early, with a plain-language reason, when the model cannot fit even
+        # with CPU offload.  Any failure of the check itself must not block loading.
+        try:
+            from oprel.server.services.preflight import run_preflight
+
+            fit = run_preflight(
+                model_id,
+                quantization,
+                CONFIG.ctx_size if "ctx_size" in CONFIG.model_fields_set else None,
+                CONFIG.kv_cache_type,
+            )
+            if fit["verdict"] == "insufficient":
+                raise RuntimeError(" ".join(fit["messages"]) or "Not enough memory to load this model.")
+        except FileNotFoundError:
+            pass  # not downloaded yet; the loader will download it
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            logger.debug(f"Preflight skipped for {model_id}: {exc}")
 
     try:
         from oprel.core.model import Model
