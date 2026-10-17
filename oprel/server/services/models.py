@@ -39,6 +39,16 @@ def get_model_detailed_info(model_id: str) -> dict[str, Any]:
         else:
             repo_id = resolve_model_id(model_id)
 
+        if "kokoro" in repo_id.lower() or "kokoro" in model_id.lower():
+            return {
+                "repo_id": "hexgrad/Kokoro-82M",
+                "alias": "kokoro-82m",
+                "parameters": "82M",
+                "quantizations": ["ONNX"],
+                "sizes": {"ONNX": 0.35},
+                "default_quantization": "ONNX",
+            }
+
         return get_model_info(repo_id, alias=model_id)
     except Exception as exc:
         logger.error(f"Failed to get model info for {model_id}: {exc}")
@@ -51,6 +61,16 @@ def get_local_quantizations(model_id: str) -> dict[str, Any]:
 
     try:
         repo_id = model_id
+
+        if "kokoro" in repo_id.lower() or "kokoro" in model_id.lower():
+            from oprel.server.services.speech import check_kokoro_installed
+            has_kokoro = check_kokoro_installed()
+            return {
+                "model_id": model_id,
+                "repo_id": "hexgrad/Kokoro-82M",
+                "local_quantizations": ["ONNX"] if has_kokoro else [],
+                "has_local": has_kokoro,
+            }
 
         if model_id.endswith(".gguf"):
             resolved_repo_id = get_repo_id_from_filename(CONFIG.cache_dir, model_id)

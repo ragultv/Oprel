@@ -53,23 +53,6 @@ const DEFAULT_SCRIPT =
 
 const INITIAL_SPEECH_MODELS: SpeechModel[] = [
   {
-    id: "fish-s1-mini",
-    name: "Fish Audio S1-mini",
-    type: "tts",
-    engine: "fishaudio",
-    description: "High-quality neural speech synthesis with CUDA GPU acceleration",
-    tags_supported: false,
-    acceleration: "CUDA GPU",
-    is_downloaded: true,
-    size: "1.74 GB",
-    hf_repo: "fishaudio/s1-mini",
-    voices: [
-      { id: "default", name: "Default Voice", gender: "neutral", avatar: "sparkles" },
-      { id: "sarah", name: "Sarah", gender: "female", avatar: "female" },
-      { id: "adrian", name: "Adrian", gender: "male", avatar: "male" },
-    ],
-  },
-  {
     id: "kokoro-82m",
     name: "Kokoro-82M",
     type: "tts",
@@ -78,7 +61,7 @@ const INITIAL_SPEECH_MODELS: SpeechModel[] = [
     tags_supported: false,
     acceleration: "CUDA GPU",
     is_downloaded: true,
-    size: "310 MB",
+    size: "350 MB",
     hf_repo: "hexgrad/Kokoro-82M",
     voices: [
       { id: "af_heart", name: "Heart (American Female)", gender: "female", avatar: "female" },
@@ -104,7 +87,7 @@ export default function AudioStudioPage() {
   // Speech Models & Engine (Pre-seeded for instant 0ms mount)
   const [models, setModels] = useState<SpeechModel[]>(INITIAL_SPEECH_MODELS)
   const [isLoadingModels, setIsLoadingModels] = useState(false)
-  const [selectedEngine, setSelectedEngine] = useState<string>("fish-s1-mini")
+  const [selectedEngine, setSelectedEngine] = useState<string>("kokoro-82m")
   const [downloadingJob, setDownloadingJob] = useState<{ id: string; modelId: string; progress: number; message: string } | null>(null)
 
   // Dropdown states
@@ -112,7 +95,7 @@ export default function AudioStudioPage() {
   const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false)
 
   // Voice & Controls State
-  const [selectedVoice, setSelectedVoice] = useState<string>("default")
+  const [selectedVoice, setSelectedVoice] = useState<string>("af_heart")
   const [volume, setVolume] = useState<number>(100)
   const [speechSpeed, setSpeechSpeed] = useState<number>(1.0)
   const [loudnessNorm, setLoudnessNorm] = useState<boolean>(true)
@@ -284,15 +267,10 @@ export default function AudioStudioPage() {
 
       if (data && data.length > 0) {
         setModels(data)
-        const fish = data.find((m) => m.id === "fish-s1-mini")
-        if (fish && fish.is_downloaded) {
-          setSelectedEngine("fish-s1-mini")
-        } else {
-          const kokoro = data.find((m) => m.id === "kokoro-82m")
-          if (kokoro && kokoro.is_downloaded) {
-            setSelectedEngine("kokoro-82m")
-            setSelectedVoice("af_heart")
-          }
+        const kokoro = data.find((m) => m.id === "kokoro-82m")
+        if (kokoro) {
+          setSelectedEngine("kokoro-82m")
+          setSelectedVoice((prev) => prev && prev !== "default" ? prev : "af_heart")
         }
       }
     } catch (err) {
@@ -1072,28 +1050,6 @@ export default function AudioStudioPage() {
                           <div className="absolute top-full left-0 right-0 mt-1.5 z-40 rounded-2xl bg-[#1c1c1c] border border-white/15 p-2 shadow-2xl space-y-1">
                             <button
                               onClick={() => {
-                                setSelectedEngine("fish-s1-mini")
-                                setSelectedVoice("default")
-                                setIsModelDropdownOpen(false)
-                              }}
-                              className={cn(
-                                "w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-medium transition-all text-left",
-                                selectedEngine === "fish-s1-mini"
-                                  ? "bg-white/10 text-white font-semibold"
-                                  : "text-muted-foreground hover:bg-white/5 hover:text-foreground"
-                              )}
-                            >
-                              <div>
-                                <div className="font-semibold text-foreground">Fish Audio S1-mini</div>
-                                <div className="text-[10px] text-muted-foreground">15,000+ Tags · Max 3k Chars</div>
-                              </div>
-                              <span className="px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 text-[10px] font-mono">
-                                CUDA
-                              </span>
-                            </button>
-
-                            <button
-                              onClick={() => {
                                 setSelectedEngine("kokoro-82m")
                                 setSelectedVoice("af_heart")
                                 setIsModelDropdownOpen(false)
@@ -1107,10 +1063,10 @@ export default function AudioStudioPage() {
                             >
                               <div>
                                 <div className="font-semibold text-foreground">Kokoro-82M</div>
-                                <div className="text-[10px] text-muted-foreground">CUDA GPU · 100,000 Chars</div>
+                                <div className="text-[10px] text-muted-foreground">CUDA GPU / CPU · 100,000 Chars</div>
                               </div>
                               <span className="px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 text-[10px] font-mono">
-                                CUDA
+                                READY
                               </span>
                             </button>
                           </div>
@@ -1123,7 +1079,7 @@ export default function AudioStudioPage() {
                       <div className="p-3 rounded-2xl bg-amber-500/10 border border-amber-500/20 space-y-2 mt-2">
                         <div className="flex items-center justify-between text-xs font-semibold text-amber-300">
                           <span>Model Download Required</span>
-                          <span className="text-[10px] font-mono">{currentModel?.size}</span>
+                          <span className="text-[10px] font-mono">{currentModel?.size || "350 MB"}</span>
                         </div>
                         {downloadingJob?.modelId === selectedEngine ? (
                           <div className="space-y-1">
@@ -1151,18 +1107,16 @@ export default function AudioStudioPage() {
                     )}
                   </div>
 
-                  {/* Model Highlight Card (Matching Fish Audio Drama 3 banner) */}
+                  {/* Model Highlight Card */}
                   <div className="p-3.5 rounded-2xl bg-gradient-to-br from-white/[0.06] to-white/[0.02] border border-white/10 space-y-1">
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-bold text-foreground">
-                        {selectedEngine === "fish-s1-mini" ? "Fish Audio S1-mini" : "Kokoro-82M"}
+                        Kokoro-82M
                       </span>
                       <span className="text-[10px] font-mono text-primary font-bold">Active Engine</span>
                     </div>
                     <p className="text-[11px] text-muted-foreground leading-relaxed">
-                      {selectedEngine === "fish-s1-mini"
-                        ? "State-of-the-art expressive TTS with 15,000+ emotional and paralinguistic tone markers."
-                        : "High-performance speech engine optimized for long-form books and documents up to 100k characters."}
+                      High-performance speech engine optimized for ultra-fast, natural speech synthesis and long-form documents up to 100k characters.
                     </p>
                   </div>
 

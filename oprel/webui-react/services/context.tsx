@@ -250,7 +250,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // 5. Active Model Logic — Ensure active model falls back to a valid chat model
       const isChatEligible = (m: AIModel) => {
         const c = (m.category || "").toLowerCase();
-        return c !== "ocr" && c !== "text-to-image" && c !== "image-to-image" && c !== "image" && c !== "embeddings" && c !== "embedding";
+        return c !== "ocr" && c !== "text-to-image" && c !== "image-to-image" && c !== "image" && c !== "embeddings" && c !== "embedding" && c !== "speech";
       };
 
       const chatLocalCandidates = finalLocal.filter(isChatEligible);

@@ -132,7 +132,12 @@ OFFICIAL_REPOS = {
     "text-to-image": {
         "ideation" : "HamSFL/Ideation",
         "z-image-turbo":"unsloth/Z-Image-Turbo-GGUF"  
-  },
+    },
+
+    # Speech synthesis models
+    "speech": {
+        "kokoro-82m": "hexgrad/Kokoro-82M",
+    },
 }
 
 # Flatten all models into a single dict for backward compatibility
@@ -200,6 +205,12 @@ CATEGORY_INFO = {
         "icon": "🎨",
         "description": "Image generation from text prompts (GGUF only)",
         "backend": "stable-diffusion.cpp",
+    },
+    "speech": {
+        "name": "Speech",
+        "icon": "🎙️",
+        "description": "Speech synthesis models (Kokoro-82M ONNX)",
+        "backend": "kokoro",
     },
 }
 

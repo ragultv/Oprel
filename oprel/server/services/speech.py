@@ -39,18 +39,11 @@ from oprel.server.services.model_state import force_unload_model
 def get_speech_models_dir() -> Path:
     """
     Returns the root directory where speech models are stored.
-    Prefers Drive D: or oprel-SDK workspace to avoid Drive C: storage depletion.
+    Uses the unified SDK cache directory (CONFIG.cache_dir) across all platforms.
     """
-    # Check D: drive workspace
-    d_dir = Path("D:/Ragul/oprel-SDK/.speech_models")
-    if d_dir.parent.exists():
-        d_dir.mkdir(parents=True, exist_ok=True)
-        return d_dir
-
-    # Fallback to configured cache dir
-    fallback = CONFIG.cache_dir / "speech_models"
-    fallback.mkdir(parents=True, exist_ok=True)
-    return fallback
+    cache_dir = CONFIG.cache_dir
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir
 
 
 AVAILABLE_TAGS = []
@@ -98,10 +91,13 @@ def check_fish_audio_installed() -> bool:
         return _fish_installed_cache
     models_dir = get_speech_models_dir() / "fish-s1-mini"
     target_dir = models_dir / "torch_checkpoints"
-    # Check if files exist in torch_checkpoints or directly in models_dir
     needed = ["model.pth", "codec.pth", "config.json"]
     has_sub = all((target_dir / f).exists() for f in needed)
     has_root = all((models_dir / f).exists() for f in needed)
+    if not (has_sub or has_root):
+        legacy_dir = Path("D:/Ragul/oprel-SDK/.speech_models/fish-s1-mini")
+        has_sub = all((legacy_dir / "torch_checkpoints" / f).exists() for f in needed)
+        has_root = all((legacy_dir / f).exists() for f in needed)
     _fish_installed_cache = has_sub or has_root
     return _fish_installed_cache
 
@@ -110,7 +106,12 @@ def get_fish_audio_checkpoint_dir() -> Path:
     models_dir = get_speech_models_dir() / "fish-s1-mini"
     if (models_dir / "torch_checkpoints" / "model.pth").exists():
         return models_dir / "torch_checkpoints"
-    return models_dir
+    if (models_dir / "model.pth").exists():
+        return models_dir
+    legacy_dir = Path("D:/Ragul/oprel-SDK/.speech_models/fish-s1-mini")
+    if (legacy_dir / "torch_checkpoints" / "model.pth").exists():
+        return legacy_dir / "torch_checkpoints"
+    return legacy_dir
 
 
 def check_kokoro_installed() -> bool:
@@ -120,8 +121,15 @@ def check_kokoro_installed() -> bool:
     models_dir = get_speech_models_dir() / "kokoro-82m"
     onnx_file = models_dir / "kokoro-v1.0.onnx"
     voices_file = models_dir / "voices-v1.0.bin"
-    _kokoro_installed_cache = onnx_file.exists() and voices_file.exists()
-    return _kokoro_installed_cache
+    if onnx_file.exists() and voices_file.exists():
+        _kokoro_installed_cache = True
+        return True
+    legacy_dir = Path("D:/Ragul/oprel-SDK/.speech_models/kokoro-82m")
+    if (legacy_dir / "kokoro-v1.0.onnx").exists() and (legacy_dir / "voices-v1.0.bin").exists():
+        _kokoro_installed_cache = True
+        return True
+    _kokoro_installed_cache = False
+    return False
 
 
 
@@ -137,29 +145,12 @@ def check_whisper_installed() -> bool:
     return _whisper_installed_cache
 
 
-def get_speech_models_status() -> List[Dict[str, Any]]:
+def get_speech_models_status(include_all: bool = False) -> List[Dict[str, Any]]:
     """
     Returns the list and download status of speech models for the Audio Studio.
-    These models do NOT appear in the generic /models GGUF registry.
+    Fish Audio is hidden by default in the UI to prioritize lightweight Kokoro ONNX.
     """
-    return [
-        {
-            "id": "fish-s1-mini",
-            "name": "Fish Audio S1-mini",
-            "type": "tts",
-            "engine": "fishaudio",
-            "description": "High-quality neural speech synthesis with CUDA GPU acceleration",
-            "tags_supported": False,
-            "acceleration": "CUDA GPU (GTX 1650 4GB Optimized)",
-            "is_downloaded": check_fish_audio_installed(),
-            "size": "1.74 GB",
-            "hf_repo": "fishaudio/s1-mini",
-            "voices": [
-                {"id": "default", "name": "Default Voice", "gender": "neutral", "avatar": "sparkles"},
-                {"id": "sarah", "name": "Sarah", "gender": "female", "avatar": "female"},
-                {"id": "adrian", "name": "Adrian", "gender": "male", "avatar": "male"},
-            ],
-        },
+    all_models = [
         {
             "id": "kokoro-82m",
             "name": "Kokoro-82M",
@@ -169,7 +160,7 @@ def get_speech_models_status() -> List[Dict[str, Any]]:
             "tags_supported": False,
             "acceleration": "CUDA GPU (with CPU Fallback)",
             "is_downloaded": check_kokoro_installed(),
-            "size": "310 MB",
+            "size": "350 MB",
             "hf_repo": "hexgrad/Kokoro-82M",
             "voices": [
                 {"id": "af_heart", "name": "Heart (American Female)", "gender": "female", "avatar": "female"},
@@ -195,6 +186,27 @@ def get_speech_models_status() -> List[Dict[str, Any]]:
             "voices": [],
         },
     ]
+
+    if include_all:
+        all_models.insert(0, {
+            "id": "fish-s1-mini",
+            "name": "Fish Audio S1-mini",
+            "type": "tts",
+            "engine": "fishaudio",
+            "description": "High-quality neural speech synthesis with CUDA GPU acceleration",
+            "tags_supported": False,
+            "acceleration": "CUDA GPU (GTX 1650 4GB Optimized)",
+            "is_downloaded": check_fish_audio_installed(),
+            "size": "1.74 GB",
+            "hf_repo": "fishaudio/s1-mini",
+            "voices": [
+                {"id": "default", "name": "Default Voice", "gender": "neutral", "avatar": "sparkles"},
+                {"id": "sarah", "name": "Sarah", "gender": "female", "avatar": "female"},
+                {"id": "adrian", "name": "Adrian", "gender": "male", "avatar": "male"},
+            ],
+        })
+
+    return all_models
 
 
 # Download Job State
@@ -589,7 +601,13 @@ def _get_kokoro_engine():
     voices_file = models_dir / "voices-v1.0.bin"
 
     if not onnx_file.exists() or not voices_file.exists():
-        raise FileNotFoundError(f"Kokoro-82M model files missing in {models_dir}")
+        legacy_dir = Path("D:/Ragul/oprel-SDK/.speech_models/kokoro-82m")
+        if (legacy_dir / "kokoro-v1.0.onnx").exists() and (legacy_dir / "voices-v1.0.bin").exists():
+            models_dir = legacy_dir
+            onnx_file = legacy_dir / "kokoro-v1.0.onnx"
+            voices_file = legacy_dir / "voices-v1.0.bin"
+        else:
+            raise FileNotFoundError(f"Kokoro-82M model files missing in {models_dir}")
 
     import onnxruntime as ort
     from kokoro_onnx import Kokoro
