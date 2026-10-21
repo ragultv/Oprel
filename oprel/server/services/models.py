@@ -139,6 +139,12 @@ def load_model(
     else:
         model_id = resolve_model_id(model_id)
 
+    cat = get_model_category(model_id) or get_model_category(original_id)
+    if cat == "speech":
+        raise ValueError(
+            f"Model '{model_id}' is a speech synthesis model and cannot be loaded as a text model. Please use the Audio Studio."
+        )
+
     if model_id in state.models:
         model = state.models[model_id]
         process_alive = False

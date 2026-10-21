@@ -262,9 +262,31 @@ function isEmbeddingModel(model: AIModel | undefined): boolean {
   return cat === 'embeddings' || cat === 'embedding';
 }
 
+function isSpeechModel(model: AIModel | undefined): boolean {
+  if (!model) return false;
+  const cat = (model.category || '').toLowerCase();
+  const arch = (model.architecture || '').toLowerCase();
+  const id = (model.id || '').toLowerCase();
+  const name = (model.name || '').toLowerCase();
+  return (
+    cat === 'speech' ||
+    cat === 'text-to-speech' ||
+    cat === 'audio' ||
+    arch === 'kokoro' ||
+    arch === 'fishaudio' ||
+    id.includes('kokoro') ||
+    name.includes('kokoro')
+  );
+}
+
 function isChatModel(model: AIModel | undefined): boolean {
   if (!model) return false;
-  return !isImageGenerationModel(model) && !isOcrModel(model) && !isEmbeddingModel(model);
+  return (
+    !isImageGenerationModel(model) &&
+    !isOcrModel(model) &&
+    !isEmbeddingModel(model) &&
+    !isSpeechModel(model)
+  );
 }
 
 function ThinkingBlock({ content, renderers }: { content: string, renderers: any }) {

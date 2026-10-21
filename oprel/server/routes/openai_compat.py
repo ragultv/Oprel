@@ -97,6 +97,14 @@ async def _handle_chat_completions(request: OpenAIChatRequest, referer: str):
             },
         }
 
+    from oprel.downloader.aliases import get_model_category
+    category = get_model_category(request.model)
+    if category in ("speech", "text-to-image"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Model '{request.model}' is a {category} model and cannot be used for chat completions. Please use the appropriate endpoint or studio.",
+        )
+
     prompt = request.messages[-1].content if request.messages else ""
 
     system_prompt = None
