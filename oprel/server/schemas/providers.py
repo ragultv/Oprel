@@ -14,6 +14,8 @@ class ProviderChatRequest(BaseModel):
     stream: bool = True
     conversation_id: str | None = None
     rag: bool = False
+    # One-shot internal call: do not create a saved conversation or write to long-term memory.
+    ephemeral: bool = False
 
 
 class ProviderUpsertRequest(BaseModel):

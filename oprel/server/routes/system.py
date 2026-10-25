@@ -3,11 +3,75 @@ from __future__ import annotations
 import asyncio
 import os
 
-from fastapi import APIRouter
+from typing import Optional
+
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
 
 from oprel.server.services.model_state import cleanup_models
 
 router = APIRouter()
+
+
+class RuntimeSettingsRequest(BaseModel):
+    ctx_size: Optional[int] = Field(default=None, description="Context window in tokens; null = automatic")
+    kv_cache_type: Optional[str] = Field(default=None, max_length=16, description="f16, q8_0, q4_0, ...; null/auto = automatic")
+    reload_model_id: Optional[str] = Field(default=None, max_length=300, description="Unload this model so it reloads with the new settings")
+
+
+def _loaded_context(model_id: str) -> Optional[int]:
+    """n_ctx of a loaded local model, via the llama.cpp server's /props. None when not loaded / unknown."""
+    import json
+    import urllib.request
+
+    from oprel.downloader.aliases import resolve_model_id
+    from oprel.server.domain.state import get_state
+
+    try:
+        model = get_state().models.get(resolve_model_id(model_id))
+        port = getattr(getattr(model, "_process", None), "port", None)
+        if not port:
+            return None
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/props", timeout=3) as r:
+            props = json.loads(r.read())
+        n = (props.get("default_generation_settings") or {}).get("n_ctx") or props.get("n_ctx")
+        return int(n) if n else None
+    except Exception:
+        return None
+
+
+@router.get("/v1/system/runtime-settings")
+async def get_runtime_settings(model_id: Optional[str] = None):
+    """Saved model runtime settings (context window, KV cache type) and, for a loaded model, the context it actually runs with."""
+    from oprel.core.config import KV_CACHE_TYPES, read_runtime_settings
+
+    saved = read_runtime_settings()
+    return {
+        "ctx_size": saved.get("ctx_size"),
+        "kv_cache_type": saved.get("kv_cache_type", "auto"),
+        "kv_cache_types": list(KV_CACHE_TYPES),
+        "loaded_context": await asyncio.to_thread(_loaded_context, model_id) if model_id else None,
+    }
+
+
+@router.put("/v1/system/runtime-settings")
+async def put_runtime_settings(req: RuntimeSettingsRequest):
+    """Save the settings. They apply the next time a model is loaded; ``reload_model_id`` unloads that model so that happens now."""
+    from oprel.core.config import write_runtime_settings
+    from oprel.server.services.models import unload_model
+
+    try:
+        saved = write_runtime_settings(req.ctx_size, req.kv_cache_type)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    unloaded = False
+    if req.reload_model_id:
+        try:
+            await asyncio.to_thread(unload_model, req.reload_model_id)
+            unloaded = True
+        except KeyError:
+            pass  # not loaded: it will pick the settings up when it is
+    return {"ctx_size": saved.get("ctx_size"), "kv_cache_type": saved.get("kv_cache_type", "auto"), "unloaded": unloaded}
 
 
 @router.post("/shutdown")

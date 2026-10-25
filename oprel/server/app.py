@@ -40,6 +40,7 @@ from oprel.server.routes import (
     auth,
     speech,
     preflight,
+    video,
 )
 
 
@@ -211,6 +212,7 @@ app.include_router(ocr.router)
 app.include_router(auth.router)
 app.include_router(speech.router)
 app.include_router(preflight.router)
+app.include_router(video.router)
 
 
 def run_server(host: str = "127.0.0.1", port: int = 11435):

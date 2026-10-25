@@ -1192,3 +1192,110 @@ export interface AudioHistoryItem {
   created_at: string;
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Video Studio
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface VideoStatus { available: boolean; message: string | null }
+export interface VideoProject {
+  id: string; title: string; status: string; createdAt: number; updatedAt: number; hasFinalOutput?: boolean; agentStatus?: AgentStatus | null;
+  storyboard?: any;
+}
+export interface VideoIssue { level?: 'error' | 'warning'; path: string; message: string }
+export interface VideoJob {
+  id: string; project_id: string; op?: string; quality: string; status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  stage: string; progress: number; message: string;
+  error: { code?: string; message?: string; issues?: VideoIssue[]; checks?: any[] } | null;
+  result: any | null;
+}
+
+export type AgentStatus =
+  | 'planning' | 'awaiting_review' | 'narrating' | 'writing' | 'assembling' | 'rendering'
+  | 'completed' | 'needs_attention' | 'failed' | 'cancelled' | 'interrupted';
+export type SceneStatus = 'pending' | 'writing' | 'checking' | 'fixing' | 'done' | 'failed';
+
+export interface AgentPlanScene { id: string; title: string; narration: string; visual: string; seconds: number }
+export interface AgentSceneState {
+  status: SceneStatus; attempts: number; duration_frames: number; file: string; last_issues: VideoIssue[];
+  stills: string[]; feedback: string;
+  history: { attempt: number; file: string; ok: boolean; stage: string; issues: VideoIssue[] }[];
+}
+export interface AgentRun {
+  status: AgentStatus; phase: string; message: string; error: { code: string; message: string } | null;
+  config: {
+    brief: string; model_id: string; target_seconds: number; max_attempts: number; time_budget_s: number;
+    tts_model: string; voice: string; review_plan: boolean; auto_render: boolean; allow_cloud: boolean;
+  };
+  plan: { title: string; logline: string; scenes: AgentPlanScene[] } | null;
+  narrated: boolean;
+  context_tokens?: number | null;
+  scenes: Record<string, AgentSceneState>;
+  started_at: number; updated_at: number; finished_at: number | null;
+  render: { progress?: number; stage?: string; status?: string } | null;
+}
+export interface AgentEvent { seq: number; ts: number; level: 'info' | 'warn' | 'error'; phase: string | null; scene: string | null; message: string }
+export interface AgentState { run: AgentRun | null; events: AgentEvent[]; active: boolean }
+export interface AgentStartBody {
+  brief: string; model_id: string; allow_code: boolean; allow_cloud: boolean; target_seconds: number;
+  tts_model: string; voice: string; review_plan: boolean; auto_render: boolean; max_attempts: number; time_budget_hours: number;
+}
+
+async function videoJson<T>(res: Response): Promise<T> {
+  if (!res.ok) {
+    let detail = `${res.status}`;
+    try { detail = (await res.json()).detail ?? detail; } catch { /* keep status */ }
+    throw new Error(String(detail));
+  }
+  return res.json();
+}
+
+const post = (url: string, body?: unknown) =>
+  fetch(`${API_BASE}${url}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
+
+export const VIDEO = {
+  status: async (): Promise<VideoStatus> => videoJson(await fetch(`${API_BASE}/v1/video/status`)),
+  ttsModels: async (): Promise<{ id: string; name: string; voices: { id: string; name: string }[] }[]> =>
+    (await videoJson<any>(await fetch(`${API_BASE}/v1/video/tts-models`))).data,
+  list: async (): Promise<VideoProject[]> => (await videoJson<any>(await fetch(`${API_BASE}/v1/video/projects`))).data,
+  get: async (id: string): Promise<VideoProject> => videoJson(await fetch(`${API_BASE}/v1/video/projects/${id}`)),
+  create: async (title: string): Promise<VideoProject> => videoJson(await post('/v1/video/projects', { title })),
+  remove: async (id: string) => videoJson(await fetch(`${API_BASE}/v1/video/projects/${id}`, { method: 'DELETE' })),
+  validate: async (id: string): Promise<{ ok: boolean; issues?: VideoIssue[]; message?: string }> =>
+    videoJson(await post(`/v1/video/projects/${id}/validate`)),
+  render: async (id: string, quality: 'preview' | 'production', overwrite: boolean): Promise<VideoJob> =>
+    videoJson(await post(`/v1/video/projects/${id}/render`, { quality, overwrite })),
+  job: async (jobId: string): Promise<VideoJob> => videoJson(await fetch(`${API_BASE}/v1/video/jobs/${jobId}`)),
+  cancel: async (jobId: string) => videoJson(await post(`/v1/video/jobs/${jobId}/cancel`)),
+  outputUrl: (id: string, name: 'final.mp4' | 'preview.mp4', bust: number) => `${API_BASE}/v1/video/projects/${id}/output/${name}?t=${bust}`,
+  fileUrl: (id: string, rel: string, bust = 0) => `${API_BASE}/v1/video/projects/${id}/files/${rel}?t=${bust}`,
+  fileText: async (id: string, rel: string): Promise<string> => {
+    const res = await fetch(`${API_BASE}/v1/video/projects/${id}/files/${rel}`);
+    if (!res.ok) throw new Error(`${res.status}`);
+    return res.text();
+  },
+
+  // agent
+  agent: async (id: string, since = 0): Promise<AgentState> => videoJson(await fetch(`${API_BASE}/v1/video/projects/${id}/agent?since=${since}`)),
+  agentStart: async (id: string, body: AgentStartBody): Promise<AgentState> => videoJson(await post(`/v1/video/projects/${id}/agent/start`, body)),
+  agentCancel: async (id: string) => videoJson(await post(`/v1/video/projects/${id}/agent/cancel`)),
+  agentResume: async (id: string): Promise<AgentState> => videoJson(await post(`/v1/video/projects/${id}/agent/resume`)),
+  agentApprove: async (id: string): Promise<AgentState> => videoJson(await post(`/v1/video/projects/${id}/agent/approve`)),
+  agentUpdatePlan: async (id: string, title: string, scenes: Pick<AgentPlanScene, 'id' | 'title' | 'narration' | 'visual'>[]): Promise<AgentState> =>
+    videoJson(await fetch(`${API_BASE}/v1/video/projects/${id}/agent/plan`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title, scenes }),
+    })),
+  agentRetryScene: async (id: string, sceneId: string, feedback: string): Promise<AgentState> =>
+    videoJson(await post(`/v1/video/projects/${id}/agent/scenes/${encodeURIComponent(sceneId)}/retry`, { feedback })),
+};
+
+export interface RuntimeSettings { ctx_size: number | null; kv_cache_type: string; kv_cache_types: string[]; loaded_context: number | null }
+
+export const RUNTIME = {
+  get: async (modelId?: string): Promise<RuntimeSettings> =>
+    videoJson(await fetch(`${API_BASE}/v1/system/runtime-settings${modelId ? `?model_id=${encodeURIComponent(modelId)}` : ''}`)),
+  save: async (body: { ctx_size: number | null; kv_cache_type: string | null; reload_model_id?: string }): Promise<{ ctx_size: number | null; kv_cache_type: string; unloaded: boolean }> =>
+    videoJson(await fetch(`${API_BASE}/v1/system/runtime-settings`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    })),
+};

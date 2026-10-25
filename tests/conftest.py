@@ -11,6 +11,14 @@ import time
 from oprel.core.config import Config
 
 
+@pytest.fixture(autouse=True)
+def isolated_runtime_settings(tmp_path, monkeypatch):
+    """Tests must never read the developer's real model runtime settings (context size, KV cache type)."""
+    monkeypatch.setenv("OPREL_RUNTIME_SETTINGS_FILE", str(tmp_path / "runtime_settings.json"))
+    monkeypatch.delenv("OPREL_CTX_SIZE", raising=False)
+    monkeypatch.delenv("OPREL_KV_CACHE_TYPE", raising=False)
+
+
 @pytest.fixture
 def temp_cache(tmp_path):
     """Temporary cache directory for testing"""

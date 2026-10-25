@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "title": "Oprel Video Studio smoke test",
+  "format": { "preset": "shorts", "fps": 30 },
+  "scenes": [
+    { "id": "hook", "type": "hook", "durationSeconds": 2,
+      "transition": { "type": "fade", "durationFrames": 10 },
+      "params": { "headline": "Can an LLM know everything?", "subtitle": "Its knowledge is frozen at training time." } },
+    { "id": "hero", "type": "hero-object", "durationSeconds": 3,
+      "transition": { "type": "fade", "durationFrames": 12 },
+      "params": { "shape": "icosahedron", "headline": "Retrieval adds context", "subtitle": "Illustrative visual, not real embeddings.", "accent": "cyan" } },
+    { "id": "end", "type": "conclusion", "durationSeconds": 1,
+      "params": { "title": "Retrieve, then generate", "points": ["Search a knowledge base", "Ground the answer"] } }
+  ]
+}

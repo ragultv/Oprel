@@ -5,6 +5,7 @@ import json
 import os
 import re
 import time as time_module
+import uuid
 from typing import Any, AsyncIterator
 
 import httpx
@@ -719,8 +720,11 @@ async def provider_chat_proxy(provider_id: str, body: Any) -> GenerateResult | S
     p_type = p.get("type", "openai")
 
     # Determine conversation context
+    ephemeral = bool(getattr(body, "ephemeral", False))
     effective_conv_id = body.conversation_id
-    if not effective_conv_id:
+    if ephemeral:
+        effective_conv_id = f"ephemeral_{uuid.uuid4().hex[:12]}"  # nothing is stored under this id
+    elif not effective_conv_id:
         title = "New Chat"
         if body.messages:
             first_msg = body.messages[0].get("content", "")
@@ -729,14 +733,14 @@ async def provider_chat_proxy(provider_id: str, body: Any) -> GenerateResult | S
         effective_conv_id = db.create_conversation(model_id=body.model, title=title)
 
     # Context Preparation (RAG search, prompt trimming, limits processing)
-    prepared_messages, rag_html_block = await _prepare_chat_context(body, body.messages, p_type, conv_id=effective_conv_id)
+    prepared_messages, rag_html_block = await _prepare_chat_context(body, body.messages, p_type, conv_id=None if ephemeral else effective_conv_id)
 
     # Providers reject empty or malformed turns (left by earlier failed replies); drop them.
     prepared_messages = _drop_empty_messages(prepared_messages)
 
     # Save User message to history (use the original content before context wrapper expansion)
     user_msg = prepared_messages[-1] if prepared_messages else None
-    if user_msg:
+    if user_msg and not ephemeral:
         db.add_message(effective_conv_id, user_msg["role"], user_msg.get("_original_content", user_msg["content"]))
 
     # 1. Non-Streaming Flow
@@ -764,9 +768,10 @@ async def provider_chat_proxy(provider_id: str, body: Any) -> GenerateResult | S
                 state = get_state()
                 state.last_gen_speed = tps
 
-            db.add_message(effective_conv_id, "assistant", full_response)
-            user_orig_text = user_msg.get("_original_content", user_msg.get("content", "")) if user_msg else ""
-            await _record_turn_supermemory(effective_conv_id, user_orig_text, strip_legacy_tool_cards(full_response))
+            if not ephemeral:
+                db.add_message(effective_conv_id, "assistant", full_response)
+                user_orig_text = user_msg.get("_original_content", user_msg.get("content", "")) if user_msg else ""
+                await _record_turn_supermemory(effective_conv_id, user_orig_text, strip_legacy_tool_cards(full_response))
             db.add_inference_log(
                 model_id=body.model,
                 prompt_tokens=_estimate_tokens(_message_content_to_text(prepared_messages[-1]["content"] if prepared_messages else ""), body.model),
@@ -841,9 +846,10 @@ async def provider_chat_proxy(provider_id: str, body: Any) -> GenerateResult | S
                 state = get_state()
                 state.last_gen_speed = tps
 
-            db.add_message(conv_id, "assistant", full_response)
-            user_orig_text = user_msg.get("_original_content", user_msg.get("content", "")) if user_msg else ""
-            await _record_turn_supermemory(conv_id, user_orig_text, strip_legacy_tool_cards(full_response))
+            if not ephemeral:
+                db.add_message(conv_id, "assistant", full_response)
+                user_orig_text = user_msg.get("_original_content", user_msg.get("content", "")) if user_msg else ""
+                await _record_turn_supermemory(conv_id, user_orig_text, strip_legacy_tool_cards(full_response))
             db.add_inference_log(
                 model_id=body.model,
                 prompt_tokens=_estimate_tokens(_message_content_to_text(prepared_messages[-1]["content"] if prepared_messages else ""), body.model),

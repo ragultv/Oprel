@@ -35,6 +35,8 @@ class GenerateParams:
     reset_conversation: bool
     thinking: bool
     rag: bool
+    # Internal one-shot calls (e.g. Video Studio): never saved to chat history or long-term memory.
+    ephemeral: bool = False
 
 
 @dataclass(frozen=True)
@@ -244,6 +246,7 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
                 top_p=params.top_p,
                 stream=params.stream,
                 conversation_id=params.conversation_id,
+                ephemeral=params.ephemeral,
             )
             result = await provider_chat_proxy(p_id, proxy_body)
             if isinstance(result, StreamResult):
@@ -500,7 +503,7 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
                 if is_persistent:
                     db.add_message(conv_id, "user", raw_prompt)
                     db.add_message(conv_id, "assistant", full_resp)
-                else:
+                elif not params.ephemeral:
                     if conv_id not in state.ephemeral_history:
                         state.ephemeral_history[conv_id] = []
                     state.ephemeral_history[conv_id].append({"role": "user", "content": text_prompt})
@@ -509,7 +512,7 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
                         state.ephemeral_history[conv_id] = state.ephemeral_history[conv_id][-40:]
 
                 # Record into Supermemory store
-                if getattr(CONFIG, "supermemory_enabled", True) and conv_id:
+                if getattr(CONFIG, "supermemory_enabled", True) and conv_id and not params.ephemeral:
                     try:
                         from oprel.knowledge.supermemory import SuperMemoryStore
                         turn_idx = len(history) // 2
@@ -564,7 +567,7 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
     if is_persistent:
         db.add_message(conv_id, "user", raw_prompt)
         db.add_message(conv_id, "assistant", text)
-    else:
+    elif not params.ephemeral:
         if conv_id not in state.ephemeral_history:
             state.ephemeral_history[conv_id] = []
         state.ephemeral_history[conv_id].append({"role": "user", "content": text_prompt})
@@ -573,7 +576,7 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
             state.ephemeral_history[conv_id] = state.ephemeral_history[conv_id][-40:]
 
     # Record into Supermemory store
-    if getattr(CONFIG, "supermemory_enabled", True) and conv_id:
+    if getattr(CONFIG, "supermemory_enabled", True) and conv_id and not params.ephemeral:
         try:
             from oprel.knowledge.supermemory import SuperMemoryStore
             turn_idx = len(history) // 2

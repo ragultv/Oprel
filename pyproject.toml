@@ -166,7 +166,17 @@ exclude = ["oprel.mcp*"]
 include-package-data = true
 
 [tool.setuptools.package-data]
-oprel = ["py.typed", "webui-react/out/**/*"]
+oprel = [
+    "py.typed",
+    "webui-react/out/**/*",
+    # Video Studio render worker source (node_modules is installed on first use, never shipped)
+    "video/renderer/package.json",
+    "video/renderer/package-lock.json",
+    "video/renderer/tsconfig.json",
+    "video/renderer/bin/*.ts",
+    "video/renderer/src/**/*",
+    "video/renderer/prompts/*",
+]
 
 [tool.black]
 line-length = 100

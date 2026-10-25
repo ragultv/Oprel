@@ -27,6 +27,38 @@ def _resolve_kv_cache_type(config: Config, model_quantization: str, is_vision: b
     return "q8_0"
 
 
+def vram_context_cap(
+    *,
+    vram_gb: float,
+    model_size_gb: float,
+    hidden_dim: int,
+    num_layers: int,
+    num_kv_heads: Optional[int],
+    num_attention_heads: Optional[int],
+    kv_cache_type: str,
+) -> Optional[int]:
+    """Largest context whose KV cache fits in the VRAM left after the weights, or None for "no VRAM-based cap".
+
+    None is returned when there is no GPU, or when the weights alone do not fit in VRAM. In that case the layer
+    calculator offloads layers to RAM (and budgets the KV cache for the configured context), so capping the
+    context at the 512-token floor of ``recommend_max_context`` would only make the model unusable: any prompt
+    over 512 tokens fails with "exceeds the available context size".
+    """
+    if vram_gb <= 0 or model_size_gb >= vram_gb * 0.85:
+        return None
+    from oprel.runtime.kv_cache import recommend_max_context
+
+    return recommend_max_context(
+        available_vram_gb=vram_gb,
+        model_size_gb=model_size_gb,
+        hidden_dim=hidden_dim,
+        num_layers=num_layers,
+        num_kv_heads=num_kv_heads,
+        num_attention_heads=num_attention_heads,
+        kv_cache_type=kv_cache_type,
+    )
+
+
 def _recommend_batch_size(ctx_size: int, gpu_enabled: bool) -> int:
     """Keep batch sizing proportional to context to avoid unnecessary memory spikes."""
     if gpu_enabled:
@@ -143,7 +175,8 @@ class LlamaCppBackend(BaseBackend):
                 pass
 
         # Tier-based context default, only when the user did not set ctx_size.
-        if "ctx_size" not in getattr(self.config, "model_fields_set", {"ctx_size"}):
+        ctx_set_by_user = "ctx_size" in getattr(self.config, "model_fields_set", {"ctx_size"})
+        if not ctx_set_by_user:
             from oprel.runtime.tiers import default_context
 
             self.config = self.config.model_copy(update={"ctx_size": default_context(vram_gb)})
@@ -224,19 +257,24 @@ class LlamaCppBackend(BaseBackend):
         # Context size - use a sane cap even if metadata says higher
         if metadata:
             max_safe_ctx = self.config.ctx_size
-            if vram_gb > 0:
-                from oprel.runtime.kv_cache import recommend_max_context
-
-                kv_safe_ctx = recommend_max_context(
-                    available_vram_gb=vram_gb,
-                    model_size_gb=model_size_gb,
-                    hidden_dim=metadata.embedding_dim,
-                    num_layers=metadata.num_layers,
-                    num_kv_heads=metadata.num_kv_heads,
-                    num_attention_heads=metadata.num_attention_heads,
-                    kv_cache_type=resolved_kv_cache_type,
-                )
+            # A context the user chose explicitly is honoured: the layer calculator above already makes room for its
+            # KV cache by keeping fewer layers on the GPU. Only automatic defaults are capped to fit VRAM.
+            kv_safe_ctx = None if ctx_set_by_user else vram_context_cap(
+                vram_gb=vram_gb,
+                model_size_gb=model_size_gb,
+                hidden_dim=metadata.embedding_dim,
+                num_layers=metadata.num_layers,
+                num_kv_heads=metadata.num_kv_heads,
+                num_attention_heads=metadata.num_attention_heads,
+                kv_cache_type=resolved_kv_cache_type,
+            )
+            if kv_safe_ctx is not None:
                 max_safe_ctx = min(max_safe_ctx, kv_safe_ctx)
+            elif vram_gb > 0 and not ctx_set_by_user:
+                logger.info(
+                    f"Model ({model_size_gb:.1f} GB) is larger than the free VRAM budget ({vram_gb:.1f} GB): "
+                    f"layers are offloaded to RAM, so the context stays at the configured {max_safe_ctx} tokens."
+                )
 
             ctx_size = min(metadata.context_length, max_safe_ctx)
             if ctx_size < metadata.context_length:

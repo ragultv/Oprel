@@ -17,6 +17,7 @@ import {
   RefreshCw,
   ScanText,
   AudioLines,
+  Clapperboard,
 } from "lucide-react"
 import { usePathname, useRouter } from "next/navigation"
 import Link from "next/link"
@@ -190,6 +191,7 @@ export function Sidebar() {
   const isOcrRoute = pathname.startsWith("/ocr")
   const isKnowledgeRoute = pathname.startsWith("/knowledge")
   const isAudioRoute = pathname.startsWith("/audio")
+  const isVideoRoute = pathname.startsWith("/video")
   const isDevRoute = pathname.startsWith("/dev")
 
   const [search, setSearch] = useState("")
@@ -334,6 +336,18 @@ export function Sidebar() {
             >
               <AudioLines size={18} />
               <span className="text-[10px]">Audio</span>
+            </Link>
+            <Link
+              href="/video/"
+              className={cn(
+                "flex flex-col items-center gap-1.5 py-3 rounded-lg border border-border text-xs font-semibold transition-all text-center",
+                isVideoRoute
+                  ? "bg-secondary text-foreground border-border"
+                  : "text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
+              )}
+            >
+              <Clapperboard size={18} />
+              <span className="text-[10px]">Video</span>
             </Link>
             <Link
               href="/dev/"

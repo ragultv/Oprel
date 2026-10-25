@@ -5,9 +5,79 @@ Production-ready configuration for Oprel SDK.
 Includes all settings for Week 1 features.
 """
 
+import os
 from pathlib import Path
-from typing import Optional
-from pydantic import BaseModel, Field
+from typing import Any, Optional
+from pydantic import BaseModel, Field, model_validator
+
+
+# Values llama.cpp accepts for --cache-type-k/v, plus Oprel's own "auto" and "turboquant" (= q4_0). 4-bit is the smallest there is.
+KV_CACHE_TYPES = ("auto", "f16", "q8_0", "q5_1", "q5_0", "q4_1", "q4_0", "iq4_nl", "turboquant")
+
+
+CTX_MIN, CTX_MAX = 512, 262144
+
+
+def runtime_settings_path() -> Path:
+    """``~/.cache/oprel/runtime_settings.json`` (``OPREL_RUNTIME_SETTINGS_FILE`` overrides, used by tests)."""
+    override = os.environ.get("OPREL_RUNTIME_SETTINGS_FILE")
+    return Path(override) if override else Path.home() / ".cache" / "oprel" / "runtime_settings.json"
+
+
+def normalize_kv_cache_type(value: Any) -> Optional[str]:
+    kv = str(value or "").strip().lower()
+    kv = {"q4": "q4_0", "q8": "q8_0", "q5": "q5_0"}.get(kv, kv)
+    return kv if kv in KV_CACHE_TYPES else None
+
+
+def valid_ctx_size(value: Any) -> Optional[int]:
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return None
+    return n if CTX_MIN <= n <= CTX_MAX else None
+
+
+def read_runtime_settings() -> dict:
+    """User-chosen model runtime settings that survive restarts. Missing/invalid entries mean "automatic"."""
+    try:
+        import json
+
+        raw = json.loads(runtime_settings_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    out: dict = {}
+    ctx = valid_ctx_size(raw.get("ctx_size")) if isinstance(raw, dict) else None
+    kv = normalize_kv_cache_type(raw.get("kv_cache_type")) if isinstance(raw, dict) else None
+    if ctx:
+        out["ctx_size"] = ctx
+    if kv and kv != "auto":
+        out["kv_cache_type"] = kv
+    return out
+
+
+def write_runtime_settings(ctx_size: Optional[int], kv_cache_type: Optional[str]) -> dict:
+    """Persist the settings (``None`` / ``"auto"`` = automatic). Raises ValueError on invalid values."""
+    import json
+
+    out: dict = {}
+    if ctx_size is not None:
+        ctx = valid_ctx_size(ctx_size)
+        if ctx is None:
+            raise ValueError(f"context size must be between {CTX_MIN} and {CTX_MAX} tokens")
+        out["ctx_size"] = ctx
+    if kv_cache_type not in (None, "", "auto"):
+        kv = normalize_kv_cache_type(kv_cache_type)
+        if kv is None:
+            raise ValueError(f"unsupported KV cache type '{kv_cache_type}'; use one of: {', '.join(KV_CACHE_TYPES)}")
+        if kv != "auto":
+            out["kv_cache_type"] = kv
+    path = runtime_settings_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(out, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+    return out
 
 
 def _get_default_memory_limit() -> int:
@@ -202,6 +272,28 @@ class Config(BaseModel):
 
     class Config:
         arbitrary_types_allowed = True
+
+    @model_validator(mode="before")
+    @classmethod
+    def _ctx_size_from_env(cls, data: Any) -> Any:
+        """``OPREL_CTX_SIZE`` / ``OPREL_KV_CACHE_TYPE`` or ``runtime_settings.json`` set the context window and KV cache type.
+
+        An explicit value counts as "set by the user": it replaces the automatic hardware-tier default and the
+        automatic VRAM cap, so the user's choice is what the backend is launched with.
+        """
+        if not isinstance(data, dict):
+            return data
+        # priority: explicit argument > environment variable > runtime settings file > automatic
+        saved = read_runtime_settings()
+        if "ctx_size" not in data:
+            ctx = valid_ctx_size(os.environ.get("OPREL_CTX_SIZE", "").strip()) or saved.get("ctx_size")
+            if ctx:
+                data = {**data, "ctx_size": ctx}
+        if "kv_cache_type" not in data:
+            kv = normalize_kv_cache_type(os.environ.get("OPREL_KV_CACHE_TYPE", "")) or saved.get("kv_cache_type")
+            if kv and kv != "auto":
+                data = {**data, "kv_cache_type": kv}
+        return data
 
     def ensure_dirs(self) -> None:
         """Create necessary directories if they don't exist"""
