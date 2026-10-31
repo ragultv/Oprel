@@ -28,8 +28,8 @@ from oprel.server.routes import (
     conversations,
     users,
     openai_compat,
-    ollama_compat,
     anthropic_compat,
+    ollama_compat,
     copilot_compat,
     images,
     providers,
@@ -159,6 +159,8 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    allow_private_network=True,
+    expose_headers=["x-request-id", "X-Conversation-ID"],
 )
 
 webui_dir = get_webui_dir()

@@ -221,6 +221,8 @@ class LlamaCppBackend(BaseBackend):
                 max_safe_ctx = min(max_safe_ctx, kv_safe_ctx)
 
             ctx_size = min(metadata.context_length, max_safe_ctx)
+            # Never go below 4096 — smaller contexts break multi-turn chat
+            ctx_size = max(ctx_size, 4096)
             if ctx_size < metadata.context_length:
                 logger.info(
                     f"Capped ctx-size from {metadata.context_length} to {ctx_size} "

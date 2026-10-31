@@ -5,6 +5,7 @@ import json
 import time as time_module
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, AsyncIterator
 
 import httpx
@@ -282,7 +283,28 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
         thinking=params.thinking,
     )
 
+    # Build messages array for backends that support /v1/chat/completions
+    from oprel.utils.chat_templates import build_system_prompt
+
+    effective_system_prompt = build_system_prompt(params.system_prompt, thinking=params.thinking)
+    _chat_messages: list[dict] = []
+    _chat_messages.append({"role": "system", "content": effective_system_prompt})
+    _chat_messages.extend(history)
+    _chat_messages.append({"role": "user", "content": text_prompt})
+
     model = state.models[resolved_model_id]
+
+    # Derive the actual model alias used by the llama.cpp server.
+    # Newer llama.cpp builds validate the "model" field against the loaded
+    # filename, so we must send the GGUF basename (without extension) rather
+    # than the HuggingFace repo ID.
+    _backend_model_alias: str | None = None
+    if hasattr(model, "_model_path") and model._model_path:
+        _backend_model_alias = Path(str(model._model_path)).stem
+    elif hasattr(model, "_process") and model._process and hasattr(model._process, "model_path") and model._process.model_path:
+        _backend_model_alias = Path(str(model._process.model_path)).stem
+    if not _backend_model_alias:
+        _backend_model_alias = resolved_model_id
 
     if params.stream:
         async def generate_stream() -> AsyncIterator[str]:
@@ -300,7 +322,9 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
                     repeat_penalty=params.repeat_penalty,
                     stream=True,
                     images=images if images else None,
-                    model=resolved_model_id,
+                    model=_backend_model_alias,
+                    include_reasoning_content=params.thinking,
+                    messages=_chat_messages if not images else None,
                 ):
                     full_resp += token
                     token_count += 1
@@ -347,7 +371,9 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
         repeat_penalty=params.repeat_penalty,
         stream=False,
         images=images if images else None,
-        model=resolved_model_id,
+        model=_backend_model_alias,
+        include_reasoning_content=params.thinking,
+        messages=_chat_messages if not images else None,
     )
 
     end_gen_time = time_module.perf_counter()

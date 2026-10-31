@@ -31,12 +31,15 @@ GitHub Copilot's client code requires.
 import json
 import time as time_module
 import uuid
+from typing import Any
 
+import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from oprel.server.schemas.openai import OpenAIChatRequest
-from oprel.server.services.generation import GenerateParams, StreamResult, generate_text
+from oprel.server.services.generation import GenerateParams, StreamResult, _resolve_model_id, generate_text
+from oprel.server.services.providers import _estimate_tokens, _message_content_to_text, _truncate_text_to_tokens
 from oprel.server.domain.state import get_state
 from oprel.server.services.context import logger
 from oprel.server import db
@@ -51,6 +54,129 @@ router = APIRouter()
 
 def _new_request_id() -> str:
     return f"chatcmpl-{uuid.uuid4().hex}"
+
+
+async def _get_local_context_window(model_id: str) -> int:
+    state = get_state()
+    candidate_ids = [model_id]
+
+    try:
+        resolved_model_id = _resolve_model_id(model_id)
+        if resolved_model_id not in candidate_ids:
+            candidate_ids.append(resolved_model_id)
+    except Exception:
+        pass
+
+    model = None
+    for candidate_id in candidate_ids:
+        model = state.models.get(candidate_id)
+        if model is not None:
+            break
+
+    if model is None or not getattr(model, "_client", None):
+        return 4096
+
+    base_url = getattr(model._client, "base_url", "")
+    if not base_url:
+        return 4096
+
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            response = await client.get(f"{base_url}/props")
+            response.raise_for_status()
+            payload = response.json()
+
+        n_ctx = payload.get("default_generation_settings", {}).get("n_ctx")
+        if isinstance(n_ctx, int) and n_ctx > 0:
+            return n_ctx
+    except Exception as exc:
+        logger.debug(f"Copilot could not read backend props for {model_id}: {exc}")
+
+    return 4096
+
+
+def _normalize_messages(messages: list[dict[str, Any]]) -> list[dict[str, str]]:
+    normalized: list[dict[str, str]] = []
+    for message in messages:
+        normalized.append(
+            {
+                "role": str(message.get("role", "user")),
+                "content": _message_content_to_text(message.get("content", "")),
+            }
+        )
+    return normalized
+
+
+def _trim_messages_to_budget(
+    messages: list[dict[str, Any]],
+    allowed_prompt_tokens: int,
+    model_id: str,
+) -> tuple[list[dict[str, str]], int, int]:
+    normalized_messages = _normalize_messages(messages)
+    if not normalized_messages:
+        return normalized_messages, 0, 0
+
+    def message_tokens(message: dict[str, str]) -> int:
+        return _estimate_tokens(message.get("content", ""), model_id)
+
+    total_tokens = sum(message_tokens(message) for message in normalized_messages)
+    if total_tokens <= allowed_prompt_tokens:
+        return normalized_messages, total_tokens, total_tokens
+
+    if len(normalized_messages) == 1:
+        only_message = normalized_messages[0]
+        trimmed_content = _truncate_text_to_tokens(only_message["content"], allowed_prompt_tokens, model_id)
+        trimmed_messages = [{**only_message, "content": trimmed_content}]
+        trimmed_tokens = sum(message_tokens(message) for message in trimmed_messages)
+        return trimmed_messages, total_tokens, trimmed_tokens
+
+    first_message = normalized_messages[0]
+    system_message = first_message if first_message.get("role") == "system" else None
+    last_message = normalized_messages[-1]
+    middle_messages = normalized_messages[1:-1] if system_message else normalized_messages[:-1]
+
+    remaining_budget = allowed_prompt_tokens
+    trimmed_messages: list[dict[str, str]] = []
+
+    if system_message:
+        system_budget_cap = max(
+            0,
+            allowed_prompt_tokens - min(message_tokens(last_message), allowed_prompt_tokens) - 200,
+        )
+        desired_system_budget = max(200, min(800, allowed_prompt_tokens // 4))
+        system_budget = min(message_tokens(system_message), system_budget_cap, desired_system_budget)
+        if system_budget > 0:
+            trimmed_system = _truncate_text_to_tokens(system_message["content"], system_budget, model_id)
+            trimmed_messages.append({**system_message, "content": trimmed_system})
+            remaining_budget -= message_tokens(trimmed_messages[-1])
+
+    trimmed_last = _truncate_text_to_tokens(last_message["content"], max(1, remaining_budget), model_id)
+    trimmed_last_message = {**last_message, "content": trimmed_last}
+    remaining_budget -= message_tokens(trimmed_last_message)
+
+    recent_messages: list[dict[str, str]] = []
+    for message in reversed(middle_messages):
+        if remaining_budget <= 0:
+            break
+
+        current_tokens = message_tokens(message)
+        if current_tokens <= remaining_budget:
+            recent_messages.append(message)
+            remaining_budget -= current_tokens
+            continue
+
+        if remaining_budget >= 120:
+            trimmed_content = _truncate_text_to_tokens(message["content"], remaining_budget, model_id)
+            recent_messages.append({**message, "content": trimmed_content})
+            remaining_budget = 0
+        break
+
+    recent_messages.reverse()
+    trimmed_messages.extend(recent_messages)
+    trimmed_messages.append(trimmed_last_message)
+
+    trimmed_tokens = sum(message_tokens(message) for message in trimmed_messages)
+    return trimmed_messages, total_tokens, trimmed_tokens
 
 
 def _build_non_stream_response(request_id: str, model: str, text: str, prompt: object) -> JSONResponse:
@@ -195,6 +321,31 @@ async def copilot_chat_completions(request: OpenAIChatRequest, http_request: Req
         return _build_non_stream_response(request_id, request.model, resp.text, prompt)
 
     # --- Local model path -----------------------------------------------------
+    raw_messages = [{"role": message.role, "content": message.content} for message in request.messages]
+    context_window = await _get_local_context_window(request.model)
+    reply_reserve = min(request.max_tokens or 2048, max(512, context_window // 4))
+    allowed_prompt_tokens = max(600, context_window - reply_reserve - 256)
+    trimmed_messages, total_tokens, trimmed_tokens = _trim_messages_to_budget(
+        raw_messages,
+        allowed_prompt_tokens,
+        request.model,
+    )
+
+    if total_tokens > trimmed_tokens:
+        logger.warning(
+            f"Copilot prompt trimmed from ~{total_tokens} to ~{trimmed_tokens} tokens "
+            f"to fit local context window {context_window}"
+        )
+
+    prompt = trimmed_messages[-1]["content"] if trimmed_messages else ""
+    system_prompt = None
+    conversation_history = []
+    for message in trimmed_messages[:-1]:
+        if message["role"] == "system":
+            system_prompt = message["content"]
+        else:
+            conversation_history.append({"role": message["role"], "content": message["content"]})
+
     conv_id = request.conversation_id or f"copilot_{int(time_module.time() * 1000)}"
 
     # Pre-populate ephemeral history so generate_text sees the full conversation
@@ -209,7 +360,7 @@ async def copilot_chat_completions(request: OpenAIChatRequest, http_request: Req
     gen_params = GenerateParams(
         model_id=request.model,
         prompt=prompt,
-        max_tokens=request.max_tokens or 8192,
+        max_tokens=reply_reserve,
         temperature=request.temperature,
         top_p=request.top_p,
         top_k=request.top_k,
@@ -223,7 +374,10 @@ async def copilot_chat_completions(request: OpenAIChatRequest, http_request: Req
         rag=False,
     )
 
-    logger.info(f"Copilot request: model={request.model}, stream={use_stream}, conv_id={conv_id}")
+    logger.info(
+        f"Copilot request: model={request.model}, stream={use_stream}, conv_id={conv_id}, "
+        f"ctx={context_window}, prompt_tokens~={trimmed_tokens}, max_tokens={reply_reserve}"
+    )
 
     try:
         response = await generate_text(gen_params)
