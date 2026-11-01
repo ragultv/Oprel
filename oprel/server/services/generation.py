@@ -5,6 +5,7 @@ import base64
 import dataclasses
 import json
 import os
+import threading
 import time as time_module
 import uuid
 from dataclasses import dataclass
@@ -282,13 +283,6 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
     if params.thinking:
         if params.max_tokens < 8192:
             params = dataclasses.replace(params, max_tokens=8192)
-    else:
-        # Vision/multimodal OCR requests can produce long JSON; allow up to 4096 tokens
-        if params.images:
-            if params.max_tokens > 4096:
-                params = dataclasses.replace(params, max_tokens=4096)
-        elif params.max_tokens > 2048:
-            params = dataclasses.replace(params, max_tokens=2048)
 
     context_text = ""
     if params.rag:
@@ -343,66 +337,18 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
         except Exception as exc:
             logger.error(f"RAG search failed: {exc}")
 
-    # --- AUTO SKILL MATCHING ---
-    # Always attempt skill matching, but only override the system_prompt when
-    # it is safe to do so (None, empty, or the user's generic global setting).
-    # Explicit functional prompts (title generator, selected skills) are preserved.
+    # Auto skill matching completely removed to preserve KV cache prefix stability.
     effective_system_prompt = params.system_prompt
 
-    try:
-        from oprel.server.services.skill_matcher import (
-            match_skill_for_prompt,
-            _is_overridable_system_prompt,
-        )
 
-        if _is_overridable_system_prompt(params.system_prompt):
-            # Get the text portion of the prompt (handles multimodal / list prompts)
-            prompt_text_for_matching = (
-                params.prompt
-                if isinstance(params.prompt, str)
-                else " ".join(
-                    part.get("text", "")
-                    for part in params.prompt
-                    if isinstance(part, dict) and part.get("type") == "text"
-                )
-            )
+    # --- CONVERSATION HISTORY & PREFIX CACHING ---
+    model_obj = state.models.get(resolved_model_id)
+    is_native_ssd = hasattr(model_obj, "backend") or (hasattr(model_obj, "_client") and hasattr(model_obj._client, "backend"))
 
-            matched_skill = match_skill_for_prompt(prompt_text_for_matching)
-
-            if matched_skill:
-                effective_system_prompt = matched_skill.get("system_prompt")
-                logger.info(
-                    f"[SkillMatcher] Auto-matched skill '{matched_skill.get('name')}' "
-                    f"(id={matched_skill.get('id')}) for prompt: "
-                    f"'{prompt_text_for_matching[:80]}...'"
-                )
-
-                # Apply skill's parameter overrides if present.
-                # Use dataclasses.replace() — never mutate a frozen dataclass directly.
-                skill_max_tokens = matched_skill.get("max_tokens")
-                skill_temperature = matched_skill.get("temperature")
-
-                override_kwargs: dict = {}
-                if skill_max_tokens is not None:
-                    override_kwargs["max_tokens"] = int(skill_max_tokens)
-                if skill_temperature is not None:
-                    override_kwargs["temperature"] = float(skill_temperature)
-
-                if override_kwargs:
-                    params = dataclasses.replace(params, **override_kwargs)
-
-    except Exception as e:
-        # Never let skill matching break generation — degrade gracefully.
-        logger.warning(
-            f"[SkillMatcher] Skill matching failed, continuing without skill: {e}"
-        )
-        effective_system_prompt = params.system_prompt
-    # --- END AUTO SKILL MATCHING ---
-
-
-    # --- SUPERMEMORY LONG-TERM CONVERSATION RECALL ---
     active_history = history
-    if getattr(CONFIG, "supermemory_enabled", True) and conv_id:
+
+    # Supermemory RAG is only enabled for non-SSD backends or when explicitly requested via params.rag
+    if getattr(CONFIG, "supermemory_enabled", True) and conv_id and not is_native_ssd and getattr(params, "rag", False):
         recency_window = getattr(CONFIG, "supermemory_recency_window", 6)
         if len(history) > recency_window:
             # Keep immediate dialogue window for active continuity
@@ -459,21 +405,47 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
     )
 
     model = state.models[resolved_model_id]
+    if is_native_ssd and conv_id:
+        backend_obj = getattr(model, "backend", None) or getattr(getattr(model, "_client", None), "backend", None) or getattr(model, "_client", None)
+        if backend_obj and hasattr(backend_obj, "set_session"):
+            backend_obj.set_session(conv_id)
+
+    effective_max_tokens = params.max_tokens if params.max_tokens and params.max_tokens > 0 else 4096
 
     async def _token_stream() -> AsyncIterator[str]:
-        for tok in model._client.generate(
-            prompt=full_prompt,
-            stream=True,
-            max_tokens=params.max_tokens,
-            temperature=params.temperature,
-            top_p=params.top_p,
-            top_k=params.top_k,
-            repeat_penalty=params.repeat_penalty,
-            images=images if images else None,
-            model=resolved_model_id,
-            cache_prompt=getattr(CONFIG, "prompt_cache_enabled", True),
-        ):
-            yield tok
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue[str | None | Exception] = asyncio.Queue()
+
+        def _worker():
+            try:
+                for tok in model._client.generate(
+                    prompt=full_prompt,
+                    stream=True,
+                    max_tokens=effective_max_tokens,
+                    temperature=params.temperature,
+                    top_p=params.top_p,
+                    top_k=params.top_k,
+                    repeat_penalty=params.repeat_penalty,
+                    images=images if images else None,
+                    model=resolved_model_id,
+                    cache_prompt=getattr(CONFIG, "prompt_cache_enabled", True),
+                ):
+                    loop.call_soon_threadsafe(queue.put_nowait, tok)
+            except Exception as e:
+                loop.call_soon_threadsafe(queue.put_nowait, e)
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, None)
+
+        thread = threading.Thread(target=_worker, daemon=True)
+        thread.start()
+
+        while True:
+            item = await queue.get()
+            if item is None:
+                break
+            if isinstance(item, Exception):
+                raise item
+            yield item
 
     if params.stream:
         async def generate_stream() -> AsyncIterator[str]:
@@ -500,6 +472,8 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
                 if is_persistent:
                     db.add_message(conv_id, "user", raw_prompt)
                     db.add_message(conv_id, "assistant", full_resp)
+                    if is_native_ssd and backend_obj and hasattr(backend_obj, "save_session"):
+                        backend_obj.save_session()
                 else:
                     if conv_id not in state.ephemeral_history:
                         state.ephemeral_history[conv_id] = []
@@ -541,9 +515,10 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
         return StreamResult(iterator=generate_stream(), conversation_id=conv_id)
 
     start_gen_time = time_module.perf_counter()
-    generated = model._client.generate(
+    generated = await asyncio.to_thread(
+        model._client.generate,
         prompt=full_prompt,
-        max_tokens=params.max_tokens,
+        max_tokens=effective_max_tokens,
         temperature=params.temperature,
         top_p=params.top_p,
         top_k=params.top_k,
@@ -564,6 +539,8 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
     if is_persistent:
         db.add_message(conv_id, "user", raw_prompt)
         db.add_message(conv_id, "assistant", text)
+        if is_native_ssd and backend_obj and hasattr(backend_obj, "save_session"):
+            backend_obj.save_session()
     else:
         if conv_id not in state.ephemeral_history:
             state.ephemeral_history[conv_id] = []

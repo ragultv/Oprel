@@ -1,0 +1,9 @@
+prompt_tokens,cold_prefill_time_sec,prefill_tok_per_sec,hardware,metric_tag,notes
+512,3.01,170.1,GTX 1650 (CUDA MMQ),Measured,Measured batch prefill at 512 chunk size
+1024,6.02,170.0,GTX 1650 (CUDA MMQ),Measured,Measured 2-chunk baseline
+2048,12.08,169.5,GTX 1650 (CUDA MMQ),Measured,Measured active context prefill
+2726,16.03,170.1,GTX 1650 (CUDA MMQ),Measured,Measured multi-turn prompt ingestion
+4096,24.16,169.5,GTX 1650 (CUDA MMQ),Measured,Measured chunked ingestion limit
+10240,60.24,170.0,GTX 1650 (CUDA MMQ),Projected,Projected based on measured 170.0 tok/s prefill rate
+20480,120.47,170.0,GTX 1650 (CUDA MMQ),Projected,Projected based on measured 170.0 tok/s prefill rate
+34067,200.39,170.0,GTX 1650 (CUDA MMQ),Projected,Projected based on measured 170.0 tok/s prefill rate

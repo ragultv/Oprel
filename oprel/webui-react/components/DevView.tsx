@@ -17,6 +17,7 @@ import { Cpu, HardDrive, Zap, Activity, MemoryStick, Layers } from "lucide-react
 import { cn } from "@/services/utils"
 import { useApp } from "@/services/context"
 import { API } from "@/services/api"
+import { KVCacheExplorer } from "@/components/KVCacheExplorer"
 
 function generateHistory(base: number, variance: number, len = 20) {
   return Array.from({ length: len }, (_, i) => ({
@@ -296,6 +297,11 @@ export function DevView() {
              <div className="text-3xl font-bold text-foreground">{(totalTokens / 1000).toFixed(1)}k</div>
              <div className="text-[10px] text-muted-foreground mt-1">{days} Day Period</div>
           </div>
+        </div>
+
+        {/* 4-bit KV Cache & SSD Offload Explorer */}
+        <div className="mb-6">
+          <KVCacheExplorer />
         </div>
 
         <div className="bg-[#1a1a1a] border border-border rounded-xl p-5 ">

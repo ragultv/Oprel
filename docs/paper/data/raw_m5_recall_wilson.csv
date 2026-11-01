@@ -1,0 +1,7 @@
+test_scenario,successes_k,trials_n,point_accuracy,wilson_ci_lower_95,wilson_ci_upper_95,result_type,notes
+Live Active Window (Direct Context),20,20,1.000,0.839,1.000,Positive,"Tokens resident in GPU VRAM (n_past <= 2048)"
+Single Needle in Offloaded SSD (Unique Keyword),19,20,0.950,0.764,0.991,Positive,"Offloaded to SSD, restored via exact token overlap match"
+Multi-Needle Offloaded SSD (High Distractor),14,20,0.700,0.481,0.855,Moderate,"5 distractors inserted; ranker selects top-2 candidate blocks"
+Paraphrased Needle (128-d Token Hash Ranker),8,20,0.400,0.219,0.613,Negative,"Query rephrased with synonyms; 128-d hash fails to match token IDs"
+Decoy Competition Test (Adversarial Keywords),7,20,0.350,0.181,0.567,Negative,"Adversarial decoys sharing hash buckets misdirect block retrieval"
+

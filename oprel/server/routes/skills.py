@@ -35,25 +35,10 @@ async def list_skills():
 
 @router.get("/skills/match")
 async def preview_skill_match(prompt: str):
-    """
-    Returns the skill that would be auto-matched for a given prompt,
-    without actually running generation. Used for UI previews and debugging.
-
-    Query param: prompt (str)
-
-    Returns:
-      {"matched": true, "skill": {...}}   if a skill matches
-      {"matched": false, "skill": null}   if no match
-    """
-    try:
-        from oprel.server.services.skill_matcher import match_skill_for_prompt
-        matched = match_skill_for_prompt(prompt)
-        return {
-            "matched": matched is not None,
-            "skill": matched,
-        }
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Skill matching error: {exc}")
+    return {
+        "matched": False,
+        "skill": None,
+    }
 
 
 @router.post("/skills")

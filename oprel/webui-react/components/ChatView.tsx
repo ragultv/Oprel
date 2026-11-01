@@ -50,6 +50,8 @@ import { SkillPicker } from "@/components/SkillPicker"
 import { SkillChip } from "@/components/SkillChip"
 import { Skill, recordSkillUsage, ALL_SKILLS } from "@/services/skills"
 import { CanvasPanel, type CanvasDocument } from "@/components/CanvasPanel"
+import { ContextBreakdownCard } from "@/components/ContextBreakdownCard"
+import { Layers } from "lucide-react"
 
 function TypingIndicator() {
   return (
@@ -168,8 +170,12 @@ function parseUserContent(content: string | any[]): { text: string, files: Array
     return ''; // Remove from text
   });
 
-  // Also catch the "Here are the attached files:" prefix if it exists alone
-  cleanText = cleanText.replace(/Here are the attached files:\s*$/, '').trim();
+  // Also catch the attached files prefix/suffix wrappers
+  cleanText = cleanText
+    .replace(/^The following files are attached as context for your reference:\s*/i, '')
+    .replace(/^Here are the attached files:\s*/i, '')
+    .replace(/\s*User request:\s*/i, '')
+    .trim();
   
   return { 
     text: cleanText || (files.length > 0 ? "" : rawText), 
@@ -800,7 +806,48 @@ export function ChatView({
   const [searchQuery, setSearchQuery] = useState("")
   const [toolsMenuOpen, setToolsMenuOpen] = useState(false)
   const [thinking, setThinking] = useState(false)
+  const [contextBreakdownOpen, setContextBreakdownOpen] = useState(false)
+  const [activeBackendContext, setActiveBackendContext] = useState<number>(131072)
   const [modelDropdown, setModelDropdown] = useState(false)
+  const [kvStats, setKvStats] = useState<{
+    engine?: string
+    precision?: string
+    total_tokens?: number
+    active_tokens?: number
+    ssd_blocks?: number
+    retrieved_blocks?: number
+    last_retrieval_ms?: number
+    vram_saved_gb?: number
+    direct_io_enabled?: boolean
+    status?: string
+    max_context?: number
+  } | null>(null)
+
+  useEffect(() => {
+    fetch("/api/v1/system/runtime-settings" + (activeModelId ? `?model_id=${encodeURIComponent(activeModelId)}` : ""))
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (data?.loaded_context) {
+          setActiveBackendContext(data.loaded_context)
+        } else if (data?.ctx_size) {
+          setActiveBackendContext(data.ctx_size)
+        }
+      })
+      .catch(() => {})
+
+    fetch("/api/v1/system/kv-cache-stats")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (data) {
+          setKvStats(data)
+          if (data.max_context) {
+            setActiveBackendContext(data.max_context)
+          }
+        }
+      })
+      .catch(() => {})
+  }, [activeModelId, isGenerating, contextBreakdownOpen])
+
   const [showTyping, setShowTyping] = useState(false)
   const [streamingMessage, setStreamingMessage] = useState<string | null>(null)
   const [selectedImage, setSelectedImage] = useState<string | null>(null)
@@ -1153,9 +1200,12 @@ export function ChatView({
     if (currentAttachments.length > 0) {
       const fileBlocks = currentAttachments.map(a => {
         const ext = a.name.split('.').pop() || '';
-        return `\n\n[File: ${a.name}]\n~~~${ext}\n${a.content}\n~~~`;
+        const lines = a.content ? a.content.split(/\r?\n/).length : 0;
+        return `\n\n[File: ${a.name} (${lines} lines)]\n~~~${ext}\n${a.content}\n~~~`;
       }).join('');
-      textWithFiles = currentInput ? currentInput + fileBlocks : `Here are the attached files:${fileBlocks}`;
+      textWithFiles = currentInput
+        ? `The following files are attached as context for your reference:${fileBlocks}\n\nUser request: ${currentInput}`
+        : `Here are the attached files:${fileBlocks}`;
     }
 
     let convId = activeConversationId;
@@ -1528,6 +1578,28 @@ export function ChatView({
   }
 
   const tokenCount = Math.ceil(input.length / 4)
+
+  const currentConv = conversations.find((c) => c.id === activeConversationId)
+  const conversationTokens = useMemo(() => {
+    let count = Math.ceil(input.length / 4)
+    if (currentConv?.messages) {
+      for (const m of currentConv.messages) {
+        count += Math.ceil(getContentText(m.content).length / 4)
+      }
+    }
+    return count
+  }, [currentConv?.messages, input])
+
+  const filesTokens = useMemo(() => {
+    return attachments.reduce((acc, a) => acc + Math.ceil((a.content?.length || 0) / 4), 0)
+  }, [attachments])
+
+  const systemPromptTokens = 1800
+  const toolsTokens = ragEnabled ? 4200 : 1200
+  const maxContextTokens = activeBackendContext || 131072
+  const totalContextUsed = conversationTokens + filesTokens + systemPromptTokens + toolsTokens
+  const isOverContext = totalContextUsed > maxContextTokens
+
 
   return (
     <div className="flex h-full bg-background overflow-hidden">
@@ -2004,8 +2076,49 @@ export function ChatView({
                 </div>
 
                 <div className="h-4 w-px bg-border mx-1" />
-                <span className="text-[10px] font-mono text-muted-foreground">{tokenCount} / {settings.maxTokens}</span>
+
+                {/* Interactive Context Breakdown Popover matching reference design */}
+                <div className="relative">
+                  <button
+                    onClick={() => setContextBreakdownOpen(!contextBreakdownOpen)}
+                    className={cn(
+                      "flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-mono transition-all border",
+                      isOverContext
+                        ? "bg-destructive/15 text-destructive border-destructive/40 font-bold"
+                        : contextBreakdownOpen
+                        ? "bg-[#f59e0b]/15 text-[#f59e0b] border-[#f59e0b]/40 shadow-sm"
+                        : "text-muted-foreground hover:text-foreground hover:bg-secondary border-border/40"
+                    )}
+                    title={isOverContext ? `Request (${totalContextUsed}) exceeds active backend limit (${maxContextTokens}). Increase context size!` : "Click to view full context breakdown"}
+                  >
+                    <Layers size={11} className={isOverContext ? "text-destructive" : contextBreakdownOpen ? "text-[#f59e0b]" : "text-primary/70"} />
+                    <span className="font-semibold">
+                      {totalContextUsed.toLocaleString()} / {(maxContextTokens / 1000).toFixed(0)}k
+                      {isOverContext && " (Exceeds Limit)"}
+                    </span>
+                  </button>
+
+
+                  {contextBreakdownOpen && (
+                    <>
+                      <div className="fixed inset-0 z-40" onClick={() => setContextBreakdownOpen(false)} />
+                      <div className="absolute bottom-full right-0 mb-3 z-50 animate-in fade-in slide-in-from-bottom-2 duration-200">
+                        <ContextBreakdownCard
+                          systemPromptTokens={systemPromptTokens}
+                          toolsTokens={toolsTokens}
+                          filesTokens={filesTokens}
+                          conversationTokens={conversationTokens}
+                          maxContext={maxContextTokens}
+                          kvStats={kvStats}
+                          onClose={() => setContextBreakdownOpen(false)}
+                          showDescription={true}
+                        />
+                      </div>
+                    </>
+                  )}
+                </div>
               </div>
+
 
               {/* Send / Stop button */}
               {isGenerating ? (

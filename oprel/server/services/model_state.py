@@ -66,6 +66,12 @@ def force_unload_model(model_id: str, model: Any | None = None) -> None:
             model._monitor.stop()
             model._monitor = None
 
+        if hasattr(model, "close") and callable(model.close):
+            try:
+                model.close()
+            except Exception as close_exc:
+                logger.warning(f"Error closing model {model_id}: {close_exc}")
+
         model._loaded = False
 
         import gc

@@ -48,6 +48,8 @@ async def load_model(request: LoadRequest):
             backend=request.backend,
         )
         return LoadResponse(**result)
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to load model: {str(exc)}")
 

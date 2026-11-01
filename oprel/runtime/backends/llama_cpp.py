@@ -1,5 +1,6 @@
 """llama.cpp backend implementation."""
 
+import os
 from pathlib import Path
 from typing import List, Optional
 
@@ -13,14 +14,17 @@ logger = get_logger(__name__)
 
 def _resolve_kv_cache_type(config: Config, model_quantization: str, is_vision: bool) -> str:
     """Pick a KV cache type that balances quality and memory footprint."""
-    requested = str(getattr(config, "kv_cache_type", "auto")).lower()
-    if requested in ("turboquant", "turbo", "extreme"):
+    from oprel.core.config import read_runtime_settings
+    saved_kv = read_runtime_settings().get("kv_cache_type")
+    requested = str(saved_kv or getattr(config, "kv_cache_type", "auto")).lower()
+    if requested in ("turboquant", "turbo", "extreme", "q4_0", "q4"):
         return "q4_0"
     if requested != "auto":
         return requested
 
     if is_vision:
         return "f16"
+
 
     # q8_0 halves KV memory with negligible quality loss.  q4_0 is opt-in
     # (kv_cache_type="q4_0"/"turboquant") because it measurably degrades long-context output.
@@ -142,8 +146,17 @@ class LlamaCppBackend(BaseBackend):
             except Exception:
                 pass
 
-        # Tier-based context default, only when the user did not set ctx_size.
-        if "ctx_size" not in getattr(self.config, "model_fields_set", {"ctx_size"}):
+        # Tier-based context default, only when the user did not set ctx_size in config, env, or runtime_settings.json
+        from oprel.core.config import read_runtime_settings
+        saved_runtime = read_runtime_settings()
+        ctx_set_by_user = (
+            "ctx_size" in getattr(self.config, "model_fields_set", set())
+            or bool(saved_runtime.get("ctx_size"))
+            or bool(os.environ.get("OPREL_CTX_SIZE"))
+        )
+        if saved_runtime.get("ctx_size"):
+            self.config = self.config.model_copy(update={"ctx_size": saved_runtime["ctx_size"]})
+        elif not ctx_set_by_user:
             from oprel.runtime.tiers import default_context
 
             self.config = self.config.model_copy(update={"ctx_size": default_context(vram_gb)})

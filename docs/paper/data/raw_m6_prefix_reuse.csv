@@ -1,0 +1,8 @@
+scenario,total_history_tokens,delta_tokens,ttft_cold_reprefill_sec,ttft_oprel_ssd_warm_sec,ttft_llama_cpp_cache_sec,speedup_vs_reprefill,metric_tag,notes
+Turn 1 Initial Ingestion,2726,2726,16.030,16.030,16.030,1.0x,Measured,Cold prefill baseline (170 tok/s)
+Turn 2 Follow-up Question,2760,34,16.230,0.510,0.420,31.8x,Measured,Warm active window reuse; 34 tokens decoded
+Turn 2 Optimized Run,2747,21,16.150,0.167,0.380,96.7x,Measured,Warm active window reuse from task logs; 21 delta tokens
+Turn 3 Extended Session,3250,42,19.120,0.620,0.480,30.8x,Measured,Active window kept; older tokens offloaded to SSD
+Long Context Session (10k),10240,50,60.240,0.740,N/A,81.4x,Projected,Cold re-prefill is projected; warm TTFT measured
+Long Context Session (20k),20480,45,120.470,0.680,N/A,177.2x,Projected,Cold re-prefill is projected; warm TTFT measured
+Long Context Session (34k),34067,18,200.390,0.510,N/A,392.9x,Projected,Cold re-prefill is projected; warm TTFT measured

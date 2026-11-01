@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from oprel.server.domain.models import ModelInfoData
@@ -211,6 +212,11 @@ def load_model(
             "message": f"Model is provided by external provider: {provider['name']}",
         }
 
+    from oprel.core.config import read_runtime_settings
+    saved_rt = read_runtime_settings()
+    user_ctx = saved_rt.get("ctx_size") or (CONFIG.ctx_size if "ctx_size" in CONFIG.model_fields_set else None)
+    user_kv = saved_rt.get("kv_cache_type") or CONFIG.kv_cache_type
+
     if not is_embedding:
         # Refuse early, with a plain-language reason, when the model cannot fit even
         # with CPU offload.  Any failure of the check itself must not block loading.
@@ -220,11 +226,27 @@ def load_model(
             fit = run_preflight(
                 model_id,
                 quantization,
-                CONFIG.ctx_size if "ctx_size" in CONFIG.model_fields_set else None,
-                CONFIG.kv_cache_type,
+                user_ctx,
+                user_kv,
             )
-            if fit["verdict"] == "insufficient":
-                raise RuntimeError(" ".join(fit["messages"]) or "Not enough memory to load this model.")
+
+            use_ssd_mode = (
+                backend in ("native-ssd", "ssd", "llama-ssd")
+                or bool(saved_rt.get("use_ssd_wrapper"))
+                or os.environ.get("OPREL_BACKEND") == "native-ssd"
+            )
+
+            if not use_ssd_mode and fit["verdict"] == "insufficient":
+                suggested = fit.get("suggested_context")
+                if suggested and suggested < (user_ctx or 131072):
+                    logger.warning(
+                        f"Requested context {user_ctx} exceeds free RAM ({fit.get('free_ram_gb')} GB free, "
+                        f"{fit.get('ram_needed_gb')} GB needed). Automatically clamping to {suggested} tokens."
+                    )
+                    from oprel.core.config import write_runtime_settings
+                    write_runtime_settings(ctx_size=suggested, kv_cache_type=user_kv)
+                else:
+                    raise RuntimeError(" ".join(fit["messages"]) or "Not enough memory to load this model.")
         except FileNotFoundError:
             pass  # not downloaded yet; the loader will download it
         except RuntimeError:
@@ -233,24 +255,145 @@ def load_model(
             logger.debug(f"Preflight skipped for {model_id}: {exc}")
 
     try:
-        from oprel.core.model import Model
-
-        logger.info(f"Loading model: {model_id} (quant={quantization}, backend={backend})")
-
-        model = Model(
-            model_id=model_id,
-            quantization=quantization,
-            max_memory_mb=max_memory_mb,
-            backend=backend,
-            use_server=False,
+        from oprel.core.config import read_runtime_settings
+        saved_rt = read_runtime_settings()
+        use_ssd = (
+            backend in ("native-ssd", "ssd", "llama-ssd")
+            or bool(saved_rt.get("use_ssd_wrapper"))
+            or os.environ.get("OPREL_BACKEND") == "native-ssd"
         )
 
-        model.load()
+        if use_ssd:
+            from oprel.downloader.hub import download_model
+            from oprel.runtime.backends.llama_ssd_native import LlamaSSDNativeBackend
 
-        if hasattr(model, "_process") and model._process and model._process.process:
-            track_backend_pid(model._process.process.pid)
+            logger.info(f"Loading model with native C++ SSD KV-cache wrapper: {model_id}")
+            model_path = download_model(
+                model_id,
+                quantization=quantization,
+                cache_dir=CONFIG.cache_dir,
+            )
+            # Calculate optimal GPU layers dynamically based on hardware profile
+            n_gpu_layers = 16  # fallback default
+            free_vram_mb = 0.0
+            try:
+                from oprel.telemetry.hardware import get_vram_usage
+                vram_info = get_vram_usage()
+                if vram_info and vram_info.get("free_mb"):
+                    free_vram_mb = vram_info["free_mb"]
+                    file_size_mb = os.path.getsize(model_path) / (1024 * 1024)
+                    reserved_overhead_mb = 600.0  # headroom for active KV cache and compute buffer
+                    budget_mb = free_vram_mb - reserved_overhead_mb
+                    # If entire model + overhead fits in free VRAM, offload 100% of layers (99) to GPU!
+                    if free_vram_mb >= file_size_mb + reserved_overhead_mb:
+                        n_gpu_layers = 99
+                    elif free_vram_mb >= 4500:
+                        n_gpu_layers = 99
+                    elif free_vram_mb >= 3100:
+                        # Near-fit on 4GB systems: offload maximum safe layers
+                        n_gpu_layers = 33
+                    elif budget_mb > 100:
+                        layer_size_mb = file_size_mb / 35.0
+                        n_gpu_layers = max(1, min(99, int((free_vram_mb - 500) / layer_size_mb)))
+                    else:
+                        n_gpu_layers = 0
+                    logger.info(
+                        f"[VRAM Allocator] Free: {free_vram_mb:.0f}MB, Model: {file_size_mb:.0f}MB "
+                        f"-> Dynamically offloading {n_gpu_layers} layers to GPU"
+                    )
+            except Exception as vram_err:
+                logger.warning(f"[VRAM Allocator] Could not dynamically calculate VRAM layers: {vram_err}")
 
-        state.models[model_id] = model
+            # Enable MMQ for non-tensor-core GPUs (GTX 1650/1060/1080) for 3x faster prefill throughput
+            os.environ["GGML_CUDA_FORCE_MMQ"] = "1"
+            native_backend = LlamaSSDNativeBackend()
+            native_backend.load_model(str(model_path), n_gpu_layers=n_gpu_layers)
+
+            # Dynamic Context Sizing:
+            # max_ssd_ctx represents the total sequence length supported across NVMe SSD offload
+            max_ssd_ctx = user_ctx or 131072
+
+            # active_ctx is the active working window kept in GPU VRAM
+            # It must be sized strictly to what fits safely in free VRAM without triggering CUDA OOM
+            if free_vram_mb >= 10000:
+                active_ctx = 8192
+            elif free_vram_mb >= 5000:
+                active_ctx = 4096
+            else:
+                active_ctx = 2560
+
+            if user_ctx and user_ctx < active_ctx:
+                active_ctx = user_ctx
+
+            # Multi-block retrieval top_k setting (default 2 = 1024 tokens)
+            retrieval_top_k = int(saved_rt.get("retrieval_top_k", 2)) if saved_rt else 2
+
+            native_backend.create_context(
+                active_ctx_size=active_ctx,
+                max_ssd_context=max_ssd_ctx,
+                retrieval_top_k=retrieval_top_k,
+            )
+
+            class NativeSSDClientAdapter:
+                def __init__(self, backend_inst):
+                    self.backend = backend_inst
+
+                def generate(self, prompt, stream=True, max_tokens=4096, temperature=0.7, top_p=0.9, repeat_penalty=1.15, **kwargs):
+                    tokens_limit = max_tokens if max_tokens and max_tokens > 0 else 4096
+                    gen = self.backend.generate(
+                        prompt=prompt,
+                        max_new_tokens=tokens_limit,
+                        temperature=temperature,
+                        top_p=top_p,
+                        repeat_penalty=repeat_penalty,
+                        frequency_penalty=kwargs.get("frequency_penalty", 0.35),
+                        presence_penalty=kwargs.get("presence_penalty", 0.30),
+                    )
+                    if stream:
+                        return gen
+                    return "".join(gen)
+
+            class NativeSSDModelAdapter:
+                def __init__(self, m_id, m_path, backend_inst, act_ctx, m_ssd_ctx):
+                    self.model_id = m_id
+                    self.model_path = m_path
+                    self._model_path = m_path
+                    self.backend = backend_inst
+                    self.active_ctx_size = act_ctx
+                    self.max_ssd_context = m_ssd_ctx
+                    self._client = NativeSSDClientAdapter(backend_inst)
+                    self._process = None
+                    self._monitor = None
+                    self._loaded = True
+
+                def close(self):
+                    if self.backend:
+                        self.backend.close()
+                        self.backend = None
+                    self._loaded = False
+
+            model = NativeSSDModelAdapter(model_id, str(model_path), native_backend, active_ctx, max_ssd_ctx)
+            state.models[model_id] = model
+            backend = "native-ssd"
+        else:
+            from oprel.core.model import Model
+
+            logger.info(f"Loading model: {model_id} (quant={quantization}, backend={backend})")
+
+            model = Model(
+                model_id=model_id,
+                quantization=quantization,
+                max_memory_mb=max_memory_mb,
+                backend=backend,
+                use_server=False,
+            )
+
+            model.load()
+
+            if hasattr(model, "_process") and model._process and model._process.process:
+                track_backend_pid(model._process.process.pid)
+
+            state.models[model_id] = model
 
         actual_quant = quantization
         actual_filename = None

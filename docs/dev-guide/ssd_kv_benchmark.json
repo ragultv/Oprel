@@ -1,0 +1,571 @@
+{
+  "date": "2026-11-01 21:05:14",
+  "model": {
+    "file": "gemma-3-4b-it-Q5_K_M.gguf",
+    "size_gb": 2.64,
+    "n_gpu_layers": 33
+  },
+  "llama_cpp_build": "b9616 (CUDA)",
+  "reps": 7,
+  "method": {
+    "prefill": "ingest() of a salted prompt (no prefix reuse), reset=True, plus a logits read that forces the GPU sync, wall clock",
+    "archive": "archive_oldest(n): serialise + stage; the disk write runs in the background",
+    "restore": "restore_kv_state(): Direct I/O read + header/CRC validation + state_seq_set_data_ext + re-positioning + one single-token refresh decode; measured 0.4 s after the archive so the asynchronous write has finished. Direct I/O bypasses the OS page cache; the drive's own cache may still serve recent writes.",
+    "generate": "per generate_next_token(temperature=0.0) call (sample + 1 decode), greedy"
+  },
+  "hardware": {
+    "os": "Windows-11-10.0.26200-SP0",
+    "cpu": "AMD Ryzen 5 5600H with Radeon Graphics",
+    "cpu_logical_cores": 12,
+    "ram_gb": "15.3",
+    "gpu": "NVIDIA GeForce GTX 1650, 4096 MiB, 592.82",
+    "cache_drive": "C: MTFDKBA512TFH-1BC1AABHA SSD NVMe",
+    "python": "3.12.6"
+  },
+  "results": {
+    "q4_0": {
+      "cold_prefill": {
+        "319": {
+          "n": 7,
+          "min_ms": 1877.137,
+          "p50_ms": 1879.699,
+          "p95_ms": 1885.684,
+          "max_ms": 1885.684,
+          "mean_ms": 1880.136,
+          "stdev_ms": 2.433,
+          "prompt_tokens": 319,
+          "decode_calls_per_run": 1,
+          "tokens_per_s": 169.7
+        },
+        "621": {
+          "n": 7,
+          "min_ms": 3501.084,
+          "p50_ms": 3505.932,
+          "p95_ms": 3512.508,
+          "max_ms": 3512.508,
+          "mean_ms": 3506.582,
+          "stdev_ms": 3.992,
+          "prompt_tokens": 621,
+          "decode_calls_per_run": 2,
+          "tokens_per_s": 177.1
+        },
+        "925": {
+          "n": 7,
+          "min_ms": 5405.93,
+          "p50_ms": 5413.032,
+          "p95_ms": 5421.523,
+          "max_ms": 5421.523,
+          "mean_ms": 5413.746,
+          "stdev_ms": 5.188,
+          "prompt_tokens": 925,
+          "decode_calls_per_run": 2,
+          "tokens_per_s": 170.9
+        }
+      },
+      "archive_and_restore": {
+        "128": {
+          "prompt_tokens": 925,
+          "block_tokens": 128,
+          "payload_bytes": 5017432,
+          "payload_mib": 4.78,
+          "archive_call": {
+            "n": 7,
+            "min_ms": 25.163,
+            "p50_ms": 25.641,
+            "p95_ms": 33.517,
+            "max_ms": 33.517,
+            "mean_ms": 27.889,
+            "stdev_ms": 3.565
+          },
+          "restore_wall": {
+            "n": 7,
+            "min_ms": 630.652,
+            "p50_ms": 664.335,
+            "p95_ms": 2011.089,
+            "max_ms": 2011.089,
+            "mean_ms": 876.992,
+            "stdev_ms": 465.163
+          },
+          "restore_native_total": {
+            "n": 7,
+            "min_ms": 630.59,
+            "p50_ms": 664.27,
+            "p95_ms": 2010.75,
+            "max_ms": 2010.75,
+            "mean_ms": 876.887,
+            "stdev_ms": 465.068
+          },
+          "restore_ssd_read_and_validate": {
+            "n": 7,
+            "min_ms": 1.77,
+            "p50_ms": 1.87,
+            "p95_ms": 5.9,
+            "max_ms": 5.9,
+            "mean_ms": 3.04,
+            "stdev_ms": 1.815
+          },
+          "restore_set_data": {
+            "n": 7,
+            "min_ms": 3.03,
+            "p50_ms": 3.47,
+            "p95_ms": 4.01,
+            "max_ms": 4.01,
+            "mean_ms": 3.511,
+            "stdev_ms": 0.323
+          },
+          "bytes_read_per_restore": [
+            5017600
+          ],
+          "decode_calls_per_restore": [
+            1
+          ],
+          "prefill_tokens_per_restore": [
+            0
+          ]
+        },
+        "256": {
+          "prompt_tokens": 923,
+          "block_tokens": 256,
+          "payload_bytes": 10034008,
+          "payload_mib": 9.57,
+          "archive_call": {
+            "n": 7,
+            "min_ms": 52.006,
+            "p50_ms": 55.114,
+            "p95_ms": 56.875,
+            "max_ms": 56.875,
+            "mean_ms": 54.954,
+            "stdev_ms": 1.8
+          },
+          "restore_wall": {
+            "n": 7,
+            "min_ms": 718.269,
+            "p50_ms": 733.254,
+            "p95_ms": 744.069,
+            "max_ms": 744.069,
+            "mean_ms": 730.17,
+            "stdev_ms": 10.33
+          },
+          "restore_native_total": {
+            "n": 7,
+            "min_ms": 718.13,
+            "p50_ms": 733.18,
+            "p95_ms": 744.0,
+            "max_ms": 744.0,
+            "mean_ms": 730.081,
+            "stdev_ms": 10.339
+          },
+          "restore_ssd_read_and_validate": {
+            "n": 7,
+            "min_ms": 6.09,
+            "p50_ms": 6.23,
+            "p95_ms": 9.46,
+            "max_ms": 9.46,
+            "mean_ms": 7.144,
+            "stdev_ms": 1.446
+          },
+          "restore_set_data": {
+            "n": 7,
+            "min_ms": 4.22,
+            "p50_ms": 5.71,
+            "p95_ms": 7.76,
+            "max_ms": 7.76,
+            "mean_ms": 5.751,
+            "stdev_ms": 1.028
+          },
+          "bytes_read_per_restore": [
+            10035200
+          ],
+          "decode_calls_per_restore": [
+            1
+          ],
+          "prefill_tokens_per_restore": [
+            0
+          ]
+        },
+        "512": {
+          "prompt_tokens": 922,
+          "block_tokens": 512,
+          "payload_bytes": 20067160,
+          "payload_mib": 19.14,
+          "archive_call": {
+            "n": 7,
+            "min_ms": 103.127,
+            "p50_ms": 105.75,
+            "p95_ms": 129.895,
+            "max_ms": 129.895,
+            "mean_ms": 109.863,
+            "stdev_ms": 8.685
+          },
+          "restore_wall": {
+            "n": 7,
+            "min_ms": 781.657,
+            "p50_ms": 800.411,
+            "p95_ms": 824.146,
+            "max_ms": 824.146,
+            "mean_ms": 799.557,
+            "stdev_ms": 14.348
+          },
+          "restore_native_total": {
+            "n": 7,
+            "min_ms": 781.59,
+            "p50_ms": 800.34,
+            "p95_ms": 824.06,
+            "max_ms": 824.06,
+            "mean_ms": 799.484,
+            "stdev_ms": 14.347
+          },
+          "restore_ssd_read_and_validate": {
+            "n": 7,
+            "min_ms": 11.91,
+            "p50_ms": 15.02,
+            "p95_ms": 15.41,
+            "max_ms": 15.41,
+            "mean_ms": 14.561,
+            "stdev_ms": 1.131
+          },
+          "restore_set_data": {
+            "n": 7,
+            "min_ms": 7.26,
+            "p50_ms": 8.71,
+            "p95_ms": 10.38,
+            "max_ms": 10.38,
+            "mean_ms": 8.586,
+            "stdev_ms": 1.107
+          },
+          "bytes_read_per_restore": [
+            20070400
+          ],
+          "decode_calls_per_restore": [
+            1
+          ],
+          "prefill_tokens_per_restore": [
+            0
+          ]
+        }
+      },
+      "generation": {
+        "no_restore": {
+          "first_token": {
+            "n": 7,
+            "min_ms": 45.591,
+            "p50_ms": 46.788,
+            "p95_ms": 89.049,
+            "max_ms": 89.049,
+            "mean_ms": 53.135,
+            "stdev_ms": 14.734
+          },
+          "steady_state_token": {
+            "n": 217,
+            "min_ms": 33.167,
+            "p50_ms": 43.968,
+            "p95_ms": 52.147,
+            "max_ms": 60.091,
+            "mean_ms": 44.032,
+            "stdev_ms": 4.899
+          },
+          "decode_calls_per_run": [
+            32
+          ],
+          "tokens_per_run": 32
+        },
+        "after_restore": {
+          "first_token": {
+            "n": 7,
+            "min_ms": 39.671,
+            "p50_ms": 47.273,
+            "p95_ms": 52.492,
+            "max_ms": 52.492,
+            "mean_ms": 46.31,
+            "stdev_ms": 4.088
+          },
+          "steady_state_token": {
+            "n": 217,
+            "min_ms": 33.454,
+            "p50_ms": 44.467,
+            "p95_ms": 52.968,
+            "max_ms": 108.943,
+            "mean_ms": 44.809,
+            "stdev_ms": 7.317
+          },
+          "decode_calls_per_run": [
+            32
+          ],
+          "tokens_per_run": 32
+        }
+      }
+    },
+    "f16": {
+      "cold_prefill": {
+        "318": {
+          "n": 7,
+          "min_ms": 1912.405,
+          "p50_ms": 1916.931,
+          "p95_ms": 1939.712,
+          "max_ms": 1939.712,
+          "mean_ms": 1921.609,
+          "stdev_ms": 9.581,
+          "prompt_tokens": 318,
+          "decode_calls_per_run": 1,
+          "tokens_per_s": 165.9
+        },
+        "620": {
+          "n": 7,
+          "min_ms": 3529.592,
+          "p50_ms": 3530.086,
+          "p95_ms": 3556.025,
+          "max_ms": 3556.025,
+          "mean_ms": 3538.744,
+          "stdev_ms": 10.574,
+          "prompt_tokens": 620,
+          "decode_calls_per_run": 2,
+          "tokens_per_s": 175.6
+        },
+        "925": {
+          "n": 7,
+          "min_ms": 5430.258,
+          "p50_ms": 5448.901,
+          "p95_ms": 5469.496,
+          "max_ms": 5469.496,
+          "mean_ms": 5448.801,
+          "stdev_ms": 14.536,
+          "prompt_tokens": 925,
+          "decode_calls_per_run": 2,
+          "tokens_per_s": 169.8
+        }
+      },
+      "archive_and_restore": {
+        "128": {
+          "prompt_tokens": 923,
+          "block_tokens": 128,
+          "payload_bytes": 17829720,
+          "payload_mib": 17.0,
+          "archive_call": {
+            "n": 7,
+            "min_ms": 92.117,
+            "p50_ms": 98.704,
+            "p95_ms": 110.764,
+            "max_ms": 110.764,
+            "mean_ms": 99.115,
+            "stdev_ms": 6.315
+          },
+          "restore_wall": {
+            "n": 7,
+            "min_ms": 174.502,
+            "p50_ms": 203.773,
+            "p95_ms": 336.295,
+            "max_ms": 336.295,
+            "mean_ms": 219.606,
+            "stdev_ms": 50.733
+          },
+          "restore_native_total": {
+            "n": 7,
+            "min_ms": 174.43,
+            "p50_ms": 203.69,
+            "p95_ms": 336.22,
+            "max_ms": 336.22,
+            "mean_ms": 219.529,
+            "stdev_ms": 50.732
+          },
+          "restore_ssd_read_and_validate": {
+            "n": 7,
+            "min_ms": 10.67,
+            "p50_ms": 13.76,
+            "p95_ms": 14.4,
+            "max_ms": 14.4,
+            "mean_ms": 12.999,
+            "stdev_ms": 1.409
+          },
+          "restore_set_data": {
+            "n": 7,
+            "min_ms": 6.02,
+            "p50_ms": 6.61,
+            "p95_ms": 9.28,
+            "max_ms": 9.28,
+            "mean_ms": 7.014,
+            "stdev_ms": 1.13
+          },
+          "bytes_read_per_restore": [
+            17829888
+          ],
+          "decode_calls_per_restore": [
+            1
+          ],
+          "prefill_tokens_per_restore": [
+            0
+          ]
+        },
+        "256": {
+          "prompt_tokens": 925,
+          "block_tokens": 256,
+          "payload_bytes": 35658584,
+          "payload_mib": 34.01,
+          "archive_call": {
+            "n": 7,
+            "min_ms": 177.148,
+            "p50_ms": 179.742,
+            "p95_ms": 228.443,
+            "max_ms": 228.443,
+            "mean_ms": 187.573,
+            "stdev_ms": 17.124
+          },
+          "restore_wall": {
+            "n": 7,
+            "min_ms": 260.718,
+            "p50_ms": 301.974,
+            "p95_ms": 304.821,
+            "max_ms": 304.821,
+            "mean_ms": 292.484,
+            "stdev_ms": 15.632
+          },
+          "restore_native_total": {
+            "n": 7,
+            "min_ms": 260.64,
+            "p50_ms": 301.9,
+            "p95_ms": 304.75,
+            "max_ms": 304.75,
+            "mean_ms": 292.409,
+            "stdev_ms": 15.633
+          },
+          "restore_ssd_read_and_validate": {
+            "n": 7,
+            "min_ms": 20.84,
+            "p50_ms": 24.15,
+            "p95_ms": 26.27,
+            "max_ms": 26.27,
+            "mean_ms": 23.754,
+            "stdev_ms": 1.523
+          },
+          "restore_set_data": {
+            "n": 7,
+            "min_ms": 10.73,
+            "p50_ms": 12.02,
+            "p95_ms": 14.32,
+            "max_ms": 14.32,
+            "mean_ms": 11.979,
+            "stdev_ms": 1.079
+          },
+          "bytes_read_per_restore": [
+            35659776
+          ],
+          "decode_calls_per_restore": [
+            1
+          ],
+          "prefill_tokens_per_restore": [
+            0
+          ]
+        },
+        "512": {
+          "prompt_tokens": 925,
+          "block_tokens": 512,
+          "payload_bytes": 71316312,
+          "payload_mib": 68.01,
+          "archive_call": {
+            "n": 7,
+            "min_ms": 344.571,
+            "p50_ms": 348.932,
+            "p95_ms": 434.037,
+            "max_ms": 434.037,
+            "mean_ms": 362.36,
+            "stdev_ms": 29.696
+          },
+          "restore_wall": {
+            "n": 7,
+            "min_ms": 464.252,
+            "p50_ms": 494.472,
+            "p95_ms": 521.65,
+            "max_ms": 521.65,
+            "mean_ms": 487.774,
+            "stdev_ms": 19.259
+          },
+          "restore_native_total": {
+            "n": 7,
+            "min_ms": 464.17,
+            "p50_ms": 494.4,
+            "p95_ms": 521.57,
+            "max_ms": 521.57,
+            "mean_ms": 487.696,
+            "stdev_ms": 19.261
+          },
+          "restore_ssd_read_and_validate": {
+            "n": 7,
+            "min_ms": 40.95,
+            "p50_ms": 44.64,
+            "p95_ms": 49.62,
+            "max_ms": 49.62,
+            "mean_ms": 44.859,
+            "stdev_ms": 2.377
+          },
+          "restore_set_data": {
+            "n": 7,
+            "min_ms": 19.41,
+            "p50_ms": 21.48,
+            "p95_ms": 26.03,
+            "max_ms": 26.03,
+            "mean_ms": 21.864,
+            "stdev_ms": 1.973
+          },
+          "bytes_read_per_restore": [
+            71319552
+          ],
+          "decode_calls_per_restore": [
+            1
+          ],
+          "prefill_tokens_per_restore": [
+            0
+          ]
+        }
+      },
+      "generation": {
+        "no_restore": {
+          "first_token": {
+            "n": 7,
+            "min_ms": 33.126,
+            "p50_ms": 48.685,
+            "p95_ms": 68.73,
+            "max_ms": 68.73,
+            "mean_ms": 47.605,
+            "stdev_ms": 10.454
+          },
+          "steady_state_token": {
+            "n": 217,
+            "min_ms": 28.834,
+            "p50_ms": 45.257,
+            "p95_ms": 57.401,
+            "max_ms": 66.058,
+            "mean_ms": 46.144,
+            "stdev_ms": 6.301
+          },
+          "decode_calls_per_run": [
+            32
+          ],
+          "tokens_per_run": 32
+        },
+        "after_restore": {
+          "first_token": {
+            "n": 7,
+            "min_ms": 36.584,
+            "p50_ms": 40.829,
+            "p95_ms": 56.074,
+            "max_ms": 56.074,
+            "mean_ms": 43.586,
+            "stdev_ms": 6.974
+          },
+          "steady_state_token": {
+            "n": 217,
+            "min_ms": 34.251,
+            "p50_ms": 45.918,
+            "p95_ms": 53.205,
+            "max_ms": 66.53,
+            "mean_ms": 46.094,
+            "stdev_ms": 4.73
+          },
+          "decode_calls_per_run": [
+            32
+          ],
+          "tokens_per_run": 32
+        }
+      }
+    }
+  }
+}

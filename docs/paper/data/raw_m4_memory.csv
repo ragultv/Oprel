@@ -1,0 +1,20 @@
+component,allocated_mib,device,metric_tag,notes
+gpu_total_physical_vram,4095.00,GPU VRAM,Measured,Total physical VRAM reported by CUDA driver
+gpu_vram_free_at_load,3286.00,GPU VRAM,Measured,Free VRAM reported by llama.cpp after WDDM/OS overhead
+gemma_3_4b_cuda0_weights,2692.37,GPU VRAM,Measured,Offloaded 35/35 layers to CUDA0
+gemma_3_4b_cpu_mapped_weights,525.13,Host RAM,Measured,Token embeddings in CPU mapped buffer
+cuda0_compute_buffer,517.13,GPU VRAM,Measured,ggml-cuda scratch/workspace buffer
+cuda_host_compute_buffer,18.55,Host RAM,Measured,ggml host buffer
+active_kv_cache_global_5_layers,22.50,GPU VRAM,Measured,4096 cells non-SWA global layers (K: 11.25 MiB; V: 11.25 MiB)
+active_kv_cache_swa_29_layers,130.50,GPU VRAM,Measured,4096 cells SWA 1024-window layers (K: 65.25 MiB; V: 65.25 MiB)
+active_kv_cache_total_capacity,153.00,GPU VRAM,Derived,Sum of global (22.50) + SWA (130.50) capacity
+active_kv_cache_2560_window,95.63,GPU VRAM,Derived,Actual active memory for 2560 window in Q4_0
+first_archived_block_size,19.14,NVMe SSD,Measured,First block contains active SWA + global layers
+steady_state_block_size,2.95,NVMe SSD,Measured,Steady-state block: older tokens only retain 5 global layers
+steady_state_sector_aligned_block,3.00,NVMe SSD,Derived,4096-byte sector-aligned payload for Direct I/O
+archived_blocks_34k_session,61.00,NVMe SSD,Derived,(34067 - 2560) / 512 = ~61.5 blocks archived
+total_disk_footprint_34k_session,196.14,NVMe SSD,Derived,19.14 + (60 * 2.95) MiB
+gpu_headroom_remaining,76.50,GPU VRAM,Derived,3286.00 free - (2692.37 weights + 517.13 compute) = 76.50 MiB margin before KV
+header_packed_bytes,120.00,Metadata,Measured,Header struct size under pack(1), enforced by static_assert
+header_aligned_bytes,4096.00,Metadata,Derived,Minimum sector-aligned transfer allocation for header plus payload
+model_file_sha256,974E5C2F13C321FC3258B6FBF2CE326A09D8ACE511AA6846DF1DB62BAF7DF7D4,GGUF Model,Measured,SHA256 hash of gemma-3-4b-it-Q5_K_M.gguf

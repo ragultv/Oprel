@@ -1,0 +1,12 @@
+dimension,oprel_ssd_mvp,ollama_baseline,leoam_arxiv_2506_20187,metric_tag,notes_and_citations
+storage_hierarchy,"GPU VRAM + NVMe SSD (Direct I/O)","GPU VRAM or Host RAM (No SSD tier)","3-Tier: GPU VRAM + CPU Host RAM + NVMe SSD Disk",Inferred,"LeoAM incorporates SSD offload tier; Ollama relies strictly on host RAM"
+gemma_3_compatibility,Supported (llama.cpp b9616 build),"Ollama requires >= v0.5.12 (earlier builds fail: unknown model architecture)",Not evaluated,Inferred,"Documented upstream in Ollama release notes"
+kv_cache_quantization,"GGML_TYPE_Q4_0 (default), F16","f16 (default), q8_0, q4_0 via OLLAMA_KV_CACHE_TYPE","Adaptive INT4/INT8 quantization across layers",Inferred,"Ollama supports Q4_0 and Q8_0 KV flags"
+context_at_4gb_vram_gtx_1650,"Up to ~34,000+ tokens (SSD-archived)","~2,560 tokens in VRAM (spills to CPU DDR4 above ~3,000)",Extended via host/disk tier,Inferred,"Ollama falls back to host RAM over PCIe 3.0"
+token_decode_speed_20k_context,26.8 tok/s (Active 2.5k window in VRAM),1.8 tok/s (CPU/PCIe bus bottleneck),Not measured,Measured,"26.8 tok/s is decoding in a bounded 2.5k window; 1.8 tok/s is PCIe host spill"
+warm_ttft_turn2_prefix_reuse,0.167 - 0.510 s,Not measured locally,Not measured,Measured,"oprel warm TTFT measured on local machine; Ollama not benchmarked locally"
+session_persistence_across_restart,"Supported (Direct I/O .bin session file)",Not Supported (Ephemeral memory slots),Supported via disk snapshot,Inferred,"oprel restores warm session from NVMe SSD on cold start"
+block_restore_mechanism,"Scratch seq state_seq_set_data_ext + seq_cp (8.2 ms)",Full context in RAM (0 ms latency),"Paged disk-to-host-to-GPU prefetch",Measured,"oprel restores 512 tokens in ~8.2 ms with 0 decode calls"
+retrieval_ranker_mechanism,128-d Token Hash Bucketer (quest.cpp),Dense full self-attention (In RAM),Dynamic layer importance estimation,Measured,"oprel hash ranker achieves 10% top-1 accuracy at 20 blocks (chance=5%)"
+semantic_recall_under_paraphrase,0/10 (0.0% in T6, CI: 0-28%),Not measured locally,High (retains global key attention),Inferred,"Ollama dense attention unmeasured locally; oprel scored 0/10"
+kvswap_architecture_profile,N/A,N/A,"Full KV on NVMe SSD, low-rank key in Host RAM, group prefetch",Inferred,"Z. Wang et al. (arXiv:2511.11907)"

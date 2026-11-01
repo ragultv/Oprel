@@ -13,6 +13,12 @@ logger = get_logger(__name__)
 
 OFFICIAL_REPOS = {
        "text-generation": {
+        
+        # --- QWEN 3.5 FAMILY (SOTA 2026) ---
+        "qwen3.5-9b":"unsloth/Qwen3.5-9B-GGUF",
+        "qwen3.5-4b":"unsloth/Qwen3.5-4B-GGUF",
+        "qwen3.5-2b":"unsloth/Qwen3.5-2B-GGUF",
+        "qwen3.5-0.8b":"unsloth/Qwen3.5-0.8B-GGUF",
 
         # --- QWEN 3 FAMILY (SOTA 2026) ---
         "qwen3-235b": "Qwen/Qwen3-235B-GGUF",     # Flagship Dense
