@@ -9,6 +9,8 @@ def tool_env(tmp_path, monkeypatch):
     Never touches the real OS keychain or ~/.cache/oprel.
     """
     monkeypatch.setenv("OPREL_SECRET_BACKEND", "memory")
+    # Per-install bearer token used by LocalGuardMiddleware; fixed so ~/.oprel isn't touched.
+    monkeypatch.setenv("OPREL_API_TOKEN", "test-install-token-0123456789")
     monkeypatch.delenv("OPREL_CORS_ORIGINS", raising=False)
     monkeypatch.delenv("OPREL_ALLOW_REMOTE_INTEGRATIONS", raising=False)
 
@@ -35,7 +37,8 @@ def client(tool_env):
     from oprel.server.app import app
 
     # No `with`: skip the lifespan (backend cleanup, idle monitor) for unit tests.
-    return TestClient(app, base_url="http://127.0.0.1:11435")
+    # Behave like the bundled web UI: same-origin browser requests pass LocalGuardMiddleware.
+    return TestClient(app, base_url="http://127.0.0.1:11435", headers={"Sec-Fetch-Site": "same-origin"})
 
 
 @pytest.fixture

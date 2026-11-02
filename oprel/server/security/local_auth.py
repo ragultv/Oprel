@@ -1,34 +1,35 @@
 """
 Local request authentication for privileged endpoints.
 
-Threat model: the daemon listens on localhost, and any web page the user visits can
-fire requests at it. CORS stops a page from *reading* responses, but not from
-*sending* simple requests. So endpoints that can act on the user's behalf
-(integrations, tool execution, approvals) additionally require:
+The app-wide LocalGuardMiddleware (guard.py) already blocks foreign Host headers and
+foreign origins, and requires the per-install bearer token from non-browser clients.
+It deliberately lets *any* loopback origin through, so a browser request from some other
+local web app is treated like the Oprel UI.
 
-1. A per-process random token in the `X-Oprel-Token` header. Custom headers force
-   a CORS preflight, which untrusted origins fail.
-2. A Host header naming a loopback address when bound to loopback (blocks DNS rebinding).
-3. When bound to a non-loopback interface, an explicit opt-in
-   (OPREL_ALLOW_REMOTE_INTEGRATIONS=1), since a LAN-reachable token-bearing daemon
-   is a much larger attack surface.
+Endpoints that act with the user's stored credentials (integrations, tool execution,
+approvals) are stricter, via `require_local_token`:
 
-The web UI obtains the token from GET /auth/session, which only answers trusted origins.
+1. Browser requests must come from the daemon's own origin or the Next.js dev server
+   (plus OPREL_CORS_ORIGINS), not just any loopback origin.
+2. A token is always required: the per-process `X-Oprel-Token` (the web UI gets it from
+   GET /auth/session) or the per-install bearer token (CLI/SDK, see oprel.utils.auth).
+   Custom headers force a CORS preflight, which untrusted origins fail.
+3. When bound to a non-loopback interface, an explicit opt-in is needed
+   (OPREL_ALLOW_REMOTE_INTEGRATIONS=1).
 """
 
 from __future__ import annotations
 
 import hmac
 import ipaddress
-import json
 import os
 import secrets
 import threading
-from urllib.parse import urlsplit
 
 from fastapi import HTTPException, Request
 
 from oprel.core.config import Config
+from oprel.utils.auth import get_api_token
 from oprel.utils.redaction import register_secret
 
 TOKEN_HEADER = "X-Oprel-Token"
@@ -78,23 +79,15 @@ def remote_integrations_allowed() -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Origins (CORS + strict checks)
+# Origins (strict check for privileged endpoints)
 # ---------------------------------------------------------------------------
 
 def _env_list(name: str) -> list[str]:
     return [v.strip().rstrip("/") for v in os.environ.get(name, "").split(",") if v.strip()]
 
 
-def cors_allowed_origins() -> list[str]:
-    """Origins for CORSMiddleware. OPREL_CORS_ORIGINS extends (or with '*' opens) the list."""
-    extra = _env_list("OPREL_CORS_ORIGINS")
-    if "*" in extra:
-        return ["*"]
-    return list(DEFAULT_TRUSTED_ORIGINS) + extra
-
-
 def _strict_trusted_origins() -> set[str]:
-    """Never includes '*': privileged endpoints ignore a wildcard CORS setting."""
+    """Never includes '*': privileged endpoints ignore a wildcard setting."""
     return set(DEFAULT_TRUSTED_ORIGINS) | {o for o in _env_list("OPREL_CORS_ORIGINS") if o != "*"}
 
 
@@ -111,7 +104,7 @@ def is_trusted_browser_request(request: Request) -> bool:
     origin = (request.headers.get("origin") or "").rstrip("/")
     if origin:
         return _same_origin(origin, request) or origin in _strict_trusted_origins()
-    return request.headers.get("sec-fetch-site", "none") in ("none", "same-origin")
+    return (request.headers.get("sec-fetch-site") or "none") in ("none", "same-origin")
 
 
 # ---------------------------------------------------------------------------
@@ -144,17 +137,6 @@ def get_local_token() -> str:
         return _token
 
 
-def _host_is_allowed(host_header: str) -> bool:
-    if not is_loopback_bind():
-        return True  # user deliberately exposed the server; privileged routes are gated separately
-    if not host_header:
-        return True  # HTTP/1.0-style clients; DNS-rebinding attacks always carry a Host
-    hostname = urlsplit(f"//{host_header}").hostname or ""
-    if _is_loopback(hostname):
-        return True
-    return hostname.lower() in {h.lower() for h in _env_list("OPREL_ALLOWED_HOSTS")}
-
-
 async def require_local_token(request: Request) -> None:
     """FastAPI dependency for endpoints that act with the user's stored credentials."""
     if not is_loopback_bind() and not remote_integrations_allowed():
@@ -167,36 +149,19 @@ async def require_local_token(request: Request) -> None:
         )
     if not is_trusted_browser_request(request):
         raise HTTPException(status_code=403, detail="Untrusted origin")
-    supplied = request.headers.get(TOKEN_HEADER, "")
-    if not supplied or not hmac.compare_digest(supplied, get_local_token()):
+    if not (_session_token_ok(request) or _bearer_token_ok(request)):
         raise HTTPException(status_code=401, detail="Missing or invalid local API token")
 
 
-# ---------------------------------------------------------------------------
-# ASGI middleware: Host header guard (DNS-rebinding protection)
-# ---------------------------------------------------------------------------
+def _session_token_ok(request: Request) -> bool:
+    supplied = request.headers.get(TOKEN_HEADER, "")
+    return bool(supplied) and hmac.compare_digest(supplied, get_local_token())
 
-class HostGuardMiddleware:
-    def __init__(self, app):
-        self.app = app
 
-    async def __call__(self, scope, receive, send):
-        if scope["type"] in ("http", "websocket"):
-            host = ""
-            for key, value in scope.get("headers", []):
-                if key == b"host":
-                    host = value.decode("latin-1")
-                    break
-            if not _host_is_allowed(host):
-                if scope["type"] == "websocket":
-                    await send({"type": "websocket.close", "code": 1008})
-                    return
-                body = json.dumps({"detail": "Host not allowed"}).encode()
-                await send({
-                    "type": "http.response.start",
-                    "status": 403,
-                    "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode())],
-                })
-                await send({"type": "http.response.body", "body": body})
-                return
-        await self.app(scope, receive, send)
+def _bearer_token_ok(request: Request) -> bool:
+    auth = request.headers.get("authorization", "")
+    if not auth.lower().startswith("bearer "):
+        return False
+    expected = get_api_token(create=False)
+    return bool(expected) and hmac.compare_digest(auth[7:].strip(), expected)
+

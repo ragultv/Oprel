@@ -50,6 +50,18 @@ class TestAuthGuards:
         assert client.get("/integrations", headers={"X-Oprel-Token": "wrong"}).status_code == 401
         assert client.get("/integrations", headers={"X-Oprel-Token": token}).status_code == 200
 
+    def test_install_bearer_token_works_for_cli_clients(self, client):
+        # Non-browser client (no fetch metadata) using the per-install token from ~/.oprel/api_token
+        headers = {"Sec-Fetch-Site": "", "Authorization": "Bearer test-install-token-0123456789"}
+        assert client.get("/integrations", headers=headers).status_code == 200
+        bad = {"Sec-Fetch-Site": "", "Authorization": "Bearer wrong"}
+        assert client.get("/integrations", headers=bad).status_code == 401
+
+    def test_other_local_web_apps_cannot_use_integrations(self, client, token):
+        # LocalGuardMiddleware lets any loopback origin through; credential-using routes don't.
+        r = client.get("/integrations", headers={"X-Oprel-Token": token, "Origin": "http://localhost:8080"})
+        assert r.status_code == 403
+
     def test_token_from_foreign_origin_rejected(self, client, token):
         r = client.get("/integrations", headers={"X-Oprel-Token": token, "Origin": EVIL})
         assert r.status_code == 403
