@@ -816,11 +816,14 @@ export function ChatView({
     active_tokens?: number
     ssd_blocks?: number
     retrieved_blocks?: number
-    last_retrieval_ms?: number
-    vram_saved_gb?: number
+    active_restored_blocks?: number[]
+    last_restore_latency_ms?: number
+    session_block_file_bytes?: number
+    disk_free_bytes?: number
+    kv_cache_type?: string
     direct_io_enabled?: boolean
     status?: string
-    max_context?: number
+    max_context?: number | null
   } | null>(null)
 
   useEffect(() => {

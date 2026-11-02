@@ -63,6 +63,7 @@ typedef struct OprelStats {
     int32_t last_restore_pos_end;
     int32_t last_restore_kv_match;
     double  last_restore_latency_ms;
+    int32_t last_prefill_tokens;  // prompt tokens actually decoded by the last ingest (excludes reused prefix)
 } OprelStats;
 
 /**

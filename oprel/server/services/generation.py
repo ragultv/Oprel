@@ -180,6 +180,55 @@ def _extract_prompt_and_images(prompt: Any, images: list[str] | None) -> tuple[s
     return str(prompt), images, prompt
 
 
+def _record_generation_metrics(
+    conv_id: str | None,
+    backend_obj: Any,
+    start: float,
+    first_token: float | None,
+    end: float,
+    completion_tokens: int,
+    prompt_text: Any,
+) -> tuple[int, int, float]:
+    """Work out prompt and decode speed for one request and publish it to the Dev tab.
+
+    The native SSD backend reports exact token counts and timings in ``last_run``; other
+    backends fall back to client-side timing (first token -> last token) and word estimates.
+    Returns (prompt_tokens, completion_tokens, decode tok/s).
+    """
+    run = getattr(backend_obj, "last_run", None) or {}
+    if run.get("completion_tokens"):
+        completion_tokens = int(run["completion_tokens"])
+        prompt_tokens = int(run.get("prompt_tokens", 0))
+        prefill_tokens = int(run.get("prefill_tokens", prompt_tokens))
+        prompt_s = float(run.get("prompt_s", 0.0))
+        decode_s = float(run.get("decode_s", 0.0))
+        decode_tps = run.get("decode_tokens", 0) / decode_s if decode_s > 0 else 0.0
+    else:
+        prompt_tokens = int(len(str(prompt_text).split()) * 1.3)
+        prefill_tokens = prompt_tokens
+        if first_token is not None:
+            prompt_s = first_token - start
+            decode_s = end - first_token
+            decode_tps = (completion_tokens - 1) / decode_s if completion_tokens > 1 and decode_s > 0 else 0.0
+        else:
+            # Non-streaming: prompt and decode time cannot be separated.
+            prompt_s = 0.0
+            decode_tps = completion_tokens / (end - start) if end > start else 0.0
+
+    # Chat-title requests are tiny and would overwrite the speed of the reply the user just saw.
+    if not (conv_id and str(conv_id).startswith("ephemeral-title-")):
+        state = get_state()
+        state.last_gen_speed = round(decode_tps, 2)
+        state.last_prompt_speed = round(prefill_tokens / prompt_s, 2) if prompt_s > 0 and prefill_tokens > 0 else 0.0
+        state.last_prompt_tokens = prompt_tokens
+        state.last_completion_tokens = completion_tokens
+        state.last_ttft_ms = round(prompt_s * 1000, 1)
+        logger.info(
+            f"[Speed] prompt {prompt_tokens} tok ({prefill_tokens} processed) in {prompt_s:.2f}s"
+            f" | generated {completion_tokens} tok at {decode_tps:.2f} tok/s | total {end - start:.2f}s"
+        )
+    return prompt_tokens, completion_tokens, decode_tps
+
 
 async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult:
     state = get_state()
@@ -405,8 +454,12 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
     )
 
     model = state.models[resolved_model_id]
-    if is_native_ssd and conv_id:
+    backend_obj = None
+    if is_native_ssd:
         backend_obj = getattr(model, "backend", None) or getattr(getattr(model, "_client", None), "backend", None) or getattr(model, "_client", None)
+        if backend_obj is not None and hasattr(backend_obj, "last_run"):
+            backend_obj.last_run = {}  # so a failed run never reports the previous request's timings
+    if is_native_ssd and conv_id:
         if backend_obj and hasattr(backend_obj, "set_session"):
             backend_obj.set_session(conv_id)
 
@@ -452,22 +505,26 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
             full_resp = rag_html_block if locals().get('rag_html_block') else ""
             try:
                 start_gen_time = time_module.perf_counter()
+                first_token_time = None
                 token_count = 0
-                
+
                 if full_resp:
                     for char in full_resp:
                         yield f"data: {json.dumps(char)}\n\n"
 
                 async for token in _token_stream():
                     if token:
+                        if first_token_time is None:
+                            first_token_time = time_module.perf_counter()
                         full_resp += token
                         yield f"data: {json.dumps(token)}\n\n"
                         token_count += 1
 
                 end_gen_time = time_module.perf_counter()
                 duration = end_gen_time - start_gen_time
-                if duration > 0:
-                    state.last_gen_speed = token_count / duration
+                prompt_tokens, token_count, gen_tps = _record_generation_metrics(
+                    conv_id, backend_obj, start_gen_time, first_token_time, end_gen_time, token_count, full_prompt
+                )
 
                 if is_persistent:
                     db.add_message(conv_id, "user", raw_prompt)
@@ -501,13 +558,12 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
 
                 yield "data: [DONE]\n\n"
 
-                prompt_tokens_est = len(text_prompt.split()) * 1.3
                 db.add_inference_log(
                     model_id=resolved_model_id,
-                    prompt_tokens=int(prompt_tokens_est),
+                    prompt_tokens=prompt_tokens,
                     completion_tokens=token_count,
                     latency_ms=duration * 1000,
-                    tps=token_count / duration if duration > 0 else 0,
+                    tps=gen_tps,
                 )
             except Exception as exc:
                 yield f"data: [ERROR] {str(exc)}\n\n"
@@ -531,10 +587,9 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
     text = (rag_html_block if locals().get('rag_html_block') else "") + generated
 
     end_gen_time = time_module.perf_counter()
-    duration = end_gen_time - start_gen_time
-    if duration > 0:
-        token_est = len(text.split()) * 1.3
-        state.last_gen_speed = token_est / duration
+    _record_generation_metrics(
+        conv_id, backend_obj, start_gen_time, None, end_gen_time, int(len(generated.split()) * 1.3), full_prompt
+    )
 
     if is_persistent:
         db.add_message(conv_id, "user", raw_prompt)

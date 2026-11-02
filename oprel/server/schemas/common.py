@@ -26,6 +26,10 @@ class MetricsResponse(BaseModel):
     vram_total_mb: float | None = None
     vram_used_mb: float | None = None
     generation_speed: float = 0.0
+    prompt_speed: float = 0.0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    time_to_first_token_ms: float = 0.0
 
 
 class HealthResponse(BaseModel):

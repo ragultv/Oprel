@@ -215,6 +215,9 @@ app.include_router(preflight.router)
 
 def run_server(host: str = "127.0.0.1", port: int = 11435):
     import uvicorn
+    from oprel.utils.server_log import start_server_log
+
+    log_file = start_server_log()
 
     coral = "\033[38;2;230;115;90m"
     bold = "\033[1m"
@@ -236,5 +239,7 @@ def run_server(host: str = "127.0.0.1", port: int = 11435):
         print(f"{coral}{bold}   OPREL DAEMON{reset}\n")
     print(f" {Colors.GRAY}Oprel Daemon v0.7.1{Colors.RESET}\n")
     print(f"  Listening on: {Colors.CYAN}http://{host}:{port}{Colors.RESET}")
+    if log_file:
+        print(f"  Log file:     {Colors.CYAN}{log_file}{Colors.RESET}")
     print(f"  Press {Colors.YELLOW}Ctrl+C{Colors.RESET} to stop\n")
     uvicorn.run(app, host=host, port=port, log_level="warning", access_log=False)

@@ -75,3 +75,5 @@ oprel/webui-react/out/
 *.sqlite3
 
 oprel/native/build/
+# Server log files (oprel.utils.server_log)
+/logs/

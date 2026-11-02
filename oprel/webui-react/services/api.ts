@@ -44,7 +44,13 @@ export interface Metrics {
   gpu_usage: number | null;
   vram_total_mb: number | null;
   vram_used_mb: number | null;
+  /** Decode speed of the last reply in tok/s (first to last output token, prompt time excluded). */
   generation_speed: number;
+  /** Prompt processing speed of the last reply in tok/s (only newly processed tokens). */
+  prompt_speed?: number;
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  time_to_first_token_ms?: number;
 }
 
 export interface UserSettings {

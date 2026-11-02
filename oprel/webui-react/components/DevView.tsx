@@ -270,9 +270,13 @@ export function DevView() {
           />
           <MetricCard
                icon={<Zap size={12} />}
-               label="Current Speed"
+               label="Generation Speed"
                value={`${speedVal.toFixed(1)}`}
-               sub="tokens per second"
+               sub={
+                 metrics?.completion_tokens
+                   ? `tok/s · ${metrics.completion_tokens} out · prompt ${(metrics.prompt_speed ?? 0).toFixed(0)} tok/s · 1st token ${((metrics.time_to_first_token_ms ?? 0) / 1000).toFixed(1)}s`
+                   : "tok/s (prompt time excluded)"
+               }
                color="text-green-400"
                data={speedData}
           />

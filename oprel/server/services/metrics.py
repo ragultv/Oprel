@@ -24,4 +24,8 @@ def get_metrics() -> dict[str, float | str | None]:
         "vram_total_mb": vram["total_mb"] if vram else None,
         "vram_used_mb": vram["used_mb"] if vram else None,
         "generation_speed": state.last_gen_speed,
+        "prompt_speed": state.last_prompt_speed,
+        "prompt_tokens": state.last_prompt_tokens,
+        "completion_tokens": state.last_completion_tokens,
+        "time_to_first_token_ms": state.last_ttft_ms,
     }

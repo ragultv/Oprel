@@ -1,6 +1,7 @@
 import ctypes
 import os
 import sys
+import time
 
 # Allow OpenMP runtime coexistence on Windows (PyTorch libiomp5 + llama libomp140)
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
@@ -31,6 +32,7 @@ class OprelStats(ctypes.Structure):
         ("last_restore_pos_end", ctypes.c_int32),
         ("last_restore_kv_match", ctypes.c_int32),
         ("last_restore_latency_ms", ctypes.c_double),
+        ("last_prefill_tokens", ctypes.c_int32),
     ]
 
 class LlamaSSDNativeBackend:
@@ -93,6 +95,10 @@ class LlamaSSDNativeBackend:
 
         self.model_handle = None
         self.context_handle = None
+        self.last_run: Dict[str, Any] = {}
+        self.current_session_id: Optional[str] = None
+        self.ssd_cache_dir: Optional[str] = None
+        self.retrieval_top_k = 2
 
     def _setup_signatures(self):
         self.dll.oprel_init.argtypes = [ctypes.c_char_p]
@@ -212,6 +218,8 @@ class LlamaSSDNativeBackend:
         if not ssd_cache_dir:
             ssd_cache_dir = os.path.join(Path.home(), ".cache", "oprel", "ssd_kv")
         os.makedirs(ssd_cache_dir, exist_ok=True)
+        self.ssd_cache_dir = ssd_cache_dir
+        self.retrieval_top_k = retrieval_top_k
 
         self.context_handle = self.dll.oprel_create_context(
             self.model_handle,
@@ -293,6 +301,7 @@ class LlamaSSDNativeBackend:
             "last_restore_pos_end": s.last_restore_pos_end,
             "last_restore_kv_match": s.last_restore_kv_match,
             "last_restore_latency_ms": round(s.last_restore_latency_ms, 2),
+            "last_prefill_tokens": s.last_prefill_tokens,
         }
 
     def restore_kv_state(self, block_index: int, refresh_logits: bool = True) -> bool:
@@ -330,7 +339,10 @@ class LlamaSSDNativeBackend:
         """
         if not self.context_handle or not session_id:
             return False
-        return bool(self.dll.oprel_set_session(self.context_handle, session_id.encode("utf-8")))
+        ok = bool(self.dll.oprel_set_session(self.context_handle, session_id.encode("utf-8")))
+        if ok:
+            self.current_session_id = session_id
+        return ok
 
     def save_session(self) -> bool:
         """
@@ -456,20 +468,45 @@ class LlamaSSDNativeBackend:
         ignore_eos: bool = False,
     ) -> Generator[str, None, None]:
         limit = max_new_tokens if max_new_tokens and max_new_tokens > 0 else 4096
-        if prompt:
-            self.ingest(prompt, reset=True)
-        for _ in range(limit):
-            token = self.generate_next_token(
-                temperature=temperature,
-                top_p=top_p,
-                repeat_penalty=repeat_penalty,
-                frequency_penalty=frequency_penalty,
-                presence_penalty=presence_penalty,
-            )
-            if token < 0 or (not ignore_eos and self.is_eog(token)):
-                break
-            piece = self.token_to_text(token)
-            yield piece
+        t_start = time.perf_counter()
+        prompt_tokens = self.ingest(prompt, reset=True) if prompt else 0
+        prefill_tokens = self.get_stats().get("last_prefill_tokens", prompt_tokens) if prompt else 0
+        completion_tokens = 0
+        t_first = None
+        # Timings of the last run, read by the server for the Dev tab speed metrics.
+        # ingest returns before the GPU finishes the last prompt chunk (CUDA is asynchronous), so the
+        # first sampled token absorbs that work: prompt time runs until the first token, and decode
+        # speed is measured over the tokens after it.
+        self.last_run = {
+            "prompt_tokens": prompt_tokens,
+            "prefill_tokens": prefill_tokens,
+            "prompt_s": 0.0,
+            "completion_tokens": 0,
+            "decode_tokens": 0,
+            "decode_s": 0.0,
+        }
+        try:
+            for _ in range(limit):
+                token = self.generate_next_token(
+                    temperature=temperature,
+                    top_p=top_p,
+                    repeat_penalty=repeat_penalty,
+                    frequency_penalty=frequency_penalty,
+                    presence_penalty=presence_penalty,
+                )
+                if t_first is None:
+                    t_first = time.perf_counter()
+                if token < 0 or (not ignore_eos and self.is_eog(token)):
+                    break
+                completion_tokens += 1
+                piece = self.token_to_text(token)
+                yield piece
+        finally:
+            t_end = time.perf_counter()
+            self.last_run["prompt_s"] = (t_first or t_end) - t_start
+            self.last_run["completion_tokens"] = completion_tokens
+            self.last_run["decode_tokens"] = max(0, completion_tokens - 1)
+            self.last_run["decode_s"] = (t_end - t_first) if t_first else 0.0
 
     def close(self):
         if self.context_handle:

@@ -77,59 +77,132 @@ async def put_runtime_settings(req: RuntimeSettingsRequest):
     return {"ctx_size": saved.get("ctx_size"), "kv_cache_type": saved.get("kv_cache_type", "auto"), "unloaded": unloaded}
 
 
+# Tokens per archived block once generation is running; prefill may archive up to 1024 at once.
+SSD_BLOCK_TOKENS = 512
+
+
+def _ssd_kv_type() -> str:
+    # Mirrors oprel_create_context: unknown values fall back to q4_0.
+    kv = os.environ.get("OPREL_SSD_KV_TYPE", "q4_0").strip().lower()
+    return kv if kv in ("q4_0", "q8_0", "f16") else "q4_0"
+
+
+def _dir_bytes(path: str) -> int:
+    total = 0
+    try:
+        for entry in os.scandir(path):
+            if entry.is_file(follow_symlinks=False):
+                total += entry.stat().st_size
+            elif entry.is_dir(follow_symlinks=False):
+                total += _dir_bytes(entry.path)
+    except OSError:
+        pass
+    return total
+
+
+def _file_size(path: str) -> int:
+    try:
+        return os.path.getsize(path)
+    except OSError:
+        return 0
+
+
+def _disk_info(ssd_dir: str) -> dict:
+    import shutil
+    from pathlib import Path
+
+    probe = Path(ssd_dir)
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    try:
+        usage = shutil.disk_usage(probe)
+        free, total = usage.free, usage.total
+    except OSError:
+        free = total = 0
+    return {"ssd_dir": ssd_dir, "ssd_dir_bytes": _dir_bytes(ssd_dir), "disk_free_bytes": free, "disk_total_bytes": total}
+
+
 @router.get("/v1/system/kv-cache-stats")
 async def get_kv_cache_stats():
-    """Telemetry and status for the 4-bit KV Cache SSD Block Store & Quest retrieval."""
+    """Live telemetry of the native SSD KV-cache backend. Every value is measured, none is a constant."""
+    from pathlib import Path
     from oprel.server.domain.state import get_state
-    state = get_state()
 
-    # If any loaded model uses the native SSD backend, return its live telemetry
-    for m_id, model in state.models.items():
-        if hasattr(model, "backend") and hasattr(model.backend, "get_stats"):
-            try:
-                stats = model.backend.get_stats()
-                return {
-                    "engine": "Native C++ SSD KV-Store (oprel_llama_ssd.dll)",
-                    "precision": "Q4_0 with Win32 Direct-I/O & Quest Sparse Retrieval",
-                    "model_id": m_id,
-                    "max_context": getattr(model, "max_ssd_context", 131072),
-                    "active_context": getattr(model, "active_ctx_size", 4096),
-                    "total_tokens": stats.get("total_tokens", 0),
-                    "active_tokens": stats.get("active_tokens", 0),
-                    "ssd_blocks": stats.get("ssd_blocks", 0),
-                    "retrieved_blocks": stats.get("retrieved_blocks", 0),
-                    "active_restored_blocks": stats.get("active_restored_blocks", []),
-                    "last_retrieval_ms": stats.get("last_retrieval_ms", 0.0),
-                    "block_tokens": 256,
-                    "summary_tokens": 16,
-                    "bytes_per_token_head": 160,
-                    "bits_per_stored_value": 5.0,
-                    "io_reduction_factor": 16.4,
-                    "vram_active_mb": 28.5,
-                    "vram_saved_gb": 3.82,
-                    "ram_index_mb": 64.0,
-                    "ssd_page_aligned": True,
-                    "direct_io_enabled": os.name == "nt",
-                    "status": "active_streaming",
-                }
-            except Exception as e:
-                pass
+    state = get_state()
+    default_dir = str(Path.home() / ".cache" / "oprel" / "ssd_kv")
+
+    for m_id, model in list(state.models.items()):
+        backend = getattr(model, "backend", None)
+        if backend is None or not hasattr(backend, "get_stats"):
+            continue
+        try:
+            stats = backend.get_stats()
+        except Exception:
+            continue
+        if not stats:
+            continue
+
+        ssd_dir = getattr(backend, "ssd_cache_dir", None) or default_dir
+        session_id = getattr(backend, "current_session_id", None)
+        total_tokens = stats.get("total_tokens", 0)
+        active_tokens = stats.get("active_tokens", 0)
+        evicted_tokens = max(0, total_tokens - active_tokens)
+
+        block_file_bytes = _file_size(os.path.join(ssd_dir, f"{session_id}.kv")) if session_id else 0
+        session_file_bytes = (
+            _file_size(os.path.join(ssd_dir, "sessions", f"session_{session_id}.bin")) if session_id else 0
+        )
+        # Measured KV size per token: archived blocks if any, else the saved live window of this session.
+        bytes_per_token = None
+        if block_file_bytes and evicted_tokens:
+            bytes_per_token = round(block_file_bytes / evicted_tokens)
+        elif session_file_bytes and total_tokens:
+            bytes_per_token = round(session_file_bytes / total_tokens)
+
+        disk = _disk_info(ssd_dir)
+        kv_type = _ssd_kv_type()
+        return {
+            "engine": "Native C++ SSD KV-Store (oprel_llama_ssd.dll)",
+            "status": "active",
+            "model_id": m_id,
+            "kv_cache_type": kv_type,
+            "precision": f"{kv_type.upper()} KV cache, {'Win32 Direct I/O' if os.name == 'nt' else 'buffered I/O'}",
+            "direct_io_enabled": os.name == "nt",
+            "block_tokens": SSD_BLOCK_TOKENS,
+            "retrieval_top_k": getattr(backend, "retrieval_top_k", None),
+            "max_context": getattr(model, "max_ssd_context", None),
+            "active_context": getattr(model, "active_ctx_size", None),
+            "session_id": session_id,
+            "total_tokens": total_tokens,
+            "active_tokens": active_tokens,
+            "evicted_tokens": evicted_tokens,
+            "ssd_blocks": stats.get("ssd_blocks", 0),
+            "retrieved_blocks": stats.get("retrieved_blocks", 0),
+            "active_restored_blocks": stats.get("active_restored_blocks", []),
+            "last_prefill_tokens": stats.get("last_prefill_tokens", 0),
+            "last_retrieval_ms": stats.get("last_retrieval_ms", 0.0),
+            "last_restore_latency_ms": stats.get("last_restore_latency_ms", 0.0),
+            "last_read_ms": stats.get("last_read_ms", 0.0),
+            "last_set_data_ms": stats.get("last_set_data_ms", 0.0),
+            "read_throughput_mb_s": stats.get("read_throughput_mb_s", 0.0),
+            "ssd_bytes_written": stats.get("total_ssd_bytes_written", 0),
+            "ssd_bytes_read": stats.get("total_ssd_bytes_read", 0),
+            "archive_validation_failures": stats.get("archive_validation_failures", 0),
+            "session_block_file_bytes": block_file_bytes,
+            "session_file_bytes": session_file_bytes,
+            "bytes_per_token": bytes_per_token,
+            "tokens_fit_in_free_space": (disk["disk_free_bytes"] // bytes_per_token) if bytes_per_token else None,
+            **disk,
+        }
 
     return {
-        "engine": "4-bit KV Cache SSD Store (Q4KVStore)",
-        "precision": "Q4 (4-bit asymmetric per-channel keys, per-token values)",
-        "max_context": 128000,
-        "block_tokens": 256,
-        "summary_tokens": 16,
-        "bytes_per_token_head": 160,
-        "bits_per_stored_value": 5.0,
-        "io_reduction_factor": 16.4,
-        "vram_active_mb": 28.5,
-        "vram_saved_gb": 3.82,
-        "ram_index_mb": 64.0,
-        "ssd_page_aligned": True,
+        "engine": None,
+        "status": "inactive",
+        "message": "No model is loaded with the SSD KV-cache backend.",
+        "kv_cache_type": _ssd_kv_type(),
+        "block_tokens": SSD_BLOCK_TOKENS,
         "direct_io_enabled": os.name == "nt",
-        "status": "ready",
+        **_disk_info(default_dir),
     }
 
 

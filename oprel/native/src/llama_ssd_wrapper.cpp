@@ -41,7 +41,9 @@ bool load_llama_library(const char* dll_path) {
     if (g_dll_handle) return true;
 
 #ifdef _WIN32
-    HMODULE h = LoadLibraryA(dll_path);
+    // Resolve dependencies (ggml-base.dll, libomp140.x86_64.dll) from llama.dll's own directory first,
+    // so a different libomp in System32 cannot shadow the bundled one (ERROR_PROC_NOT_FOUND).
+    HMODULE h = LoadLibraryExA(dll_path, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
     if (!h) {
         // Try loading without full path if inside system path
         h = LoadLibraryA("llama.dll");
@@ -61,7 +63,7 @@ bool load_llama_library(const char* dll_path) {
         *last_slash = '\0';
         char ggml_path[1024];
         snprintf(ggml_path, sizeof(ggml_path), "%s\\ggml.dll", dir);
-        HMODULE h_ggml = LoadLibraryA(ggml_path);
+        HMODULE h_ggml = LoadLibraryExA(ggml_path, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
         if (h_ggml) {
             typedef void (*fn_load_path)(const char*);
             typedef void (*fn_load)(void);
@@ -1064,6 +1066,7 @@ static int internal_ingest_prompt(
 
     // Ingest remaining tokens in parallel chunks of 512 for optimal GPU prefill without memory spikes
     const int CHUNK_SIZE = 512;
+    const int prefill_start = processed;
 
     while (processed < n_tokens) {
         int count = std::min(CHUNK_SIZE, n_tokens - processed);
@@ -1136,6 +1139,7 @@ static int internal_ingest_prompt(
     ctx->stats.total_tokens = ctx->total_tokens;
     ctx->stats.active_tokens = ctx->active_tokens;
     ctx->stats.ssd_blocks = (int)ctx->ssd_blocks.size();
+    ctx->stats.last_prefill_tokens = processed - prefill_start;
 
     return n_tokens;
 }

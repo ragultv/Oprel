@@ -17,8 +17,12 @@ export interface ContextBreakdownProps {
     active_tokens?: number
     ssd_blocks?: number
     retrieved_blocks?: number
-    last_retrieval_ms?: number
-    vram_saved_gb?: number
+    active_restored_blocks?: number[]
+    last_restore_latency_ms?: number
+    session_block_file_bytes?: number
+    disk_free_bytes?: number
+    kv_cache_type?: string
+    max_context?: number | null
     direct_io_enabled?: boolean
     status?: string
   } | null
@@ -26,6 +30,18 @@ export interface ContextBreakdownProps {
   onClose?: () => void
   className?: string
   showDescription?: boolean
+}
+
+function formatBytes(n?: number): string {
+  if (!n || n <= 0) return "0 B"
+  const units = ["B", "KB", "MB", "GB", "TB"]
+  let i = 0
+  let v = n
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024
+    i++
+  }
+  return `${v.toFixed(v >= 100 || i === 0 ? 0 : 1)} ${units[i]}`
 }
 
 export function ContextBreakdownCard({
@@ -150,7 +166,7 @@ export function ContextBreakdownCard({
         </div>
 
         {/* SSD Hardware Telemetry Box */}
-        {kvStats && (
+        {kvStats?.status === "active" && (
           <div className="mt-3.5 pt-3 border-t border-white/5 space-y-2">
             <div className="flex items-center justify-between text-[11px]">
               <span className="text-muted-foreground font-medium flex items-center gap-1.5">
@@ -158,38 +174,41 @@ export function ContextBreakdownCard({
                 SSD Stored Blocks:
               </span>
               <span className="font-mono text-white font-semibold">
-                {kvStats.ssd_blocks ?? 0} blocks ({((kvStats.ssd_blocks ?? 0) * 40).toLocaleString()} KB)
+                {kvStats.ssd_blocks ?? 0} blocks ({formatBytes(kvStats.session_block_file_bytes)})
               </span>
             </div>
             <div className="flex items-center justify-between text-[11px]">
               <span className="text-muted-foreground font-medium flex items-center gap-1.5">
                 <span className="w-1.5 h-1.5 rounded-full bg-blue-400" />
-                Quest Sparse Active:
+                Restored into VRAM:
               </span>
               <span className="font-mono text-white font-semibold">
-                {kvStats.retrieved_blocks ?? (kvStats.status === "active_streaming" ? 4 : 0)} in VRAM (~{kvStats.last_retrieval_ms ? `${kvStats.last_retrieval_ms.toFixed(1)}ms` : "< 1.5ms"})
+                {kvStats.active_restored_blocks?.length ?? 0} blocks
+                {kvStats.last_restore_latency_ms ? ` (last ${kvStats.last_restore_latency_ms.toFixed(0)} ms)` : ""}
               </span>
             </div>
             <div className="flex items-center justify-between text-[11px]">
               <span className="text-muted-foreground font-medium flex items-center gap-1.5">
                 <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
-                VRAM Saved vs FP16:
+                Disk free:
               </span>
-              <span className="font-mono text-emerald-400 font-semibold">
-                {kvStats.vram_saved_gb ? `${kvStats.vram_saved_gb} GB` : "3.82 GB"}
-              </span>
+              <span className="font-mono text-emerald-400 font-semibold">{formatBytes(kvStats.disk_free_bytes)}</span>
             </div>
           </div>
         )}
 
-        {/* Footer badge: 4-bit SSD Offload indicator */}
-        <div className="mt-3.5 pt-2.5 border-t border-white/5 flex items-center justify-between text-[10px] text-muted-foreground">
-          <span className="flex items-center gap-1.5 font-medium text-emerald-400">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-            {kvStats?.direct_io_enabled ? "Win32 Direct I/O Active" : "4-bit NVMe Offload Active"}
-          </span>
-          <span className="font-mono text-muted-foreground/80">Max: 128k (Quest sparse)</span>
-        </div>
+        {/* Footer badge: SSD offload indicator */}
+        {kvStats?.status === "active" && (
+          <div className="mt-3.5 pt-2.5 border-t border-white/5 flex items-center justify-between text-[10px] text-muted-foreground">
+            <span className="flex items-center gap-1.5 font-medium text-emerald-400">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+              {kvStats.direct_io_enabled ? "Win32 Direct I/O" : "SSD offload"} · {kvStats.kv_cache_type ?? "q4_0"} KV
+            </span>
+            <span className="font-mono text-muted-foreground/80">
+              Max: {kvStats.max_context ? kvStats.max_context.toLocaleString() : "—"} tokens
+            </span>
+          </div>
+        )}
       </div>
     </div>
   )
