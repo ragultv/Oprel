@@ -44,6 +44,16 @@ class ColoredFormatter(logging.Formatter):
         return super().format(record)
 
 
+def _attach_redaction(handler: logging.Handler) -> None:
+    """Scrub credentials from every record this handler emits."""
+    try:
+        from oprel.utils.redaction import attach_filter
+
+        attach_filter(handler)
+    except Exception:
+        pass
+
+
 def get_logger(name: str) -> logging.Logger:
     """
     Get or create a logger instance.
@@ -64,6 +74,7 @@ def get_logger(name: str) -> logging.Logger:
         console_handler = logging.StreamHandler(sys.stderr)
         console_handler.setLevel(_LOG_LEVEL)
         console_handler.setFormatter(ColoredFormatter(use_color=True))
+        _attach_redaction(console_handler)
         logger.addHandler(console_handler)
 
         # Prevent propagation to root logger
@@ -120,6 +131,7 @@ def enable_file_logging(log_file: Optional[Path] = None) -> None:
             "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
         )
     )
+    _attach_redaction(file_handler)
 
     for name in logging.Logger.manager.loggerDict:
         if name.startswith("oprel"):

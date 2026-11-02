@@ -1,5 +1,7 @@
 export type View = "chat" | "images" | "models" | "dev" | "knowledge"
 
+import type { ToolEvent } from "./integrations"
+
 export type MessageRole = "user" | "assistant"
 
 export interface ChatMessage {
@@ -12,6 +14,8 @@ export interface ChatMessage {
     id: string
     name: string
   }
+  /** Tool calls / approvals / results that produced this assistant reply */
+  toolEvents?: ToolEvent[]
 }
 
 export interface Conversation {

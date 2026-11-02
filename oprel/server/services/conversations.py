@@ -17,7 +17,7 @@ def create_conversation(model_id: str, title: str = "New Chat") -> dict[str, str
 
 
 def get_conversation(conversation_id: str) -> list[dict[str, str]]:
-    messages = db.get_conversation_messages(conversation_id)
+    messages = db.get_conversation_messages(conversation_id, include_metadata=True)
     if not messages:
         return []
     return messages

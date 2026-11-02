@@ -7,9 +7,10 @@ import {
   Settings2, Cpu, SlidersHorizontal, ChevronLeft,
   Plus, Trash2, RefreshCw, Eye, EyeOff, Check, X,
   Loader2, Zap, ChevronDown, ChevronUp, RotateCcw,
-  Globe, KeyRound, Server, BookOpen, Save, Sparkles, Lock,
+  Globe, KeyRound, Server, BookOpen, Save, Sparkles, Lock, Plug,
 } from 'lucide-react'
 import { useApp } from '@/services/context'
+import IntegrationsPanel from '@/components/IntegrationsPanel'
 import { type Skill } from '@/services/skills'
 import {
   type ProviderConfig, type ProviderType,
@@ -51,6 +52,7 @@ const emptySkill: Skill = {
 const TABS = [
   { id: 'config', label: 'Generation', icon: SlidersHorizontal },
   { id: 'providers', label: 'AI Providers', icon: Globe },
+  { id: 'integrations', label: 'Integrations', icon: Plug },
   { id: 'skills', label: 'Skills', icon: Sparkles },
 ] as const
 
@@ -795,6 +797,9 @@ export default function SettingsPage() {
               )}
             </>
           )}
+
+          {/* ── Integrations ── */}
+          {activeTab === 'integrations' && <IntegrationsPanel />}
 
           {/* ── Skills Tab ── */}
           {activeTab === 'skills' && (

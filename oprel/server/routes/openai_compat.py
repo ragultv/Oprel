@@ -21,10 +21,8 @@ def _is_webui_request(referer: str) -> bool:
     return "/gui/" in referer or referer.endswith("/gui")
 
 
-async def _handle_chat_completions(request: OpenAIChatRequest, referer: str):
-    is_webui_request = _is_webui_request(referer)
-
-    # Apply skill system prompt injections and overrides if active
+def _apply_skill(request: OpenAIChatRequest) -> None:
+    """Apply skill system prompt injections and overrides if active."""
     if request.skill and "id" in request.skill:
         try:
             skill_info = db.get_skill(request.skill["id"])
@@ -47,6 +45,11 @@ async def _handle_chat_completions(request: OpenAIChatRequest, referer: str):
                     request.max_tokens = skill_info["max_tokens"]
         except Exception as exc:
             logger.warning(f"Failed to apply skill '{request.skill.get('id')}' configurations: {exc}")
+
+
+async def _handle_chat_completions(request: OpenAIChatRequest, referer: str):
+    is_webui_request = _is_webui_request(referer)
+    _apply_skill(request)
 
     p_id = request.model
     m_name = None
@@ -265,6 +268,14 @@ async def _handle_chat_completions(request: OpenAIChatRequest, referer: str):
 @router.post("/v1/chat/completions")
 async def v1_chat_completions(request: OpenAIChatRequest, http_request: Request):
     referer = http_request.headers.get("referer", "")
+    if request.enable_tools is not None:
+        from oprel.server.security.local_auth import require_local_token
+        from oprel.server.tools.chat import handle_tool_chat
+
+        # Tool runs act with the user's stored credentials: same protection as /integrations.
+        await require_local_token(http_request)
+        _apply_skill(request)
+        return await handle_tool_chat(request, _is_webui_request(referer))
     return await _handle_chat_completions(request, referer)
 
 

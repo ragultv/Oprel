@@ -21,7 +21,12 @@ from oprel.server.domain.state import get_state
 from oprel.server.services.context import CONFIG, logger, kill_orphaned_backends, write_daemon_pid
 from oprel.server.services.model_state import cleanup_models, monitor_idle_models, IDLE_TIMEOUT_SECONDS
 from oprel.server.services.webui import UIStaticFiles, get_webui_dir
+from oprel.server.security.local_auth import HostGuardMiddleware, cors_allowed_origins, set_bind_host
+from oprel.utils.redaction import install_log_redaction
 from oprel.server.routes import (
+    auth,
+    integrations,
+    tool_approvals,
     health,
     metrics,
     knowledge,
@@ -131,6 +136,14 @@ async def lifespan(app: FastAPI):
         logger.warning(f"Error during metadata migration: {exc}")
 
     write_daemon_pid()
+    install_log_redaction()
+
+    try:
+        from oprel.integrations.registry import load_builtin_integrations
+
+        load_builtin_integrations()
+    except Exception as exc:
+        logger.warning(f"Failed to load integrations: {exc}")
 
     state.cleanup_task = asyncio.create_task(monitor_idle_models())
     logger.info("Started idle model monitoring task")
@@ -156,14 +169,19 @@ signal.signal(signal.SIGTERM, _signal_handler)
 app = FastAPI(lifespan=lifespan, title="Oprel Daemon")
 app.add_middleware(GinStyleLoggingMiddleware)
 app.add_middleware(StripApiPrefixMiddleware)
+_cors_origins = cors_allowed_origins()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    # Same-origin requests (the bundled UI under /gui) need no CORS. Only the Next.js
+    # dev server and origins listed in OPREL_CORS_ORIGINS may read responses cross-origin.
+    allow_origins=_cors_origins,
+    allow_credentials="*" not in _cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["X-Conversation-ID"],
 )
+# Outermost: reject non-loopback Host headers before anything else runs (DNS rebinding).
+app.add_middleware(HostGuardMiddleware)
 
 webui_dir = get_webui_dir()
 if webui_dir:
@@ -179,6 +197,9 @@ if webui_dir:
 if webui_dir:
     app.mount("/gui", UIStaticFiles(directory=webui_dir, html=True), name="gui")
 
+app.include_router(auth.router)
+app.include_router(integrations.router)
+app.include_router(tool_approvals.router)
 app.include_router(health.router)
 app.include_router(metrics.router)
 app.include_router(knowledge.router)
@@ -198,6 +219,8 @@ app.include_router(ocr.router)
 
 def run_server(host: str = "127.0.0.1", port: int = 11435):
     import uvicorn
+
+    set_bind_host(host)
 
     coral = "\033[38;2;230;115;90m"
     bold = "\033[1m"

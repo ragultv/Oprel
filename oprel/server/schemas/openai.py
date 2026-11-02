@@ -7,7 +7,11 @@ from pydantic import BaseModel
 
 class OpenAIChatMessage(BaseModel):
     role: str
-    content: Any
+    content: Any = None
+    # Tool-calling fields (OpenAI shape)
+    tool_calls: list[dict[str, Any]] | None = None
+    tool_call_id: str | None = None
+    name: str | None = None
 
 
 class OpenAIChatRequest(BaseModel):
@@ -23,6 +27,9 @@ class OpenAIChatRequest(BaseModel):
     thinking: bool = False
     rag: bool = False
     skill: dict | None = None
+    # Oprel extension: run server-side integration tools for this turn.
+    # None = tools off; [] or ["*"] = every connected integration; ["azure_devops"] = only those.
+    enable_tools: list[str] | None = None
 
 
 class OpenAICompletionRequest(BaseModel):

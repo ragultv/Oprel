@@ -29,6 +29,7 @@ import {
   ChevronRight,
   Film,
   Layout,
+  Wrench,
 } from "lucide-react"
 import { useRouter } from "next/navigation"
 import ReactMarkdown from "react-markdown"
@@ -48,6 +49,8 @@ import { SkillPicker } from "@/components/SkillPicker"
 import { SkillChip } from "@/components/SkillChip"
 import { Skill, recordSkillUsage, ALL_SKILLS } from "@/services/skills"
 import { CanvasPanel, type CanvasDocument } from "@/components/CanvasPanel"
+import ToolActivity, { type ApprovalDecisionHandler } from "@/components/ToolActivity"
+import { IntegrationsAPI, decideApproval, toolChatStream, type ToolEvent } from "@/services/integrations"
 
 function TypingIndicator() {
   return (
@@ -297,11 +300,13 @@ function MessageBubble({
   isStreaming = false,
   onOpenArtifact,
   onOpenCanvas,
+  onToolDecision,
 }: {
   message: ChatMessage
   isStreaming?: boolean
   onOpenArtifact?: (artifact: Artifact) => void
   onOpenCanvas?: () => void
+  onToolDecision?: ApprovalDecisionHandler
 }) {
   const { skills } = useApp()
   const isUser = message.role === "user"
@@ -584,6 +589,9 @@ function MessageBubble({
           <img src="/gui/logo1.png" alt="AI" className="w-full h-full object-cover" />
         </div>
         <div className="flex-1 min-w-0">
+          {message.toolEvents && message.toolEvents.length > 0 && (
+            <ToolActivity events={message.toolEvents} onDecision={onToolDecision} />
+          )}
           {processedContent}
         </div>
       </div>
@@ -658,6 +666,10 @@ export function ChatView({
   const [modelDropdown, setModelDropdown] = useState(false)
   const [showTyping, setShowTyping] = useState(false)
   const [streamingMessage, setStreamingMessage] = useState<string | null>(null)
+  // Integration tools (Settings → Integrations). Off by default; per-session toggle.
+  const [toolsEnabled, setToolsEnabled] = useState(false)
+  const [connectedIntegrations, setConnectedIntegrations] = useState<string[]>([])
+  const [streamingToolEvents, setStreamingToolEvents] = useState<ToolEvent[]>([])
   const [selectedImage, setSelectedImage] = useState<string | null>(null)
   const [selectedImageName, setSelectedImageName] = useState<string | null>(null)
   const [activeArtifact, setActiveArtifact] = useState<Artifact | null>(null)
@@ -675,6 +687,16 @@ export function ChatView({
   })
   // abort controller for stop-generation
   const abortRef = useRef<AbortController | null>(null)
+
+  // ── Which integrations are connected (decides whether the Tools toggle shows) ──
+  useEffect(() => {
+    IntegrationsAPI.list()
+      .then(conns => setConnectedIntegrations(
+        conns.filter(c => c.enabled && c.status !== 'expired').map(c => c.integration_type),
+      ))
+      .catch(() => setConnectedIntegrations([]))
+  }, [])
+  const toolsActive = toolsEnabled && connectedIntegrations.length > 0
 
   // ── Abort ongoing generation when switching conversations ───────────────
   useEffect(() => {
@@ -865,6 +887,7 @@ export function ChatView({
           role: m.role,
           content: content,
           timestamp: new Date(),
+          toolEvents: m.metadata?.tool_events,
         };
       });
       setConversationMessages(activeConversationId, history);
@@ -1053,6 +1076,9 @@ export function ChatView({
     const wasCanvasCreation = isCanvasCreation;
 
     let currentResponse = '';
+    let toolEvents: ToolEvent[] = [];
+    // Tools and canvas mode both rewrite the reply format; canvas wins if both are on.
+    const wasToolMode = toolsActive && !canvasMode;
     let effectiveConvId = finalConvId;
     const isFirstMessage = !activeConvRef.current?.messages?.length;
     const abort = new AbortController();
@@ -1062,7 +1088,41 @@ export function ChatView({
       const apiModelId = activeModelId?.includes('::') ? activeModelId.split('::')[0] : activeModelId;
       const isExternal = activeModel?.category === 'external';
 
-      if (isExternal && activeModelId?.includes('::')) {
+      if (wasToolMode) {
+        // Local and cloud models both go through /v1/chat/completions here; the server
+        // runs the tool loop and resolves "provider::model" ids itself.
+        await toolChatStream(
+          {
+            model: activeModelId,
+            messages: contextMessages,
+            conversation_id: finalConvId,
+            temperature: settings.temperature,
+            max_tokens: settings.maxTokens,
+            top_p: settings.topP,
+            skill: userMsg.skill,
+          },
+          connectedIntegrations,
+          {
+            onToken: (token) => {
+              if (abort.signal.aborted) return;
+              setShowTyping(false);
+              currentResponse += token;
+              setStreamingMessage(currentResponse);
+            },
+            onEvent: (event) => {
+              if (abort.signal.aborted || event.type === 'done') return;
+              setShowTyping(false);
+              toolEvents = [...toolEvents, event];
+              setStreamingToolEvents(toolEvents);
+            },
+            onConversationId: (newId) => {
+              loadedConvIdRef.current = newId;
+              effectiveConvId = newId;
+            },
+          },
+          abort.signal,
+        );
+      } else if (isExternal && activeModelId?.includes('::')) {
         const [providerId, realModelId] = activeModelId.split('::');
         const provider = providers.find((p) => p.id === providerId);
         if (!provider) {
@@ -1172,7 +1232,7 @@ export function ChatView({
         );
       }
 
-      if (currentResponse.trim()) {
+      if (currentResponse.trim() || toolEvents.length > 0) {
         let chatContent = currentResponse;
         if (wasCanvasMode) {
           const sepIdx = currentResponse.indexOf('<!--CHAT-->');
@@ -1208,6 +1268,7 @@ export function ChatView({
           role: 'assistant',
           content: chatContent,
           timestamp: new Date(),
+          toolEvents: toolEvents.length > 0 ? toolEvents : undefined,
         });
 
         if (effectiveConvId) {
@@ -1232,7 +1293,9 @@ export function ChatView({
             try {
               // NEVER refresh from server after canvas generation — the server stores raw HTML
               // which would overwrite the clean card token we've put into local state.
-              if (!wasCanvasMode) {
+              // Same for tool runs: a reply awaiting approval isn't persisted yet, and a
+              // refresh would drop its approval card.
+              if (!wasCanvasMode && !wasToolMode) {
                 const data = await API.getConversation(effectiveConvId);
                 const msgs = Array.isArray(data) ? data : (data as any).history || [];
                 if (msgs.length > 0) {
@@ -1244,6 +1307,7 @@ export function ChatView({
                       ? m.content.replace(CANVAS_SUFFIX_RE, '').trim()
                       : m.content,
                     timestamp: new Date(),
+                    toolEvents: m.metadata?.tool_events,
                   }));
                   setConversationMessages(effectiveConvId, normalized);
                 }
@@ -1275,18 +1339,20 @@ export function ChatView({
           content: 'Error: ' + (error instanceof Error ? error.message : 'Unknown error occurred'),
           timestamp: new Date(),
         });
-      } else if (currentResponse.trim()) {
+      } else if (currentResponse.trim() || toolEvents.length > 0) {
         addMessage(effectiveConvId, {
           id: `a-${Date.now()}`,
           role: 'assistant',
           content: currentResponse + '\n\n*(Generation stopped)*',
           timestamp: new Date(),
+          toolEvents: toolEvents.length > 0 ? toolEvents : undefined,
         });
       }
     } finally {
       setIsGenerating(false);
       setShowTyping(false);
       setStreamingMessage(null);
+      setStreamingToolEvents([]);
     }
   }, [
     activeSkill,
@@ -1306,7 +1372,46 @@ export function ChatView({
     refreshConversations,
     providers,
     ragEnabled,
+    toolsActive,
+    connectedIntegrations,
+    canvasMode,
   ]);
+
+  // ── Approve / reject a pending tool call, then stream the rest of the reply ──
+  // into the same assistant message.
+  const handleToolDecision = useCallback<ApprovalDecisionHandler>(async (approvalId, decision, opts) => {
+    const conv = activeConvRef.current;
+    if (!conv) return;
+    const convId = conv.id;
+    const target = conv.messages.find(m => m.toolEvents?.some(e => e.type === 'approval_required' && e.approval_id === approvalId));
+    if (!target) return;
+
+    let extraText = '';
+    let extraEvents: ToolEvent[] = [];
+    const apply = () => {
+      const latest = activeConvRef.current;
+      if (!latest || latest.id !== convId) return;
+      setConversationMessages(convId, latest.messages.map(m => m.id !== target.id ? m : {
+        ...m,
+        content: (typeof target.content === 'string' ? target.content : '') + extraText,
+        toolEvents: [...(target.toolEvents || []), ...extraEvents],
+      }));
+    };
+
+    setIsGenerating(true);
+    try {
+      await decideApproval(approvalId, decision, {
+        onToken: token => { extraText += token; apply(); },
+        onEvent: event => {
+          if (event.type === 'done') return;
+          extraEvents = [...extraEvents, event];
+          apply();
+        },
+      }, opts);
+    } finally {
+      setIsGenerating(false);
+    }
+  }, [setConversationMessages, setIsGenerating]);
 
   const handleInputChange = (val: string) => {
     setInput(val)
@@ -1578,11 +1683,12 @@ export function ChatView({
                       message={displayMsg}
                       onOpenArtifact={setActiveArtifact}
                       onOpenCanvas={() => setCanvasMode(true)}
+                      onToolDecision={isGenerating ? undefined : handleToolDecision}
                     />
                   )
                 });
               })()}
-              {streamingMessage && (
+              {(streamingMessage || streamingToolEvents.length > 0) && (
                 <MessageBubble
                   isStreaming={true}
                   onOpenArtifact={setActiveArtifact}
@@ -1590,8 +1696,9 @@ export function ChatView({
                   message={{
                     id: 'streaming',
                     role: 'assistant',
-                    content: streamingMessage,
+                    content: streamingMessage || '',
                     timestamp: new Date(),
+                    toolEvents: streamingToolEvents,
                   }}
                 />
               )}
@@ -1824,6 +1931,24 @@ export function ChatView({
                     RAG
                   </button>
                 </div>
+
+                {connectedIntegrations.length > 0 && (
+                  <button
+                    onClick={() => setToolsEnabled(v => !v)}
+                    className={cn(
+                      "ml-1 px-3 py-1 rounded-full text-[10px] font-bold transition-all flex items-center gap-1 border",
+                      toolsEnabled
+                        ? "bg-primary text-primary-foreground border-primary shadow-sm"
+                        : "bg-[#171717] text-muted-foreground border-border hover:text-foreground"
+                    )}
+                    title={toolsEnabled
+                      ? `Tools on: the model can use ${connectedIntegrations.length} connected integration(s). Actions that change data ask for approval unless set to Auto.`
+                      : "Tools off: let the model use your connected integrations (Settings → Integrations)"}
+                  >
+                    <Wrench size={10} />
+                    Tools
+                  </button>
+                )}
 
                 <div className="h-4 w-px bg-border mx-1" />
                 <span className="text-[10px] font-mono text-muted-foreground">{tokenCount} / {settings.maxTokens}</span>

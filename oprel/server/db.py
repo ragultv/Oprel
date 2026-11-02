@@ -180,10 +180,80 @@ def init_db():
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    # ── Integrations & tool calling ───────────────────────────────────────────
+    # Credentials are NOT stored here: secret_ref points into the OS keychain
+    # (see oprel.server.security.secrets). secret_hint holds only the last 4 chars.
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS integration_connections (
+            id TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL DEFAULT 1,
+            integration_type TEXT NOT NULL,
+            display_name TEXT NOT NULL,
+            config_json TEXT NOT NULL DEFAULT '{}',
+            secret_ref TEXT,
+            secret_hint TEXT,
+            status TEXT NOT NULL DEFAULT 'unverified',
+            status_message TEXT,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            last_verified_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE (user_id, integration_type)
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS tool_policies (
+            connection_id TEXT NOT NULL,
+            tool_name TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            approval_mode TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (connection_id, tool_name),
+            FOREIGN KEY (connection_id) REFERENCES integration_connections(id) ON DELETE CASCADE
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS tool_approvals (
+            id TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL DEFAULT 1,
+            conversation_id TEXT,
+            connection_id TEXT,
+            tool_call_id TEXT NOT NULL,
+            tool_name TEXT NOT NULL,
+            args_json TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            loop_state_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            decided_at TEXT
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS tool_audit_log (
+            id TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL DEFAULT 1,
+            conversation_id TEXT,
+            connection_id TEXT,
+            tool_name TEXT NOT NULL,
+            args_json TEXT NOT NULL,
+            status TEXT NOT NULL,
+            approval TEXT NOT NULL,
+            duration_ms REAL,
+            result_summary TEXT,
+            created_at TEXT NOT NULL
+        )
+    """)
+
     # ── Migrations: add missing columns to existing tables ───────────────────
     # This handles databases created before schema additions
     try:
         cursor.execute("ALTER TABLE canvas_documents ADD COLUMN card_timestamp TEXT")
+    except Exception:
+        pass  # column already exists
+
+    try:
+        # JSON blob for structured extras on a message (e.g. tool-call events for the UI)
+        cursor.execute("ALTER TABLE messages ADD COLUMN metadata TEXT")
     except Exception:
         pass  # column already exists
 
@@ -282,7 +352,7 @@ def reset_conversation(conversation_id: str):
     conn.commit()
     conn.close()
 
-def add_message(conversation_id: str, role: str, content: Any):
+def add_message(conversation_id: str, role: str, content: Any, metadata: Optional[dict] = None):
     import json
     raw_content = content
     if not isinstance(content, str):
@@ -293,8 +363,8 @@ def add_message(conversation_id: str, role: str, content: Any):
     msg_id = f"msg_{uuid.uuid4().hex[:12]}"
     now = datetime.now().isoformat()
     cursor.execute(
-        "INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)",
-        (msg_id, conversation_id, role, content, now)
+        "INSERT INTO messages (id, conversation_id, role, content, created_at, metadata) VALUES (?, ?, ?, ?, ?, ?)",
+        (msg_id, conversation_id, role, content, now, json.dumps(metadata) if metadata else None)
     )
     # Update timestamp and possibly title based on first user message
     cursor.execute("UPDATE conversations SET updated_at = ? WHERE id = ?", (now, conversation_id))
@@ -322,11 +392,11 @@ def add_message(conversation_id: str, role: str, content: Any):
     conn.commit()
     conn.close()
 
-def get_conversation_messages(conversation_id: str):
+def get_conversation_messages(conversation_id: str, include_metadata: bool = False):
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY created_at ASC",
+        "SELECT role, content, metadata FROM messages WHERE conversation_id = ? ORDER BY created_at ASC",
         (conversation_id,)
     )
     rows = cursor.fetchall()
@@ -341,7 +411,13 @@ def get_conversation_messages(conversation_id: str):
                 content = json.loads(content)
             except:
                 pass
-        messages.append({"role": row["role"], "content": content})
+        message = {"role": row["role"], "content": content}
+        if include_metadata and row["metadata"]:
+            try:
+                message["metadata"] = json.loads(row["metadata"])
+            except (TypeError, ValueError):
+                pass
+        messages.append(message)
     return messages
 
 def list_conversations():

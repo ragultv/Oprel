@@ -1,5 +1,6 @@
 """llama.cpp backend implementation."""
 
+import os
 from pathlib import Path
 from typing import List, Optional
 
@@ -9,6 +10,22 @@ from oprel.telemetry.hardware import calculate_gpu_layers, detect_gpu
 from oprel.utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+def _ctx_size_override() -> Optional[int]:
+    """OPREL_CTX_SIZE lets users pick the context size when the automatic VRAM estimate is too small."""
+    raw = os.environ.get("OPREL_CTX_SIZE", "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning(f"Ignoring OPREL_CTX_SIZE={raw!r}: not an integer")
+        return None
+    if value < 512:
+        logger.warning("Ignoring OPREL_CTX_SIZE below 512")
+        return None
+    return value
 
 
 def _resolve_kv_cache_type(config: Config, model_quantization: str, is_vision: bool) -> str:
@@ -228,6 +245,12 @@ class LlamaCppBackend(BaseBackend):
                 )
         else:
             ctx_size = self.config.ctx_size
+
+        # Explicit user override, e.g. OPREL_CTX_SIZE=8192 (still capped by what the model supports)
+        override = _ctx_size_override()
+        if override:
+            ctx_size = min(override, metadata.context_length) if metadata else override
+            logger.info(f"Using ctx-size {ctx_size} from OPREL_CTX_SIZE")
         cmd.extend(["--ctx-size", str(ctx_size)])
         
         # Batch size (GPU mode only — CPU mode already set it above)

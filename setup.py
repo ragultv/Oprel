@@ -83,6 +83,8 @@ setup(
         "rank_bm25>=0.2.2",
         "google-genai>=2.0.0",
         "groq>=0.9.0",
+        "httpx>=0.27.0",
+        "keyring>=24.0.0",
     ],
     extras_require={
         "local": ["torch>=2.1.0"],

@@ -10,6 +10,9 @@ from oprel.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
+# Context used when the model only partially fits in VRAM (see recommend_max_context).
+HYBRID_OFFLOAD_CONTEXT = 4096
+
 # Map KV cache types to bytes per element
 # FP16 = 2, Q8_0 = 1, Q4_0 = 0.5 (approximate)
 KV_CACHE_BYTES = {
@@ -152,8 +155,11 @@ def recommend_max_context(
     vram_for_kv = usable_vram - model_size_gb
     
     if vram_for_kv <= 0:
-        logger.warning("Model size exceeds VRAM - hybrid offloading needed")
-        return 512  # Minimum context
+        # Partial offload: llama.cpp keeps each layer's KV cache next to that layer, so the
+        # CPU-resident layers' cache lives in system RAM. VRAM no longer bounds the context;
+        # 512 made chats with a system prompt (or tool definitions) unusable.
+        logger.warning("Model size exceeds VRAM - hybrid offloading needed; using hybrid context default")
+        return HYBRID_OFFLOAD_CONTEXT
     
     # Binary search for max context length
     context_options = [512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072]
