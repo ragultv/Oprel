@@ -104,16 +104,13 @@ def _find_free_port(port_range: tuple[int, int]) -> int:
     for port in range(start, end):
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                # SO_REUSEADDR allows binding to TIME_WAIT sockets
-                # Critical for Windows where ports can be stuck for minutes
-                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                
-                # On Windows, also try SO_EXCLUSIVEADDRUSE to prevent stealing
                 if platform.system() == "Windows":
                     try:
                         s.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
                     except (AttributeError, OSError):
-                        pass  # Not available on all Windows versions
+                        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                else:
+                    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 
                 s.bind(("127.0.0.1", port))
                 

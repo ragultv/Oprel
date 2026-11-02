@@ -41,6 +41,7 @@ class Config(BaseModel):
     # Paths
     cache_dir: Path = Field(default_factory=lambda: Path.home() / ".cache" / "oprel" / "models")
     binary_dir: Path = Field(default_factory=lambda: Path.home() / ".cache" / "oprel" / "bin")
+    prompt_cache_dir: Path = Field(default_factory=lambda: Path.home() / ".cache" / "oprel" / "prompt_cache")
 
     # Memory limits
     default_max_memory_mb: int = Field(
@@ -60,7 +61,7 @@ class Config(BaseModel):
     # Memory Optimization (key differentiator from Ollama)
     kv_cache_type: str = Field(
         default="auto", 
-        description="KV cache precision: auto (match model), f16, q8_0, q4_0"
+        description="KV cache precision: auto (match model), turboquant (extreme 4-bit compression), iq4_nl, q4_0, q8_0, f16"
     )
     flash_attention: bool = Field(
         default=True, 
@@ -69,6 +70,30 @@ class Config(BaseModel):
     mmap: bool = Field(
         default=True, 
         description="Use memory-mapped model loading for faster startup"
+    )
+
+    # Prompt Caching & KV Cache Reuse
+    prompt_cache_enabled: bool = Field(
+        default=True,
+        description="Enable prompt/prefix caching to reuse KV cache across requests"
+    )
+    cache_reuse_tokens: int = Field(
+        default=256,
+        description="Minimum chunk size for KV cache prefix reuse in llama-server"
+    )
+
+    # Supermemory (Semantic Long-Term Conversation Memory)
+    supermemory_enabled: bool = Field(
+        default=True,
+        description="Enable semantic long-term memory for chat conversations"
+    )
+    supermemory_recency_window: int = Field(
+        default=10,
+        description="Number of recent messages to preserve in active prompt context"
+    )
+    supermemory_top_k: int = Field(
+        default=3,
+        description="Number of historical memories to retrieve per query"
     )
 
     # Networking
@@ -165,6 +190,16 @@ class Config(BaseModel):
         description="JPEG quality (1–100) used when re-encoding preprocessed vision images",
     )
 
+    # OCR VLM Settings
+    ocr_model_id: str = Field(
+        default="glm-ocr",
+        description="Default GGUF VLM model ID or alias used for OCR text extraction",
+    )
+    ocr_model_quant: str = Field(
+        default="Q8_0",
+        description="Default quantization for OCR VLM model",
+    )
+
     class Config:
         arbitrary_types_allowed = True
 
@@ -172,6 +207,7 @@ class Config(BaseModel):
         """Create necessary directories if they don't exist"""
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.binary_dir.mkdir(parents=True, exist_ok=True)
+        self.prompt_cache_dir.mkdir(parents=True, exist_ok=True)
 
 
 

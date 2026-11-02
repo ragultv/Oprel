@@ -55,9 +55,15 @@ def list_cached_models() -> List[dict]:
     cache_dir = get_cache_path()
     models = []
 
+    from oprel.downloader.metadata import load_model_metadata
+
     # Find all .gguf files recursively
     for model_file in cache_dir.rglob("*.gguf"):
         try:
+            # Only models downloaded via oprel have metadata
+            if not load_model_metadata(cache_dir, model_file.name):
+                continue
+
             stat = model_file.stat()
             models.append(
                 {

@@ -160,6 +160,8 @@ oprel = "oprel.cli.main:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["oprel*"]
+# The MCP connectors are parked (see docs/internal/mcp_connectors.md) and are not shipped yet.
+exclude = ["oprel.mcp*"]
 
 [tool.setuptools]
 include-package-data = true

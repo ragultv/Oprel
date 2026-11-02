@@ -74,6 +74,7 @@ class UserProfile(BaseModel):
     name: str
     role: str
     initials: str | None = None
+    avatar_url: str | None = None
 
 
 class UserSettings(BaseModel):

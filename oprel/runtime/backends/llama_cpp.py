@@ -30,19 +30,18 @@ def _ctx_size_override() -> Optional[int]:
 
 def _resolve_kv_cache_type(config: Config, model_quantization: str, is_vision: bool) -> str:
     """Pick a KV cache type that balances quality and memory footprint."""
-    requested = getattr(config, "kv_cache_type", "auto")
+    requested = str(getattr(config, "kv_cache_type", "auto")).lower()
+    if requested in ("turboquant", "turbo", "extreme"):
+        return "q4_0"
     if requested != "auto":
         return requested
 
     if is_vision:
         return "f16"
 
-    quant = model_quantization.upper()
-    if any(level in quant for level in ["Q2", "Q3", "Q4", "IQ1", "IQ2", "IQ3", "IQ4"]):
-        return "q4_0"
-    if any(level in quant for level in ["Q5", "Q6", "Q8"]):
-        return "q8_0"
-    return "f16"
+    # q8_0 halves KV memory with negligible quality loss.  q4_0 is opt-in
+    # (kv_cache_type="q4_0"/"turboquant") because it measurably degrades long-context output.
+    return "q8_0"
 
 
 def _recommend_batch_size(ctx_size: int, gpu_enabled: bool) -> int:
@@ -109,26 +108,25 @@ class LlamaCppBackend(BaseBackend):
             cmd.extend(["--ctx-size", "2048"])  # Increased for larger chunks
             return cmd
 
-        # Check if this is a vision model and add mmproj if needed
+        # Check if this is a vision/OCR model and add mmproj if needed
         try:
             from oprel.runtime.backends.vision import is_vision_model, detect_mmproj_file
             model_id = self.model_path.stem  # Get model name from path
-            
-            if is_vision_model(model_id):
+            model_dir = self.model_path.parent
+            mmproj_path = detect_mmproj_file(model_dir)
+
+            if mmproj_path is not None:
                 self.is_vision = True
-                # Look for mmproj file in same directory as model
-                model_dir = self.model_path.parent
-                mmproj_path = detect_mmproj_file(model_dir)
-                
-                if mmproj_path:
-                    cmd.extend(["--mmproj", str(mmproj_path)])
-                    logger.info(f"Vision model detected - using mmproj: {mmproj_path.name}")
-                else:
-                    logger.warning(
-                        f"Vision model detected but no mmproj file found. "
-                        f"Vision features may not work properly. "
-                        f"Download the complete model package including vision encoder."
-                    )
+                cmd.extend(["--mmproj", str(mmproj_path)])
+                logger.info(f"Vision/OCR model detected - using mmproj: {mmproj_path.name}")
+            elif is_vision_model(model_id):
+                # Model is classified as a vision model but missing mmproj encoder
+                logger.warning(
+                    f"Vision/OCR model detected ('{model_id}') but no mmproj file found. "
+                    f"Vision features may not work without the vision projector. "
+                    f"Running in standard text mode."
+                )
+                self.is_vision = False
         except Exception as e:
             logger.debug(f"Vision model check failed: {e}")
 
@@ -146,7 +144,27 @@ class LlamaCppBackend(BaseBackend):
         gpu_type = gpu_info.get("gpu_type") if gpu_info else None
         vram_gb = gpu_info.get("vram_total_gb", 0) if gpu_info else 0
         
-        model_size_gb = self.model_path.stat().st_size / (1024**3)
+        try:
+            model_size_gb = self.model_path.stat().st_size / (1024**3)
+        except OSError:
+            model_size_gb = 4.0
+        # Use what is actually free: another app (browser, game) may hold VRAM.
+        if vram_gb > 0:
+            try:
+                from oprel.telemetry.hardware import get_vram_info
+
+                live = get_vram_info()
+                if live:
+                    vram_gb = min(vram_gb, max(live["vram_free_gb"], 0.0))
+            except Exception:
+                pass
+
+        # Tier-based context default, only when the user did not set ctx_size.
+        if "ctx_size" not in getattr(self.config, "model_fields_set", {"ctx_size"}):
+            from oprel.runtime.tiers import default_context
+
+            self.config = self.config.model_copy(update={"ctx_size": default_context(vram_gb)})
+
         resolved_kv_cache_type = _resolve_kv_cache_type(
             self.config,
             metadata.quantization if metadata else "",
@@ -271,12 +289,26 @@ class LlamaCppBackend(BaseBackend):
         if getattr(self.config, "mmap", True) and "--mmap" not in cmd:
             cmd.append("--mmap")
 
-        if resolved_kv_cache_type in ("q8_0", "q4_0", "q5_0", "q5_1"):
-            cmd.extend(["--cache-type-k", resolved_kv_cache_type])
-            cmd.extend(["--cache-type-v", resolved_kv_cache_type])
-            logger.info(f"KV cache optimized to {resolved_kv_cache_type}")
+        if resolved_kv_cache_type in ("q8_0", "q4_0", "q5_0", "q5_1", "iq4_nl", "turboquant"):
+            cache_type = "q4_0" if resolved_kv_cache_type == "turboquant" else resolved_kv_cache_type
+            cmd.extend(["--cache-type-k", cache_type])
+            cmd.extend(["--cache-type-v", cache_type])
+            logger.info(f"KV cache optimized to {cache_type} (extreme compression/TurboQuant enabled)")
         else:
             logger.debug("KV cache using default f16")
+
+        # Prompt Caching & KV Cache Reuse
+        if getattr(self.config, "prompt_cache_enabled", True):
+            reuse_tokens = getattr(self.config, "cache_reuse_tokens", 256)
+            if reuse_tokens and reuse_tokens > 0:
+                cmd.extend(["--cache-reuse", str(reuse_tokens)])
+
+            prompt_cache_dir = getattr(self.config, "prompt_cache_dir", None)
+            if prompt_cache_dir:
+                slot_save_path = Path(prompt_cache_dir)
+                slot_save_path.mkdir(parents=True, exist_ok=True)
+                cmd.extend(["--slot-save-path", str(slot_save_path)])
+                logger.info(f"Prompt caching enabled with slot save path: {slot_save_path}")
         
         # Flash Attention — this binary version takes 'on'/'off'/'auto' as a value
         flash_attention = getattr(self.config, 'flash_attention', True)

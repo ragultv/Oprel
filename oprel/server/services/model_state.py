@@ -218,21 +218,14 @@ def scan_cached_models() -> list[ModelInfoData]:
             if "mmproj" in filename_lower or filename_lower.startswith("vision-") or filename_lower.startswith("clip-"):
                 continue
 
-            repo_id = (
-                get_repo_id_from_filename(cache_dir, filename)
-                or infer_repo_id_from_cache(cache_dir, filename)
-                or filename
-            )
-            # Determine category for the repo_id (works even if repo_id == filename)
+            # Only show models downloaded via oprel with valid metadata
+            repo_id = get_repo_id_from_filename(cache_dir, filename)
+            if not repo_id:
+                continue
+
+            # Determine category for the repo_id
             cat = get_model_category(repo_id)
-            repo_id_lower = repo_id.lower()
-            is_unwanted = any(
-                kw in repo_id_lower
-                for kw in [
-                    "embed", "embedding", "nomic-embed", "bge-m3",
-                ]
-            )
-            if is_unwanted or cat in ["embeddings", "text-to-video"]:
+            if cat in ["embeddings", "text-to-video"] or (cat and "embed" in cat.lower()):
                 continue
 
             file_key = (repo_id, filename)
@@ -287,6 +280,33 @@ def scan_cached_models() -> list[ModelInfoData]:
                     category=cat,
                 )
             )
+
+        # Check for cached speech models (Kokoro ONNX)
+        try:
+            from oprel.server.services.speech import check_kokoro_installed, _kokoro_engine
+            if check_kokoro_installed():
+                file_key = ("hexgrad/Kokoro-82M", "kokoro-82m")
+                if file_key not in seen_files:
+                    seen_files.add(file_key)
+                    kokoro_dir = cache_dir / "kokoro-82m"
+                    kokoro_size_gb = 0.35
+                    if kokoro_dir.exists():
+                        total_bytes = sum(f.stat().st_size for f in kokoro_dir.glob("*") if f.is_file())
+                        if total_bytes > 0:
+                            kokoro_size_gb = round(total_bytes / (1024 ** 3), 2)
+                    available.append(
+                        ModelInfoData(
+                            model_id="hexgrad/Kokoro-82M",
+                            quantization="ONNX",
+                            backend="kokoro",
+                            loaded=_kokoro_engine is not None,
+                            size_gb=kokoro_size_gb,
+                            name="kokoro-82m",
+                            category="speech",
+                        )
+                    )
+        except Exception as speech_scan_exc:
+            logger.debug(f"Could not scan cached speech models: {speech_scan_exc}")
 
     except Exception as exc:
         logger.error(f"Error scanning cache: {exc}")

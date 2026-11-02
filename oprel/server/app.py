@@ -21,7 +21,8 @@ from oprel.server.domain.state import get_state
 from oprel.server.services.context import CONFIG, logger, kill_orphaned_backends, write_daemon_pid
 from oprel.server.services.model_state import cleanup_models, monitor_idle_models, IDLE_TIMEOUT_SECONDS
 from oprel.server.services.webui import UIStaticFiles, get_webui_dir
-from oprel.server.security.local_auth import HostGuardMiddleware, cors_allowed_origins, set_bind_host
+from oprel.server.security import LocalGuardMiddleware, LOOPBACK_ORIGIN_REGEX
+from oprel.server.security.local_auth import set_bind_host
 from oprel.utils.redaction import install_log_redaction
 from oprel.server.routes import (
     auth,
@@ -42,6 +43,8 @@ from oprel.server.routes import (
     system,
     skills,
     ocr,
+    speech,
+    preflight,
 )
 
 
@@ -104,6 +107,7 @@ class GinStyleLoggingMiddleware(BaseHTTPMiddleware):
         )
         print(log_line)
         return response
+
 
 
 class StripApiPrefixMiddleware(BaseHTTPMiddleware):
@@ -169,19 +173,15 @@ signal.signal(signal.SIGTERM, _signal_handler)
 app = FastAPI(lifespan=lifespan, title="Oprel Daemon")
 app.add_middleware(GinStyleLoggingMiddleware)
 app.add_middleware(StripApiPrefixMiddleware)
-_cors_origins = cors_allowed_origins()
+app.add_middleware(LocalGuardMiddleware)
 app.add_middleware(
     CORSMiddleware,
-    # Same-origin requests (the bundled UI under /gui) need no CORS. Only the Next.js
-    # dev server and origins listed in OPREL_CORS_ORIGINS may read responses cross-origin.
-    allow_origins=_cors_origins,
-    allow_credentials="*" not in _cors_origins,
+    allow_origin_regex=LOOPBACK_ORIGIN_REGEX,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["X-Conversation-ID"],
 )
-# Outermost: reject non-loopback Host headers before anything else runs (DNS rebinding).
-app.add_middleware(HostGuardMiddleware)
 
 webui_dir = get_webui_dir()
 if webui_dir:
@@ -189,6 +189,13 @@ if webui_dir:
     @app.get("/gui/chat")
     @app.get("/gui/chat/{path:path}")
     async def chat_ui_fallback(path: str = ""):
+        # If this is a static file that exists on disk, serve it directly
+        file_path = Path(webui_dir) / "chat" / path
+        if path and file_path.is_file():
+            return FileResponse(file_path)
+        # If path has a file extension (like .txt, .js, .css, .json), do not return HTML
+        if "." in Path(path).name:
+            return Response(status_code=404)
         chat_index = Path(webui_dir) / "chat" / "index.html"
         if chat_index.exists():
             return FileResponse(chat_index)
@@ -215,6 +222,8 @@ app.include_router(providers.router)
 app.include_router(system.router)
 app.include_router(skills.router)
 app.include_router(ocr.router)
+app.include_router(speech.router)
+app.include_router(preflight.router)
 
 
 def run_server(host: str = "127.0.0.1", port: int = 11435):

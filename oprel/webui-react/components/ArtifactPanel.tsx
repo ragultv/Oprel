@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useRef } from 'react'
-import { Eye, Code2, Download, X, GitBranch, Globe, AlertCircle, Loader2 } from 'lucide-react'
+import { Eye, Code2, Download, X, GitBranch, Globe, AlertCircle, Loader2, FileText } from 'lucide-react'
 import { cn } from '@/services/utils'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism'
@@ -9,8 +9,10 @@ import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism'
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 export interface Artifact {
-  type: 'mermaid' | 'html'
+  type: 'mermaid' | 'html' | 'text'
   code: string
+  title?: string
+  chunk?: string
 }
 
 // ─── Mermaid Preview ─────────────────────────────────────────────────────────
@@ -88,8 +90,8 @@ function HtmlPreview({ code }: { code: string }) {
 export function ArtifactCard({ artifact, onClick }: { artifact: Artifact; onClick: () => void }) {
   const isMermaid = artifact.type === 'mermaid'
 
-  const handleDownload = (e: React.MouseEvent) => {
-    e.stopPropagation()
+  const handleDownload = (e?: React.MouseEvent) => {
+    e?.stopPropagation()
     const ext = isMermaid ? 'mmd' : 'html'
     const blob = new Blob([artifact.code], { type: isMermaid ? 'text/plain' : 'text/html' })
     const url = URL.createObjectURL(blob)
@@ -111,18 +113,20 @@ export function ArtifactCard({ artifact, onClick }: { artifact: Artifact; onClic
     >
       <div className={cn(
         'w-10 h-10 rounded-xl flex items-center justify-center shrink-0 border',
-        isMermaid ? 'bg-primary/10 border-primary/20' : 'bg-emerald-500/10 border-emerald-500/20'
+        isMermaid ? 'bg-primary/10 border-primary/20' : 
+        artifact.type === 'text' ? 'bg-blue-500/10 border-blue-500/20' : 'bg-emerald-500/10 border-emerald-500/20'
       )}>
-        {isMermaid ? <GitBranch size={17} className="text-primary" /> : <Globe size={17} className="text-emerald-400" />}
+        {isMermaid ? <GitBranch size={17} className="text-primary" /> : 
+         artifact.type === 'text' ? <FileText size={17} className="text-blue-400" /> : <Globe size={17} className="text-emerald-400" />}
       </div>
       <div className="flex-1 min-w-0">
-        <div className="text-[12px] font-bold text-foreground">{isMermaid ? 'MERMAID Document' : 'HTML Document'}</div>
+        <div className="text-[12px] font-bold text-foreground truncate">{artifact.title || (isMermaid ? 'MERMAID Document' : artifact.type === 'text' ? 'TEXT Document' : 'HTML Document')}</div>
         <div className="text-[10px] text-muted-foreground font-semibold tracking-widest uppercase mt-0.5">
-          {isMermaid ? 'Mermaid Diagram' : 'HTML Preview'}
+          {isMermaid ? 'Mermaid Diagram' : artifact.type === 'text' ? 'Text File' : 'HTML Preview'}
         </div>
       </div>
       <button
-        onClick={handleDownload}
+        onClick={(e) => { e.stopPropagation(); handleDownload(); }}
         className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 border bg-[#252525] border-white/[0.06] text-muted-foreground hover:bg-primary/10 hover:border-primary/20 hover:text-primary transition-all"
         title="Download"
       >
@@ -195,37 +199,46 @@ export function ArtifactPanel({
       <div className="flex flex-col flex-1 min-w-0 bg-[#0d0d0d]">
 
         {/* Header */}
-        <div className="h-12 border-b border-border/60 flex items-center justify-between px-3 shrink-0 bg-[#111]">
+        <div className="h-14 border-b border-border/60 flex items-center justify-between px-5 shrink-0 bg-[#111]">
           <div className="flex items-center gap-2">
-            {isMermaid ? <GitBranch size={13} className="text-primary" /> : <Globe size={13} className="text-emerald-400" />}
-            <span className="text-[12px] font-bold text-foreground">
-              {isMermaid ? 'MERMAID Document' : 'HTML Document'}
+            {artifact.type === 'text' ? (
+              <FileText size={14} className="text-orange-400/80" />
+            ) : isMermaid ? (
+              <GitBranch size={13} className="text-primary" />
+            ) : (
+              <Globe size={13} className="text-emerald-400" />
+            )}
+            <span className="text-[12px] font-bold text-foreground truncate max-w-[200px]">
+              {artifact.type === 'text' ? (artifact.title || 'Source Document') : isMermaid ? 'MERMAID Document' : 'HTML Document'}
             </span>
           </div>
 
           <div className="flex items-center gap-0.5">
-            <button
-              onClick={() => setTab('preview')}
-              className={cn('w-7 h-7 rounded-md flex items-center justify-center transition-all',
-                tab === 'preview' ? 'bg-secondary text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-secondary/50')}
-              title="Preview"
-            ><Eye size={13} /></button>
+            {artifact.type !== 'text' && (
+              <>
+                <button
+                  onClick={() => setTab('preview')}
+                  className={cn('w-7 h-7 rounded-md flex items-center justify-center transition-all',
+                    tab === 'preview' ? 'bg-secondary text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-secondary/50')}
+                  title="Preview"
+                ><Eye size={13} /></button>
 
-            <button
-              onClick={() => setTab('code')}
-              className={cn('w-7 h-7 rounded-md flex items-center justify-center transition-all',
-                tab === 'code' ? 'bg-secondary text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-secondary/50')}
-              title="Source Code"
-            ><Code2 size={13} /></button>
+                <button
+                  onClick={() => setTab('code')}
+                  className={cn('w-7 h-7 rounded-md flex items-center justify-center transition-all',
+                    tab === 'code' ? 'bg-secondary text-foreground' : 'text-muted-foreground hover:text-foreground hover:bg-secondary/50')}
+                  title="Source Code"
+                ><Code2 size={13} /></button>
 
-            <div className="w-px h-4 bg-border/60 mx-1" />
+                <div className="w-px h-4 bg-border/60 mx-1" />
 
-            <button
-              onClick={handleDownload}
-              className="w-7 h-7 rounded-md flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-secondary/50 transition-all"
-              title="Download"
-            ><Download size={13} /></button>
-
+                <button
+                  onClick={handleDownload}
+                  className="w-7 h-7 rounded-md flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-secondary/50 transition-all"
+                  title="Download"
+                ><Download size={13} /></button>
+              </>
+            )}
             <button
               onClick={onClose}
               className="w-7 h-7 rounded-md flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-secondary/50 transition-all ml-0.5"
@@ -238,12 +251,29 @@ export function ArtifactPanel({
         <div className="flex-1 overflow-hidden">
           {tab === 'preview' ? (
             <div className="w-full h-full bg-[#0d0d0d]">
-              {isMermaid ? <MermaidPreview code={artifact.code} /> : <HtmlPreview code={artifact.code} />}
+              {isMermaid ? <MermaidPreview code={artifact.code} /> : 
+               artifact.type === 'text' ? (
+                 <div className="h-full p-6 overflow-auto bg-[#0a0a0a]">
+                   <div className="text-[13.5px] text-foreground/70 whitespace-pre-wrap font-sans leading-[1.7]">
+                     {artifact.chunk && artifact.code.includes(artifact.chunk) ? (
+                       <>
+                         {artifact.code.split(artifact.chunk)[0]}
+                         <span className="bg-orange-500/20 text-orange-200/90 rounded px-1 py-0.5 shadow-[0_0_0_1px_rgba(249,115,22,0.2)]">
+                           {artifact.chunk}
+                         </span>
+                         {artifact.code.split(artifact.chunk)[1]}
+                       </>
+                     ) : (
+                       artifact.code
+                     )}
+                   </div>
+                 </div>
+               ) : <HtmlPreview code={artifact.code} />}
             </div>
           ) : (
             <div className="h-full overflow-auto">
               <SyntaxHighlighter
-                language={isMermaid ? 'text' : 'html'}
+                language={isMermaid ? 'text' : artifact.type === 'text' ? 'markdown' : 'html'}
                 style={vscDarkPlus}
                 customStyle={{ margin: 0, minHeight: '100%', background: '#0a0a0a', fontSize: '12px', padding: '16px', lineHeight: '1.6' }}
                 showLineNumbers

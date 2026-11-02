@@ -60,8 +60,15 @@ async def list_documents():
 
 
 @router.delete("/index/documents/{filename}")
+@router.delete("/knowledge/documents/{filename}")
 async def delete_indexed_document(filename: str):
-    return knowledge_service.delete_document(filename)
+    return await knowledge_service.delete_document(filename)
+
+
+@router.delete("/index/documents")
+@router.delete("/knowledge/documents")
+async def delete_all_indexed_documents():
+    return await knowledge_service.delete_all_documents()
 
 
 @router.get("/index/documents/{filename}/preview")

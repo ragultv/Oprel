@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import dataclasses
 import json
+import os
 import time as time_module
 import uuid
 from dataclasses import dataclass
@@ -189,7 +191,7 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
 
         provider = db.get_provider(p_id)
         if not provider:
-            load_model(resolved_model_id)
+            await asyncio.to_thread(load_model, resolved_model_id)
 
     if resolved_model_id in state.models:
         model = state.models[resolved_model_id]
@@ -199,7 +201,7 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
                 logger.warning(f"Backend process for {resolved_model_id} died, reloading...")
                 state.models.pop(resolved_model_id, None)
                 state.model_configs.pop(resolved_model_id, None)
-                load_model(resolved_model_id)
+                await asyncio.to_thread(load_model, resolved_model_id)
                 model = state.models[resolved_model_id]
 
         model._loaded = True
@@ -281,69 +283,62 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
         if params.max_tokens < 8192:
             params = dataclasses.replace(params, max_tokens=8192)
     else:
-        if params.max_tokens > 2048:
+        # Vision/multimodal OCR requests can produce long JSON; allow up to 4096 tokens
+        if params.images:
+            if params.max_tokens > 4096:
+                params = dataclasses.replace(params, max_tokens=4096)
+        elif params.max_tokens > 2048:
             params = dataclasses.replace(params, max_tokens=2048)
 
     context_text = ""
     if params.rag:
         try:
-            from oprel.knowledge.knowledge_store import KnowledgeStore
-            from oprel.knowledge.config import TOP_K
+            from oprel.knowledge.orchestration.knowledge_service import KnowledgeService
             from oprel.downloader.aliases import resolve_model_id
 
-            async def internal_embed(text: str, model: str | None = None) -> list[float]:
+            async def internal_embed(text: str | list[str], model: str | None = None) -> list[float] | list[list[float]]:
                 resolved_embed_model = resolve_model_id(model or "nomic-embed-text")
+                if isinstance(text, list):
+                    res = await get_embeddings(EmbeddingParams(input=text, model=resolved_embed_model))
+                    return res.embeddings or []
                 res = await get_embeddings(EmbeddingParams(input=text, model=resolved_embed_model))
                 return res.embedding or []
 
-            store = KnowledgeStore(embed_func=internal_embed)
-            try:
-                search_results = await store.search(text_prompt, top_k=TOP_K)
-            except Exception as exc:
-                logger.error(f"RAG search error: {exc}", exc_info=True)
-                search_results = []
-                
+            service = KnowledgeService(embed_func=internal_embed)
+            grounded = await service.ground_query(
+                query=text_prompt,
+                model_ctx_size=getattr(CONFIG, "ctx_size", 8192),
+                conv_id=conv_id,
+                force_rag=True,
+            )
+
             rag_html_block = ""
+            if grounded.evidence:
+                text_prompt = grounded.prompt_text
+                logger.info(f"RAG: Grounded with {len(grounded.evidence)} relevant chunks (est {grounded.estimated_context_tokens} tokens)")
 
-            if search_results:
-                context_parts = []
-                max_chars = 4000
-                current_chars = 0
-                for i, res in enumerate(search_results):
-                    source = res.get("metadata", {}).get("filename", "Unknown source")
-                    chunk_text = res['text']
-                    if current_chars + len(chunk_text) > max_chars:
-                        chunk_text = chunk_text[:max_chars - current_chars] + "..."
-                    
-                    context_parts.append(f"Source [{i+1}] ({source}):\n{chunk_text}")
-                    current_chars += len(chunk_text)
-                    if current_chars >= max_chars:
-                        break
+                citations_data = []
+                for ev in grounded.evidence:
+                    source_path = ev.metadata.get('source')
+                    full_text = ""
+                    if source_path and os.path.exists(source_path):
+                        try:
+                            with open(source_path, 'r', encoding='utf-8', errors='ignore') as f:
+                                full_text = f.read(32768)
+                                if len(full_text) == 32768:
+                                    full_text += "\n\n[... truncated ...]"
+                        except:
+                            pass
 
-                context_text = "\n\n".join(context_parts)
-                logger.info(f"RAG: Found {len(search_results)} relevant chunks")
+                    citations_data.append({
+                        "name": ev.filename,
+                        "text": ev.text,
+                        "full_text": full_text,
+                        "source_label": ev.source_label,
+                    })
 
-                text_prompt = (
-                    "CONTEXT FROM LOCAL KNOWLEDGE BASE:\n"
-                    "----------------------------------------\n"
-                    f"{context_text}\n"
-                    "----------------------------------------\n\n"
-                    f"QUESTION: {text_prompt}\n\n"
-                    "INSTRUCTION: Use ONLY the provided context above to answer. "
-                    "Cite source labels [1], [2], etc. If the answer isn't firmly supported by the context, "
-                    "state that you don't have enough information."
-                )
-                
-                html_chunks = "\n\n".join(
-                    f"**Source [{i+1}] ({search_results[i].get('metadata', {}).get('filename', 'Unknown')})**\n```text\n{search_results[i]['text']}\n```"
-                    for i in range(len(context_parts))
-                )
-                rag_html_block = (
-                    f'<details style="font-size: 0.8rem; margin-bottom: 1rem; opacity: 0.8; border-left: 2px solid #555; padding-left: 12px;">\n'
-                    f'<summary style="cursor: pointer; font-weight: 500;">🔍 Used {len(context_parts)} knowledge base chunks</summary>\n\n'
-                    f'{html_chunks}\n\n'
-                    f'</details>\n\n'
-                )
+                encoded_citations = base64.b64encode(json.dumps(citations_data).encode('utf-8')).decode('utf-8')
+                rag_html_block = f'<citations>{encoded_citations}</citations>\n\n'
 
         except Exception as exc:
             logger.error(f"RAG search failed: {exc}")
@@ -405,15 +400,80 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
     # --- END AUTO SKILL MATCHING ---
 
 
+    # --- SUPERMEMORY LONG-TERM CONVERSATION RECALL ---
+    active_history = history
+    if getattr(CONFIG, "supermemory_enabled", True) and conv_id:
+        recency_window = getattr(CONFIG, "supermemory_recency_window", 6)
+        if len(history) > recency_window:
+            # Keep immediate dialogue window for active continuity
+            active_history = history[-recency_window:]
+            try:
+                from oprel.knowledge.supermemory import SuperMemoryStore
+                from oprel.downloader.aliases import resolve_model_id
+
+                async def memory_embed(text: str) -> list[float]:
+                    try:
+                        resolved_embed_model = resolve_model_id("nomic-embed-text")
+                        res = await get_embeddings(EmbeddingParams(input=text, model=resolved_embed_model))
+                        return res.embedding or []
+                    except Exception:
+                        return []
+
+                recent_hint = None
+                if active_history:
+                    last_msg = active_history[-1]
+                    if isinstance(last_msg, dict):
+                        recent_hint = str(last_msg.get("content", ""))
+
+                memory_store = SuperMemoryStore(embed_func=memory_embed)
+                recalled = await memory_store.search_memories(
+                    conversation_id=conv_id,
+                    query=text_prompt,
+                    top_k=getattr(CONFIG, "supermemory_top_k", 3),
+                    context_hint=recent_hint,
+                )
+                if recalled:
+                    memory_block = memory_store.format_memory_context(recalled)
+                    if effective_system_prompt:
+                        effective_system_prompt = f"{effective_system_prompt}\n\n{memory_block}"
+                    else:
+                        effective_system_prompt = memory_block
+                    logger.info(f"[Supermemory] Injected {len(recalled)} recalled historical turns into context")
+            except Exception as exc:
+                logger.warning(f"[Supermemory] Context recall failed gracefully: {exc}")
+    # --- END SUPERMEMORY RECALL ---
+
+    # Old chats may hold UI-only tool blocks from the parked connectors feature; never send them to a model.
+    from oprel.utils.legacy import strip_legacy_tool_cards
+
+    active_history = [
+        {**m, "content": strip_legacy_tool_cards(m.get("content"))} if isinstance(m, dict) else m for m in active_history
+    ]
+
     full_prompt = build_chat_prompt(
         resolved_model_id,
-        history,
+        active_history,
         effective_system_prompt,
         text_prompt,
         thinking=params.thinking,
     )
 
     model = state.models[resolved_model_id]
+
+    async def _token_stream() -> AsyncIterator[str]:
+        for tok in model._client.generate(
+            prompt=full_prompt,
+            stream=True,
+            max_tokens=params.max_tokens,
+            temperature=params.temperature,
+            top_p=params.top_p,
+            top_k=params.top_k,
+            repeat_penalty=params.repeat_penalty,
+            images=images if images else None,
+            model=resolved_model_id,
+            cache_prompt=getattr(CONFIG, "prompt_cache_enabled", True),
+        ):
+            yield tok
 
     if params.stream:
         async def generate_stream() -> AsyncIterator[str]:
@@ -426,17 +486,7 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
                     for char in full_resp:
                         yield f"data: {json.dumps(char)}\n\n"
 
-                for token in model._client.generate(
-                    prompt=full_prompt,
-                    max_tokens=params.max_tokens,
-                    temperature=params.temperature,
-                    top_p=params.top_p,
-                    top_k=params.top_k,
-                    repeat_penalty=params.repeat_penalty,
-                    stream=True,
-                    images=images if images else None,
-                    model=resolved_model_id,
-                ):
+                async for token in _token_stream():
                     if token:
                         full_resp += token
                         yield f"data: {json.dumps(token)}\n\n"
@@ -458,6 +508,23 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
                     if len(state.ephemeral_history[conv_id]) > 40:
                         state.ephemeral_history[conv_id] = state.ephemeral_history[conv_id][-40:]
 
+                # Record into Supermemory store
+                if getattr(CONFIG, "supermemory_enabled", True) and conv_id:
+                    try:
+                        from oprel.knowledge.supermemory import SuperMemoryStore
+                        turn_idx = len(history) // 2
+                        u_text = text_prompt if isinstance(text_prompt, str) else str(text_prompt)
+                        asyncio.create_task(
+                            SuperMemoryStore().record_turn(
+                                conversation_id=conv_id,
+                                user_text=u_text,
+                                assistant_text=strip_legacy_tool_cards(full_resp),
+                                turn_index=turn_idx,
+                            )
+                        )
+                    except Exception as exc:
+                        logger.debug(f"[Supermemory] Turn recording error: {exc}")
+
                 yield "data: [DONE]\n\n"
 
                 prompt_tokens_est = len(text_prompt.split()) * 1.3
@@ -474,7 +541,7 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
         return StreamResult(iterator=generate_stream(), conversation_id=conv_id)
 
     start_gen_time = time_module.perf_counter()
-    text = (rag_html_block if locals().get('rag_html_block') else "") + model._client.generate(
+    generated = model._client.generate(
         prompt=full_prompt,
         max_tokens=params.max_tokens,
         temperature=params.temperature,
@@ -484,7 +551,9 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
         stream=False,
         images=images if images else None,
         model=resolved_model_id,
+        cache_prompt=getattr(CONFIG, "prompt_cache_enabled", True),
     )
+    text = (rag_html_block if locals().get('rag_html_block') else "") + generated
 
     end_gen_time = time_module.perf_counter()
     duration = end_gen_time - start_gen_time
@@ -502,6 +571,23 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
         state.ephemeral_history[conv_id].append({"role": "assistant", "content": text})
         if len(state.ephemeral_history[conv_id]) > 40:
             state.ephemeral_history[conv_id] = state.ephemeral_history[conv_id][-40:]
+
+    # Record into Supermemory store
+    if getattr(CONFIG, "supermemory_enabled", True) and conv_id:
+        try:
+            from oprel.knowledge.supermemory import SuperMemoryStore
+            turn_idx = len(history) // 2
+            u_text = text_prompt if isinstance(text_prompt, str) else str(text_prompt)
+            asyncio.create_task(
+                SuperMemoryStore().record_turn(
+                    conversation_id=conv_id,
+                    user_text=u_text,
+                    assistant_text=strip_legacy_tool_cards(text),
+                    turn_index=turn_idx,
+                )
+            )
+        except Exception as exc:
+            logger.debug(f"[Supermemory] Turn recording error: {exc}")
 
     prompt_tokens_est = len(text_prompt.split()) * 1.3
     completion_tokens_est = len(text.split()) * 1.3
@@ -522,37 +608,45 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
     )
 
 
+_embedding_load_lock = asyncio.Lock()
+EMBEDDING_READY_TIMEOUT_SECONDS = 90
+
+
 async def get_embeddings(params: EmbeddingParams) -> EmbeddingResult:
     state = get_state()
     from oprel.downloader.aliases import resolve_model_id
 
     resolved_id = resolve_model_id(params.model)
 
-    load_model(resolved_id)
+    # Loading can take many seconds.  Do it off the event loop (so chat, approvals and the UI stay
+    # responsive) and let concurrent callers wait for the same load instead of racing it.
+    async with _embedding_load_lock:
+        await asyncio.to_thread(load_model, resolved_id)
 
-    if resolved_id not in state.models:
-        logger.error(f"Model '{resolved_id}' not found after loading. Available: {list(state.models.keys())}")
-        raise RuntimeError(f"Model '{resolved_id}' failed to stay in cache")
+        if resolved_id not in state.models:
+            logger.error(f"Model '{resolved_id}' not found after loading. Available: {list(state.models.keys())}")
+            raise RuntimeError(f"Model '{resolved_id}' failed to stay in cache")
 
-    model = state.models[resolved_id]
+        model = state.models[resolved_id]
 
-    if hasattr(model, "_process") and model._process:
-        backend_port = model._process.port
-        deadline = time_module.time() + 15
-        ready = False
-        while time_module.time() < deadline:
-            try:
-                async with httpx.AsyncClient(timeout=1.0) as hc:
-                    probe = await hc.get(f"http://127.0.0.1:{backend_port}/health")
-                    if probe.status_code < 500:
-                        ready = True
-                        break
-            except Exception:
-                pass
-            await asyncio.sleep(0.25)
+        if hasattr(model, "_process") and model._process:
+            backend_port = model._process.port
+            deadline = time_module.time() + EMBEDDING_READY_TIMEOUT_SECONDS
+            ready = False
+            while time_module.time() < deadline:
+                try:
+                    async with httpx.AsyncClient(timeout=1.0) as hc:
+                        probe = await hc.get(f"http://127.0.0.1:{backend_port}/health")
+                        # llama-server answers 503 while the model is still loading
+                        if probe.status_code < 500:
+                            ready = True
+                            break
+                except Exception:
+                    pass
+                await asyncio.sleep(0.25)
 
-        if not ready:
-            raise RuntimeError(f"Embedding backend on port {backend_port} did not become ready in time")
+            if not ready:
+                raise RuntimeError(f"Embedding backend on port {backend_port} did not become ready in time")
 
     is_single = isinstance(params.input, str)
     inputs = [params.input] if is_single else params.input

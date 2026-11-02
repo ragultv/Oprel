@@ -47,6 +47,7 @@ htmlcov/
 *.bin
 *.safetensors
 .cache/
+.speech_models/
 
 # Oprel specific
 ~/.cache/oprel/
@@ -67,3 +68,8 @@ site/
 ROADMAP.md
 
 oprel/webui-react/out/
+
+# Databases
+*.db
+*.sqlite
+*.sqlite3

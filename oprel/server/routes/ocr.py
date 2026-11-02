@@ -12,12 +12,35 @@ from oprel.server.services import ocr_service
 
 router = APIRouter()
 
-# ── Status ─────────────────────────────────────────────────────────────────────
+from typing import Optional
+from pydantic import BaseModel
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Body
+
+# ── Status & Model Selection ───────────────────────────────────────────────────
 
 @router.get("/v1/ocr/status")
 async def ocr_status():
     """Return whether OCR models are ready and disk usage."""
     return ocr_service.get_ocr_status()
+
+
+@router.get("/v1/ocr/models")
+async def ocr_models():
+    """Return status of all models in the OCR family."""
+    return ocr_service.get_ocr_models_status()
+
+
+class SelectOcrModelRequest(BaseModel):
+    model_id: str
+
+
+@router.post("/v1/ocr/select-model")
+async def ocr_select_model(req: SelectOcrModelRequest):
+    """Switch active OCR model."""
+    try:
+        return ocr_service.set_active_ocr_model(req.model_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 # ── Setup / Download ────────────────────────────────────────────────────────────
@@ -52,9 +75,12 @@ async def ocr_setup_progress():
 # ── Extraction ─────────────────────────────────────────────────────────────────
 
 @router.post("/v1/ocr/extract")
-async def ocr_extract(file: UploadFile = File(...)):
+async def ocr_extract(
+    file: UploadFile = File(...),
+    model_id: Optional[str] = Form(None),
+):
     """
-    Accept an uploaded image, run PaddleOCR, persist to DB, return result.
+    Accept an uploaded image, run OCR via vision-language model, persist to DB, return result.
 
     Response shape:
       {
@@ -67,7 +93,7 @@ async def ocr_extract(file: UploadFile = File(...)):
       }
     """
     if not ocr_service.is_ocr_ready():
-        raise HTTPException(status_code=503, detail="OCR models not ready. Run /v1/ocr/setup first.")
+        raise HTTPException(status_code=503, detail="OCR models not ready. Please install an OCR model first.")
 
     # Validate content type
     allowed = {"image/png", "image/jpeg", "image/jpg", "image/webp", "image/bmp", "image/tiff"}
@@ -83,7 +109,11 @@ async def ocr_extract(file: UploadFile = File(...)):
         raise HTTPException(status_code=413, detail="Image too large (max 20 MB).")
 
     try:
-        ocr_data = ocr_service.run_ocr(image_bytes)
+        import inspect
+        if inspect.iscoroutinefunction(ocr_service.run_ocr):
+            ocr_data = await ocr_service.run_ocr(image_bytes, target_model_id=model_id)
+        else:
+            ocr_data = ocr_service.run_ocr(image_bytes, target_model_id=model_id)
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
     except Exception as exc:
@@ -119,6 +149,7 @@ async def ocr_extract(file: UploadFile = File(...)):
         "results": results,
         "full_text": full_text,
         "word_count": word_count,
+        "engine": ocr_data.get("engine", "rapidocr"),
     }
 
 
@@ -137,8 +168,17 @@ async def ocr_history(limit: int = 50):
     return jobs
 
 
+@router.delete("/v1/ocr/history")
+async def ocr_clear_history():
+    """Delete all OCR jobs from history."""
+    count = db.clear_all_ocr_jobs()
+    return {"cleared": count}
+
+
 @router.delete("/v1/ocr/history/{job_id}")
 async def ocr_delete_job(job_id: str):
     """Delete a single OCR job."""
     db.delete_ocr_job(job_id)
     return {"deleted": job_id}
+
+

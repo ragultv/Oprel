@@ -14,7 +14,7 @@ logger = get_logger(__name__)
 HYBRID_OFFLOAD_CONTEXT = 4096
 
 # Map KV cache types to bytes per element
-# FP16 = 2, Q8_0 = 1, Q4_0 = 0.5 (approximate)
+# FP16 = 2, Q8_0 = 1, Q4_0 = 0.5, TurboQuant = 0.5 (~4-bit extreme compression)
 KV_CACHE_BYTES = {
     "f32": 4.0,
     "f16": 2.0,
@@ -23,6 +23,8 @@ KV_CACHE_BYTES = {
     "q5_0": 0.625,
     "q4_1": 0.55,
     "q4_0": 0.5,
+    "iq4_nl": 0.5,
+    "turboquant": 0.5,
 }
 
 @dataclass

@@ -1,3 +1,4 @@
+import logging
 import sqlite3
 import uuid
 import json
@@ -5,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional, List
 from oprel.core.config import Config
+from oprel.utils import secrets_store
 
 CONFIG = Config()
 DB_PATH = CONFIG.cache_dir / "chat_history.db"
@@ -281,6 +283,55 @@ def init_db():
         )
     """)
 
+    # Create conversation_memories table for Supermemory long-term context
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS conversation_memories (
+            id TEXT PRIMARY KEY,
+            conversation_id TEXT NOT NULL,
+            user_text TEXT NOT NULL,
+            assistant_text TEXT NOT NULL,
+            turn_index INTEGER DEFAULT 0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+        )
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_memories_conv ON conversation_memories(conversation_id)
+    """)
+
+    # Create hf_auth table for storing connected Hugging Face credentials
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS hf_auth (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            token TEXT NOT NULL,
+            username TEXT,
+            display_name TEXT,
+            avatar_url TEXT,
+            email TEXT,
+            connected_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # Create audio_history table for persistent speech generation records
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS audio_history (
+            id TEXT PRIMARY KEY,
+            model_id TEXT NOT NULL,
+            model_name TEXT NOT NULL,
+            voice_id TEXT NOT NULL,
+            voice_name TEXT NOT NULL,
+            text TEXT NOT NULL,
+            audio_path TEXT,
+            duration_seconds REAL DEFAULT 0,
+            speed REAL DEFAULT 1.0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_audio_history_created ON audio_history(created_at DESC)
+    """)
+
     conn.commit()
     conn.close()
 
@@ -328,6 +379,7 @@ def create_conversation(model_id: str, title: str = "New Chat", conversation_id:
 def delete_conversation(conversation_id: str):
     conn = get_db()
     cursor = conn.cursor()
+    cursor.execute("DELETE FROM conversation_memories WHERE conversation_id = ?", (conversation_id,))
     cursor.execute("DELETE FROM canvas_documents WHERE conversation_id = ?", (conversation_id,))
     cursor.execute("DELETE FROM messages WHERE conversation_id = ?", (conversation_id,))
     cursor.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
@@ -345,6 +397,7 @@ def rename_conversation(conversation_id: str, new_title: str):
 def reset_conversation(conversation_id: str):
     conn = get_db()
     cursor = conn.cursor()
+    cursor.execute("DELETE FROM conversation_memories WHERE conversation_id = ?", (conversation_id,))
     cursor.execute("DELETE FROM canvas_documents WHERE conversation_id = ?", (conversation_id,))
     cursor.execute("DELETE FROM messages WHERE conversation_id = ?", (conversation_id,))
     now = datetime.now().isoformat()
@@ -406,10 +459,15 @@ def get_conversation_messages(conversation_id: str, include_metadata: bool = Fal
     messages = []
     for row in rows:
         content = row["content"]
-        if isinstance(content, str) and (content.startswith('[') or content.startswith('{')):
+        if isinstance(content, str) and content.startswith('['):
+            # Multimodal messages are stored as a JSON list of typed parts. Anything else that merely
+            # looks like JSON (for example a model reply that is a JSON object) must stay plain text:
+            # decoding it would hand providers an object where they require a string or a list.
             try:
-                content = json.loads(content)
-            except:
+                decoded = json.loads(content)
+                if isinstance(decoded, list) and all(isinstance(p, dict) and "type" in p for p in decoded):
+                    content = decoded
+            except Exception:
                 pass
         message = {"role": row["role"], "content": content}
         if include_metadata and row["metadata"]:
@@ -419,6 +477,43 @@ def get_conversation_messages(conversation_id: str, include_metadata: bool = Fal
                 pass
         messages.append(message)
     return messages
+
+def add_conversation_memory(conversation_id: str, user_text: str, assistant_text: str, turn_index: int = 0) -> str:
+    """Store a conversational turn in Supermemory storage."""
+    conn = get_db()
+    cursor = conn.cursor()
+    mem_id = f"mem_{uuid.uuid4().hex[:12]}"
+    now = datetime.now().isoformat()
+    cursor.execute("""
+        INSERT INTO conversation_memories (id, conversation_id, user_text, assistant_text, turn_index, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (mem_id, conversation_id, user_text, assistant_text, turn_index, now))
+    conn.commit()
+    conn.close()
+    return mem_id
+
+def get_conversation_memories(conversation_id: str, limit: int = 100) -> list[dict]:
+    """Retrieve indexed Supermemory conversational turns for a conversation."""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, conversation_id, user_text, assistant_text, turn_index, created_at
+        FROM conversation_memories
+        WHERE conversation_id = ?
+        ORDER BY turn_index ASC, created_at ASC
+        LIMIT ?
+    """, (conversation_id, limit))
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+def delete_conversation_memories(conversation_id: str):
+    """Delete all stored memories for a conversation."""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM conversation_memories WHERE conversation_id = ?", (conversation_id,))
+    conn.commit()
+    conn.close()
 
 def list_conversations():
     conn = get_db()
@@ -456,11 +551,15 @@ def get_active_conversation_count():
 def get_user():
     conn = get_db()
     cursor = conn.cursor()
+    cursor.execute("SELECT avatar_url FROM hf_auth WHERE id = 1")
+    hf_row = cursor.fetchone()
+    avatar_url = hf_row["avatar_url"] if hf_row and hf_row["avatar_url"] else None
+
     cursor.execute("SELECT name, role, avatar_initials FROM users WHERE id = 1")
     row = cursor.fetchone()
     conn.close()
     if row:
-        return {"name": row["name"], "role": row["role"], "initials": row["avatar_initials"]}
+        return {"name": row["name"], "role": row["role"], "initials": row["avatar_initials"], "avatar_url": avatar_url}
     return None
 
 def set_user(name: str, role: str):
@@ -473,9 +572,14 @@ def set_user(name: str, role: str):
         INSERT OR REPLACE INTO users (id, name, role, avatar_initials, updated_at)
         VALUES (1, ?, ?, ?, ?)
     """, (name, role, initials, datetime.now().isoformat()))
+    
+    cursor.execute("SELECT avatar_url FROM hf_auth WHERE id = 1")
+    hf_row = cursor.fetchone()
+    avatar_url = hf_row["avatar_url"] if hf_row and hf_row["avatar_url"] else None
+
     conn.commit()
     conn.close()
-    return {"name": name, "role": role, "initials": initials}
+    return {"name": name, "role": role, "initials": initials, "avatar_url": avatar_url}
 
 def get_user_settings():
     conn = get_db()
@@ -539,6 +643,37 @@ def upsert_canvas_document(conversation_id: str, title: str, content: str, card_
 
 # Initialize DB when module is loaded
 init_db()
+
+
+def migrate_plaintext_secrets() -> int:
+    """Move API keys and the HF token still stored as plain text into the OS keyring."""
+    moved = 0
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, api_key FROM provider_configs")
+    for row in cursor.fetchall():
+        key = row["api_key"]
+        if key and not secrets_store.is_ref(key):
+            ref = secrets_store.protect(f"provider:{row['id']}", key)
+            if ref != key:
+                cursor.execute("UPDATE provider_configs SET api_key = ? WHERE id = ?", (ref, row["id"]))
+                moved += 1
+    cursor.execute("SELECT token FROM hf_auth WHERE id = 1")
+    row = cursor.fetchone()
+    if row and row["token"] and not secrets_store.is_ref(row["token"]):
+        ref = secrets_store.protect("hf_token", row["token"])
+        if ref != row["token"]:
+            cursor.execute("UPDATE hf_auth SET token = ? WHERE id = 1", (ref,))
+            moved += 1
+    conn.commit()
+    conn.close()
+    return moved
+
+
+try:
+    migrate_plaintext_secrets()
+except Exception as _exc:  # never block startup on keyring problems
+    logging.getLogger(__name__).warning(f"Secret migration skipped: {_exc}")
 
 
 def save_download_log(model_id: str, model_name: str, quantization: str, status: str,
@@ -692,7 +827,7 @@ def upsert_provider(p: dict) -> dict:
             updated_at = excluded.updated_at
     """, (
         p["id"], p["name"], p["type"],
-        p.get("api_key", ""),
+        secrets_store.protect(f"provider:{p['id']}", p.get("api_key", "")),
         p.get("base_url", ""),
         1 if p.get("enabled", True) else 0,
         json.dumps(p.get("enabled_model_ids", [])),
@@ -708,6 +843,10 @@ def upsert_provider(p: dict) -> dict:
 def delete_provider(provider_id: str):
     conn = get_db()
     cursor = conn.cursor()
+    cursor.execute("SELECT api_key FROM provider_configs WHERE id = ?", (provider_id,))
+    row = cursor.fetchone()
+    if row:
+        secrets_store.forget(row["api_key"])
     cursor.execute("DELETE FROM provider_configs WHERE id = ?", (provider_id,))
     conn.commit()
     conn.close()
@@ -715,6 +854,7 @@ def delete_provider(provider_id: str):
 
 def _row_to_provider(row) -> dict:
     d = dict(row)
+    d["api_key"] = secrets_store.reveal(d.get("api_key"))
     d["enabled"] = bool(d.get("enabled", 1))
     try:
         d["enabled_model_ids"] = json.loads(d.get("enabled_model_ids") or "[]")
@@ -870,3 +1010,164 @@ def delete_ocr_job(job_id: str) -> None:
     cursor.execute("DELETE FROM ocr_jobs WHERE id = ?", (job_id,))
     conn.commit()
     conn.close()
+
+
+def clear_all_ocr_jobs() -> int:
+    """Delete all OCR jobs from history and return deleted count."""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM ocr_jobs")
+    count = cursor.fetchone()[0]
+    cursor.execute("DELETE FROM ocr_jobs")
+    conn.commit()
+    conn.close()
+    return count
+
+
+# ── Hugging Face Auth ─────────────────────────────────────────────────────────
+
+def save_hf_auth(
+    token: str,
+    username: str,
+    display_name: str = "",
+    avatar_url: str = "",
+    email: str = "",
+) -> dict:
+    """Save or update the active Hugging Face authentication credentials."""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO hf_auth (id, token, username, display_name, avatar_url, email, updated_at)
+        VALUES (1, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(id) DO UPDATE SET
+            token = excluded.token,
+            username = excluded.username,
+            display_name = excluded.display_name,
+            avatar_url = excluded.avatar_url,
+            email = excluded.email,
+            updated_at = CURRENT_TIMESTAMP
+    """, (secrets_store.protect("hf_token", token), username, display_name, avatar_url, email))
+    conn.commit()
+    conn.close()
+    return get_hf_auth() or {}
+
+
+def get_hf_auth() -> Optional[dict]:
+    """Retrieve the stored Hugging Face credentials, if connected."""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, token, username, display_name, avatar_url, email, connected_at, updated_at FROM hf_auth WHERE id = 1")
+    row = cursor.fetchone()
+    conn.close()
+    if row:
+        d = dict(row)
+        d["token"] = secrets_store.reveal(d.get("token"))
+        return d
+    return None
+
+
+def delete_hf_auth() -> bool:
+    """Clear stored Hugging Face credentials."""
+    secrets_store.forget("keyring:hf_token")
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM hf_auth WHERE id = 1")
+    conn.commit()
+    conn.close()
+    return True
+
+
+AUDIO_HISTORY_DIR = CONFIG.cache_dir / "audio_history"
+AUDIO_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def save_audio_history(
+    id: str,
+    model_id: str,
+    model_name: str,
+    voice_id: str,
+    voice_name: str,
+    text: str,
+    audio_path: Optional[str] = None,
+    duration_seconds: float = 0.0,
+    speed: float = 1.0,
+) -> dict:
+    """Save an audio generation record to the database."""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO audio_history (id, model_id, model_name, voice_id, voice_name, text, audio_path, duration_seconds, speed)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (id, model_id, model_name, voice_id, voice_name, text, audio_path, duration_seconds, speed))
+    conn.commit()
+    cursor.execute("SELECT * FROM audio_history WHERE id = ?", (id,))
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else {}
+
+
+def get_audio_history(days: Optional[int] = None) -> List[dict]:
+    """Retrieve audio generation history, optionally filtered by the last N days."""
+    conn = get_db()
+    cursor = conn.cursor()
+    if days and days > 0:
+        cursor.execute(
+            "SELECT * FROM audio_history WHERE created_at >= datetime('now', ?) ORDER BY created_at DESC",
+            (f"-{days} days",),
+        )
+    else:
+        cursor.execute("SELECT * FROM audio_history ORDER BY created_at DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_audio_history_item(id: str) -> Optional[dict]:
+    """Retrieve a single audio history record by ID."""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM audio_history WHERE id = ?", (id,))
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def delete_audio_history_item(id: str) -> bool:
+    """Delete a single audio history item and its associated audio file on disk."""
+    item = get_audio_history_item(id)
+    if not item:
+        return False
+    if item.get("audio_path"):
+        try:
+            p = Path(item["audio_path"])
+            if p.exists():
+                p.unlink()
+        except Exception:
+            pass
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM audio_history WHERE id = ?", (id,))
+    conn.commit()
+    conn.close()
+    return True
+
+
+def clear_audio_history() -> bool:
+    """Delete all audio history records and remove files from disk."""
+    items = get_audio_history()
+    for item in items:
+        if item.get("audio_path"):
+            try:
+                p = Path(item["audio_path"])
+                if p.exists():
+                    p.unlink()
+            except Exception:
+                pass
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM audio_history")
+    conn.commit()
+    conn.close()
+    return True
+
+

@@ -34,12 +34,44 @@ def _enable_fast_transfer() -> None:
     Enable Hugging Face fast transfer (hf_transfer/hf_xet) if installed.
     Accelerates downloads via multi-threaded chunked transfer.
     """
+    os.environ["HF_XET_HIGH_PERFORMANCE"] = "1"
     try:
         import hf_transfer  # noqa: F401
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
         logger.debug("Fast chunked downloader (hf_transfer) enabled via HF_HUB_ENABLE_HF_TRANSFER=1")
     except ImportError:
         logger.debug("hf_transfer not installed; using standard HuggingFace Hub downloader")
+
+
+def get_active_hf_token() -> Optional[str]:
+    """
+    Resolve active Hugging Face user access token.
+    Checks environment variable, database hf_auth table, and config.
+    """
+    env_token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+    if env_token:
+        return env_token.strip()
+
+    try:
+        from oprel.server import db
+        auth = db.get_hf_auth()
+        if auth and auth.get("token"):
+            # Returned explicitly; not exported to os.environ so child processes
+            # (llama.cpp and other helpers) never inherit it.
+            return auth["token"].strip()
+    except Exception as e:
+        logger.debug(f"Could not read HF token from db: {e}")
+
+    try:
+        from oprel.core.config import Config
+        cfg = Config()
+        cfg_token = getattr(cfg, "hf_token", None)
+        if cfg_token:
+            return cfg_token.strip()
+    except Exception:
+        pass
+
+    return None
 
 
 @contextmanager
@@ -82,6 +114,35 @@ def _create_robust_session() -> requests.Session:
     session.mount("https://", adapter)
     
     return session
+
+
+def _fetch_expected_file_info(model_id: str, filename: str, token: Optional[str]):
+    """Return (size_bytes, sha256) published by the Hub for a repo file, or (None, None)."""
+    try:
+        from huggingface_hub import HfApi
+
+        infos = HfApi().get_paths_info(model_id, [filename], token=token)
+        if not infos:
+            return None, None
+        info = infos[0]
+        lfs = getattr(info, "lfs", None)
+        sha = None
+        if lfs is not None:
+            sha = lfs.get("sha256") if isinstance(lfs, dict) else getattr(lfs, "sha256", None)
+        return getattr(info, "size", None), sha
+    except Exception as exc:
+        logger.warning(f"Could not fetch published checksum for {filename}: {exc}")
+        return None, None
+
+
+def _verify_download(file_path: Path, expected_size: Optional[int], expected_sha256: Optional[str]) -> bool:
+    """Check a downloaded file against the size and SHA256 published by the Hub."""
+    if expected_size is not None and file_path.stat().st_size != expected_size:
+        logger.error(
+            f"Size mismatch for {file_path.name}: expected {expected_size}, got {file_path.stat().st_size}"
+        )
+        return False
+    return _verify_file_checksum(file_path, expected_sha256)
 
 
 def _verify_file_checksum(file_path: Path, expected_hash: Optional[str] = None) -> bool:
@@ -349,17 +410,9 @@ def _is_vision_model(model_id: str) -> bool:
     """
     from oprel.downloader.aliases import get_model_category, REPO_TO_ALIAS
     
-    # 1. Check if it's an alias or repo in our official categories
     alias = REPO_TO_ALIAS.get(model_id, model_id)
     category = get_model_category(alias)
-    
-    if category in ["Text + Vision", "OCR"]:
-        return True
-        
-    # 2. Fuzzy matching for external models
-    id_lower = model_id.lower()
-    vision_keywords = ["vl", "vision", "llava", "clip", "ocr", "multimodal", "mllm"]
-    return any(kw in id_lower for kw in vision_keywords)
+    return category in ["Text + Vision", "OCR"]
 
 
 def _ensure_mmproj_downloaded(model_id: str, model_path: Path, cache_dir: Path, force_download: bool = False) -> Optional[Path]:
@@ -387,7 +440,8 @@ def _ensure_mmproj_downloaded(model_id: str, model_path: Path, cache_dir: Path, 
     
     # List files in repo to find mmproj
     try:
-        files = list_repo_files(model_id)
+        token = get_active_hf_token()
+        files = list_repo_files(model_id, token=token)
         mmproj_files = [f for f in files if (f.startswith("mmproj-") or "vision" in f or "clip" in f) and f.endswith(".gguf")]
         
         if mmproj_files:
@@ -421,6 +475,7 @@ def _ensure_mmproj_downloaded(model_id: str, model_path: Path, cache_dir: Path, 
                 cache_dir=str(cache_dir),
                 resume_download=True,
                 force_download=force_download,
+                token=token,
             )
             
             mmproj_file = Path(mmproj_path)
@@ -556,7 +611,8 @@ def _download_model_attempt(
     logger.info(f"[Attempt {attempt}] Searching for {quantization} version of {model_id}")
     
     # List available files in the repo
-    files = list_repo_files(model_id)
+    token = get_active_hf_token()
+    files = list_repo_files(model_id, token=token)
     
     # Find matching GGUF file
     matching_files = [
@@ -619,6 +675,7 @@ def _download_model_attempt(
     
     logger.info(f"Downloading {filename} from {model_id}")
     
+    token = get_active_hf_token()
     # M1.14: Download with resume support
     # M1.13: hf_hub_download handles timeouts and streaming internally
     model_path = hf_hub_download(
@@ -627,6 +684,7 @@ def _download_model_attempt(
         cache_dir=str(cache_dir),
         resume_download=True,  # M1.14: Resume interrupted downloads
         force_download=force_download,
+        token=token,
         # Note: huggingface_hub handles progress internally but we can customize
     )
     
@@ -634,7 +692,8 @@ def _download_model_attempt(
     file_size_mb = downloaded_file.stat().st_size / (1024 * 1024)
     
     # M1.17: Verify downloaded file integrity
-    if not _verify_file_checksum(downloaded_file):
+    expected_size, expected_sha = _fetch_expected_file_info(model_id, filename, token)
+    if not _verify_download(downloaded_file, expected_size, expected_sha):
         logger.error(f"Downloaded file appears corrupted, removing {downloaded_file}")
         downloaded_file.unlink()
         raise ModelNotFoundError("Downloaded file failed integrity check")
@@ -664,7 +723,7 @@ def list_available_quantizations(model_id: str) -> list[str]:
         List of quantization strings (e.g., ["Q4_K_M", "Q5_K_M", "Q8_0"])
     """
     try:
-        files = list_repo_files(model_id)
+        files = list_repo_files(model_id, token=get_active_hf_token())
         gguf_files = [f for f in files if f.endswith(".gguf")]
 
         # Extract quantization from filenames
@@ -813,6 +872,7 @@ def download_model_with_progress(
     # ------------------------------------------------------------------
     _enable_fast_transfer()
 
+    token = get_active_hf_token()
     last_error = None
     for attempt in range(MAX_RETRIES):
         try:
@@ -824,6 +884,7 @@ def download_model_with_progress(
                     force_download=force_download,
                     resume_download=True,
                     tqdm_class=tqdm_class_to_use,
+                    token=token,
                 )
             break
         except (requests.exceptions.RequestException, TimeoutError, ConnectionError, socket.timeout) as e:
