@@ -78,6 +78,18 @@ async def update_tools(connection_id: str, body: ToolPoliciesRequest):
         _raise(exc)
 
 
+@router.get("/{connection_id}/mcp-config")
+async def mcp_config(connection_id: str, read_only: bool = False):
+    """How to use this connection from other apps (Claude Desktop, VS Code, ...) as an MCP server.
+    The command reads the stored connection, so the snippet contains no secrets."""
+    from oprel.mcp_servers import client_config
+
+    connection = store.get_connection(connection_id)
+    if not connection:
+        raise HTTPException(status_code=404, detail="Connection not found")
+    return client_config(connection["integration_type"], read_only=read_only)
+
+
 @router.delete("/{connection_id}")
 async def disconnect(connection_id: str):
     try:

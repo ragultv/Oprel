@@ -1037,6 +1037,12 @@ def main() -> int:
     # Supports alias or filename
     delete_parser.add_argument("model_name", help="Model filename or alias to delete")
 
+    # MCP servers for connected integrations (used by Claude Desktop, VS Code, ...)
+    from oprel.mcp_servers.cli import add_arguments as add_mcp_arguments
+
+    mcp_parser = subparsers.add_parser("mcp", help="Run connectors as MCP servers for other apps")
+    add_mcp_arguments(mcp_parser)
+
     # Parse arguments
     args = parser.parse_args()
 
@@ -1115,6 +1121,10 @@ def main() -> int:
         else:
             cache_parser.print_help()
             return 1
+    elif args.command == "mcp":
+        from oprel.mcp_servers.cli import run as run_mcp
+
+        return run_mcp(args)
     else:
         parser.print_help()
         return 1

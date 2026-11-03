@@ -2,6 +2,8 @@
 
 **Status: built, tested, and parked.** All of the code lives in [`oprel/mcp/`](../../oprel/mcp/). Nothing else in Oprel imports it. The web UI shows "Connectors: coming soon". This guide explains how the feature works, what we learned building it, and exactly how to switch it back on.
 
+> Looking for Oprel's own connectors (Azure DevOps) or the MCP **server** that exposes them to other apps? See [connectors.md](connectors.md). This file covers the parked MCP **client**, which lets Oprel use third-party MCP servers.
+
 Update this file whenever you change anything under `oprel/mcp/`. If a statement here and the code disagree, the code wins; fix the document.
 
 ---

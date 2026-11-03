@@ -54,9 +54,8 @@ const emptySkill: Skill = {
 const TABS = [
   { id: 'config', label: 'Generation', icon: SlidersHorizontal },
   { id: 'providers', label: 'AI Providers', icon: Globe },
-  { id: 'integrations', label: 'Integrations', icon: Plug },
+  { id: 'connectors', label: 'Connectors', icon: Plug },
   { id: 'skills', label: 'Skills', icon: Sparkles },
-  { id: 'connectors', label: 'Connectors', icon: Icons.Plug },
   { id: 'huggingface', label: 'Hugging Face', icon: KeyRound },
 ] as const
 
@@ -864,18 +863,8 @@ export default function SettingsPage() {
             </>
           )}
 
-          {/* ── Integrations ── */}
-          {activeTab === 'integrations' && <IntegrationsPanel />}
-          {/* ── Connectors Tab (coming soon) ── */}
-          {activeTab === 'connectors' && (
-            <div className="flex flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-border px-6 py-16 text-center">
-              <Icons.Plug size={28} className="text-muted-foreground" />
-              <h1 className="text-xl font-bold text-foreground">Connectors are coming soon</h1>
-              <p className="max-w-md text-sm text-muted-foreground">
-                Soon you will be able to connect tools and apps to your local models, with your approval for every action.
-              </p>
-            </div>
-          )}
+          {/* ── Connectors ── */}
+          {activeTab === 'connectors' && <IntegrationsPanel />}
 
           {/* ── Skills Tab ── */}
           {activeTab === 'skills' && (

@@ -3,10 +3,10 @@
 import React, { useCallback, useEffect, useState } from 'react'
 import * as Icons from 'lucide-react'
 import {
-  Check, ExternalLink, KeyRound, Loader2, Lock, Plug, RefreshCw, ShieldCheck, Trash2, X, AlertTriangle,
+  Check, ChevronDown, Copy, ExternalLink, KeyRound, Loader2, Lock, Plug, RefreshCw, ShieldCheck, Trash2, X, AlertTriangle,
 } from 'lucide-react'
 import {
-  IntegrationsAPI, type CatalogEntry, type Connection, type ToolPolicy,
+  IntegrationsAPI, type CatalogEntry, type Connection, type McpConfig, type ToolPolicy,
 } from '@/services/integrations'
 import { cn } from '@/services/utils'
 
@@ -213,6 +213,88 @@ function ToolRow({
 
 // ─── Integration card ─────────────────────────────────────────────────────────
 
+// ─── Use in other apps (MCP server) ───────────────────────────────────────────
+
+const MCP_CLIENTS = [
+  { id: 'mcpServers', label: 'Claude Desktop / Cursor', hint: 'Add to claude_desktop_config.json (or your client\'s mcp.json)' },
+  { id: 'vscode', label: 'VS Code', hint: 'Add to .vscode/mcp.json or your user mcp.json' },
+] as const
+
+function McpSection({ connection, name }: { connection: Connection; name: string }) {
+  const [open, setOpen] = useState(false)
+  const [readOnly, setReadOnly] = useState(false)
+  const [client, setClient] = useState<(typeof MCP_CLIENTS)[number]['id']>('mcpServers')
+  const [config, setConfig] = useState<McpConfig | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
+
+  useEffect(() => {
+    if (!open) return
+    setError(null)
+    IntegrationsAPI.mcpConfig(connection.id, readOnly).then(setConfig).catch(err => setError(err.message))
+  }, [open, readOnly, connection.id])
+
+  const snippet = config ? JSON.stringify(config.clients[client], null, 2) : ''
+  const copy = async () => {
+    await navigator.clipboard.writeText(snippet)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 1500)
+  }
+
+  return (
+    <div className="px-4 py-3 border-t border-border/50">
+      <button onClick={() => setOpen(o => !o)} className="flex items-center gap-1.5 w-full text-left">
+        <ChevronDown size={12} className={cn('text-muted-foreground transition-transform', !open && '-rotate-90')} />
+        <span className="text-[10px] font-semibold text-muted-foreground tracking-widest uppercase">Use in other apps (MCP)</span>
+      </button>
+      {open && (
+        <div className="mt-3 space-y-3">
+          <p className="text-xs text-muted-foreground">
+            Run {name} as an MCP server for Claude Desktop, VS Code, Cursor or any MCP client. It uses this connection,
+            so <span className="text-foreground font-medium">no token goes into the other app&apos;s config</span>.
+            The tool switches above apply; the other app asks you before it runs a tool.
+          </p>
+          {config && !config.mcp_installed && (
+            <p className="text-xs text-amber-500 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2">
+              The MCP package isn&apos;t installed yet. Run <code className="font-mono">{config.install_hint}</code> first.
+            </p>
+          )}
+          <div className="flex items-center gap-2 flex-wrap">
+            {MCP_CLIENTS.map(c => (
+              <button
+                key={c.id}
+                onClick={() => setClient(c.id)}
+                className={cn(
+                  'px-2.5 py-1 rounded-md text-xs border transition-all',
+                  client === c.id ? 'border-primary/40 bg-primary/10 text-foreground' : 'border-border text-muted-foreground hover:text-foreground',
+                )}
+              >
+                {c.label}
+              </button>
+            ))}
+            <label className="flex items-center gap-1.5 text-xs text-muted-foreground ml-auto cursor-pointer">
+              <input type="checkbox" checked={readOnly} onChange={e => setReadOnly(e.target.checked)} />
+              Read-only (no create/update tools)
+            </label>
+          </div>
+          {error && <p className="text-xs text-rose-500">{error}</p>}
+          {config && (
+            <>
+              <p className="text-[11px] text-muted-foreground">{MCP_CLIENTS.find(c => c.id === client)?.hint}</p>
+              <div className="relative">
+                <pre className="text-[11px] font-mono bg-background border border-border rounded-lg p-3 overflow-x-auto">{snippet}</pre>
+                <button onClick={copy} title="Copy" className="absolute top-2 right-2 p-1.5 rounded-md bg-secondary text-muted-foreground hover:text-foreground">
+                  {copied ? <Check size={12} /> : <Copy size={12} />}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function IntegrationCard({
   entry, connection, onChanged, onRemoved,
 }: {
@@ -335,6 +417,8 @@ function IntegrationCard({
           ))}
         </div>
       )}
+
+      {connection && !editing && <McpSection connection={connection} name={entry.name} />}
     </div>
   )
 }
@@ -369,16 +453,17 @@ export default function IntegrationsPanel() {
   return (
     <>
       <div>
-        <h1 className="text-xl font-bold text-foreground">Integrations</h1>
+        <h1 className="text-xl font-bold text-foreground">Connectors</h1>
         <p className="text-sm text-muted-foreground mt-0.5">
           Connect apps so models can act on your behalf: create tasks, update work items and more.
-          Turn tools on per chat with the <span className="font-semibold text-foreground">Tools</span> toggle.
+          Turn tools on per chat with the <span className="font-semibold text-foreground">Tools</span> toggle,
+          or use a connector from other apps over MCP.
         </p>
       </div>
 
       {loading && (
         <div className="flex items-center gap-2 text-sm text-muted-foreground py-8 justify-center">
-          <Loader2 size={14} className="animate-spin" /> Loading integrations…
+          <Loader2 size={14} className="animate-spin" /> Loading connectors…
         </div>
       )}
 

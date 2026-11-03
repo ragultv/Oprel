@@ -152,6 +152,19 @@ export const IntegrationsAPI = {
   disconnect: async (connectionId: string): Promise<void> => {
     await json(await authFetch(`/integrations/${encodeURIComponent(connectionId)}`, { method: 'DELETE' }))
   },
+
+  mcpConfig: async (connectionId: string, readOnly = false): Promise<McpConfig> =>
+    json(await authFetch(`/integrations/${encodeURIComponent(connectionId)}/mcp-config?read_only=${readOnly}`)),
+}
+
+/** How to run a connection as an MCP server for other apps. Contains no secrets. */
+export interface McpConfig {
+  server_name: string
+  command: string
+  args: string[]
+  mcp_installed: boolean
+  install_hint: string
+  clients: { mcpServers: Record<string, unknown>; vscode: Record<string, unknown> }
 }
 
 // ─── Tool-enabled chat streaming ──────────────────────────────────────────────

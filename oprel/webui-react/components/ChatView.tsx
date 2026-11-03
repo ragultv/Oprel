@@ -2072,13 +2072,30 @@ export function ChatView({
                         <button
                           onClick={() => {
                             setToolsMenuOpen(false);
-                            toast({ title: "Connectors", description: "Connectors are coming soon." });
+                            // Nothing connected yet: go set one up. Otherwise this is the same switch as the Tools toggle.
+                            if (connectedIntegrations.length === 0) {
+                              router.push('/settings?tab=connectors');
+                            } else {
+                              setToolsEnabled(v => !v);
+                            }
                           }}
-                          className="w-full text-left px-3 py-2 rounded-xl text-xs transition-all flex items-center gap-2.5 text-foreground/80 hover:bg-secondary hover:text-foreground cursor-pointer font-medium"
+                          title={connectedIntegrations.length === 0
+                            ? "Connect an app (e.g. Azure DevOps) in Settings"
+                            : "Let the model use your connected apps in this chat"}
+                          className={cn(
+                            "w-full text-left px-3 py-2 rounded-xl text-xs transition-all flex items-center gap-2.5 cursor-pointer font-medium",
+                            toolsActive
+                              ? "bg-primary/15 text-primary"
+                              : "text-foreground/80 hover:bg-secondary hover:text-foreground"
+                          )}
                         >
                           <Plug size={14} className="shrink-0 opacity-80" />
                           <span className="flex-1">Connectors</span>
-                          <span className="rounded-full border border-border bg-secondary px-1.5 py-0.5 text-[9px] font-bold text-muted-foreground">Soon</span>
+                          {connectedIntegrations.length === 0 ? (
+                            <span className="rounded-full border border-border bg-secondary px-1.5 py-0.5 text-[9px] font-bold text-muted-foreground">Set up</span>
+                          ) : toolsActive ? (
+                            <span className="text-[9px] font-bold text-primary bg-primary/10 px-1.5 py-0.5 rounded-full border border-primary/20">ON</span>
+                          ) : null}
                         </button>
                       </div>
                     </>

@@ -36,6 +36,8 @@ class Tool:
     kind: ToolKind = "read"
     # Shown on approval cards, e.g. "Create Task in Azure DevOps"
     title: str = ""
+    # Write that overwrites or removes existing data (vs. only adding). Advertised to MCP clients.
+    destructive: bool = False
 
     def to_openai_schema(self) -> dict[str, Any]:
         return {

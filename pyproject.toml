@@ -126,6 +126,11 @@ cuda = [
     "accelerate>=0.25.0",
 ]
 
+# MCP servers for connectors (`oprel mcp serve azure_devops`), used by Claude Desktop, VS Code, ...
+mcp = [
+    "mcp>=2.0,<3; python_version >= '3.10'",
+]
+
 # Development dependencies
 dev = [
     "pytest>=7.4.0",
@@ -145,7 +150,7 @@ docs = [
 
 # All extras
 all = [
-    "oprel[local,cuda,server,dev,docs]",
+    "oprel[local,cuda,server,mcp,dev,docs]",
 ]
 
 [project.urls]
@@ -161,7 +166,7 @@ oprel = "oprel.cli.main:main"
 where = ["."]
 include = ["oprel*"]
 # The MCP connectors are parked (see docs/internal/mcp_connectors.md) and are not shipped yet.
-exclude = ["oprel.mcp*"]
+exclude = ["oprel.mcp", "oprel.mcp.*"]
 
 [tool.setuptools]
 include-package-data = true

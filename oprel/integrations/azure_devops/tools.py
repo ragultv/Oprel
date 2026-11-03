@@ -237,6 +237,7 @@ def build_tools() -> list[Tool]:
             name="ado_update_work_item",
             title="Update Azure DevOps work item",
             kind="write",
+            destructive=True,
             description="Change fields of an existing Azure DevOps work item. Only send the fields that change.",
             parameters={
                 "type": "object",
