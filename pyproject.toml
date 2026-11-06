@@ -107,6 +107,8 @@ dependencies = [
     "Pillow>=10.0.0",
     "httpx>=0.27.0",
     "keyring>=24.0.0",  # OS keychain storage for integration credentials
+    "numpy>=1.24.0",
+    "trimesh>=4.0.0",  # 3D scene toolset: mesh building and GLB export
 ]
 
 [project.optional-dependencies]

@@ -38,6 +38,10 @@ class Tool:
     title: str = ""
     # Write that overwrites or removes existing data (vs. only adding). Advertised to MCP clients.
     destructive: bool = False
+    # Older calls of this tool may be shortened in the history sent to the model (arguments
+    # dropped, result cut to ok/summary/warnings). Only for tools whose latest result carries
+    # the state that matters (e.g. the 3D scene), so small contexts survive many steps.
+    compact_history: bool = False
 
     def to_openai_schema(self) -> dict[str, Any]:
         return {

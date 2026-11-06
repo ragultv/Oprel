@@ -124,6 +124,8 @@ async def connect(integration_type: str, values: dict[str, Any], user_id: int = 
     Omitting the secret on an existing connection keeps the stored one (edit org/project only).
     """
     integration = _require_integration(integration_type)
+    if not integration.requires_connection:
+        raise ConnectionError_(f"{integration.name} is built in: there is nothing to connect.")
     try:
         config, new_secrets = integration.split_fields(values)
     except IntegrationConfigError as exc:
@@ -234,22 +236,33 @@ class BoundTool:
         return self.tool.name
 
 
+def builtin_connection(integration: Integration, user_id: int = store.DEFAULT_USER_ID) -> dict[str, Any]:
+    """Stand-in connection row for a built-in toolset: no config, no secret."""
+    return {"id": f"builtin:{integration.id}", "integration_type": integration.id, "user_id": user_id,
+            "config": {}, "secret_ref": None, "enabled": True, "status": "connected"}
+
+
 def resolve_active_tools(
     integration_ids: list[str] | None, user_id: int = store.DEFAULT_USER_ID
 ) -> list[BoundTool]:
     """
     Tools the model may call for this request: integrations the caller asked for
-    (None/["*"] = all), connected, enabled, and with the tool itself enabled.
+    (None/["*"] = all connected ones), connected, enabled, and with the tool itself enabled.
+    Built-in toolsets (requires_connection=False) are bound only when named explicitly.
     """
     want_all = not integration_ids or "*" in integration_ids
     bound: list[BoundTool] = []
+    for integration in list_integrations():
+        if not integration.requires_connection and integration_ids and integration.id in integration_ids:
+            connection = builtin_connection(integration, user_id)
+            bound.extend(BoundTool(tool, integration, connection, "auto") for tool in integration.tools())
     for connection in store.list_connections(user_id):
         if not connection["enabled"] or connection["status"] not in ("connected", "error"):
             continue
         if not want_all and connection["integration_type"] not in integration_ids:
             continue
         integration = get_integration(connection["integration_type"])
-        if not integration:
+        if not integration or not integration.requires_connection:
             continue
         policies = effective_policies(integration, connection["id"])
         for tool in integration.tools():

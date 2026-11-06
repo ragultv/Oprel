@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import logging
 import threading
 
 from oprel.integrations.base import Integration
@@ -10,6 +11,7 @@ from oprel.tools.base import Tool
 # Adding a new app = new subpackage + one line here.
 BUILTIN_INTEGRATIONS: dict[str, str] = {
     "oprel.integrations.azure_devops": "integration",
+    "oprel.integrations.scene3d": "integration",
 }
 
 _lock = threading.Lock()
@@ -34,7 +36,12 @@ def load_builtin_integrations() -> None:
     if _loaded:
         return
     for module_path, attr in BUILTIN_INTEGRATIONS.items():
-        module = importlib.import_module(module_path)
+        try:
+            module = importlib.import_module(module_path)
+        except ImportError as exc:
+            # A missing optional dependency (e.g. trimesh for scene3d) disables only that integration.
+            logging.getLogger(__name__).warning(f"Integration '{module_path}' is unavailable: {exc}")
+            continue
         integration = getattr(module, attr)
         if integration.id not in _registry:
             register(integration)

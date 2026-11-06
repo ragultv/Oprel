@@ -45,6 +45,7 @@ from oprel.server.routes import (
     ocr,
     speech,
     preflight,
+    scene3d,
 )
 
 
@@ -224,6 +225,7 @@ app.include_router(skills.router)
 app.include_router(ocr.router)
 app.include_router(speech.router)
 app.include_router(preflight.router)
+app.include_router(scene3d.router)
 
 
 def run_server(host: str = "127.0.0.1", port: int = 11435):

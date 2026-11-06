@@ -18,6 +18,7 @@ from . import (
     ocr,
     speech,
     preflight,
+    scene3d,
 )
 
 __all__ = [
@@ -38,4 +39,5 @@ __all__ = [
     "ocr",
     "speech",
     "preflight",
+    "scene3d",
 ]

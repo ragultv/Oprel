@@ -245,6 +245,15 @@ def init_db():
             created_at TEXT NOT NULL
         )
     """)
+    # ── 3D scene (oprel.integrations.scene3d): one recipe per conversation ───
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS scene3d_scenes (
+            conversation_id TEXT PRIMARY KEY,
+            objects_json TEXT NOT NULL DEFAULT '[]',
+            version INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL
+        )
+    """)
 
     # ── Migrations: add missing columns to existing tables ───────────────────
     # This handles databases created before schema additions
@@ -381,6 +390,7 @@ def delete_conversation(conversation_id: str):
     cursor = conn.cursor()
     cursor.execute("DELETE FROM conversation_memories WHERE conversation_id = ?", (conversation_id,))
     cursor.execute("DELETE FROM canvas_documents WHERE conversation_id = ?", (conversation_id,))
+    cursor.execute("DELETE FROM scene3d_scenes WHERE conversation_id = ?", (conversation_id,))
     cursor.execute("DELETE FROM messages WHERE conversation_id = ?", (conversation_id,))
     cursor.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
     conn.commit()
@@ -399,6 +409,7 @@ def reset_conversation(conversation_id: str):
     cursor = conn.cursor()
     cursor.execute("DELETE FROM conversation_memories WHERE conversation_id = ?", (conversation_id,))
     cursor.execute("DELETE FROM canvas_documents WHERE conversation_id = ?", (conversation_id,))
+    cursor.execute("DELETE FROM scene3d_scenes WHERE conversation_id = ?", (conversation_id,))
     cursor.execute("DELETE FROM messages WHERE conversation_id = ?", (conversation_id,))
     now = datetime.now().isoformat()
     cursor.execute("UPDATE conversations SET updated_at = ? WHERE id = ?", (now, conversation_id))

@@ -19,13 +19,14 @@ the client can only approve/reject/edit — never inject arbitrary history.
 from __future__ import annotations
 
 import json
-from dataclasses import asdict
+import re
+from dataclasses import asdict, replace
 from typing import Any, AsyncIterator
 
 from oprel.server import db
 from oprel.server.services.context import logger
 from oprel.server.tools import store
-from oprel.server.tools.adapters import ModelAdapterError, SamplingParams, resolve_adapter
+from oprel.server.tools.adapters import ContextFullError, ModelAdapterError, SamplingParams, resolve_adapter
 from oprel.server.tools.connections import BoundTool, resolve_active_tools
 from oprel.server.tools.executor import error_result, execute, prepare_arguments
 from oprel.tools.base import ToolCall, ToolResult
@@ -42,6 +43,33 @@ BASE_TOOL_PROMPT = (
     "If a tool returns an error, explain it briefly or fix the arguments and retry once. "
     "If the user rejected an action, acknowledge it and do not retry it unless asked."
 )
+
+
+# Small local models often end a turn with "Let me fix that." and never make the call.
+_ANNOUNCES_ACTION = re.compile(
+    r"\b(let me(?! know)|i'll|i will|i'm going to|i am going to|i'm now going to|next,? i)\b", re.I
+)
+FOLLOW_THROUGH_NUDGE = (
+    "You said what you will do next but did not call a tool. Make that tool call now instead of describing it. "
+    "If nothing needs to change, give your final answer."
+)
+
+
+MAX_REPEATS = 2
+REPEAT_MESSAGE = (
+    "This is exactly the call that already failed, so it was not run again. Read that error and change "
+    "the arguments it names; if you can't, tell the user what went wrong."
+)
+
+
+def _signature(name: str, arguments: dict[str, Any]) -> str:
+    return name + json.dumps(arguments, sort_keys=True, default=str)
+
+
+def _announces_action(text: str) -> bool:
+    """Ends by promising an action (not by asking the user something)."""
+    tail = text.strip()[-240:]
+    return bool(tail) and "?" not in tail and bool(_ANNOUNCES_ACTION.search(tail))
 
 
 NO_TOOLS_MESSAGE = (
@@ -88,6 +116,46 @@ def _normalize_messages(messages: list[dict[str, Any]], bound: list[BoundTool]) 
 
 def _tool_message(result: ToolResult) -> dict[str, Any]:
     return {"role": "tool", "tool_call_id": result.tool_call_id, "name": result.name, "content": result.content}
+
+
+_COMPACT_KEYS = ("ok", "error", "summary", "warnings", "notes", "scene_version")
+
+
+def _add_result(state: dict[str, Any], bound: BoundTool | None, result: ToolResult) -> None:
+    """Append a tool result to the history; remember a short form if the tool allows it."""
+    state["messages"].append(_tool_message(result))
+    if bound is not None and bound.tool.compact_history:
+        try:
+            full = json.loads(result.content)
+            short = json.dumps({k: full[k] for k in _COMPACT_KEYS if k in full}, ensure_ascii=False)
+        except (ValueError, TypeError):
+            short = result.content[:300]
+        state.setdefault("compact", {})[result.tool_call_id] = short
+
+
+def _history_for_model(state: dict[str, Any]) -> list[dict[str, Any]]:
+    """
+    The messages to send. Calls of compact_history tools before the latest tool round lose
+    their arguments and most of their result: their state lives on in the latest result, and
+    re-sending every past drawing step would fill a small (4k) context within a few rounds.
+    """
+    compact: dict[str, str] = state.get("compact") or {}
+    messages = state["messages"]
+    if not compact:
+        return messages
+    last_round = max((i for i, m in enumerate(messages) if m.get("role") == "assistant" and m.get("tool_calls")),
+                     default=-1)
+    out = []
+    for i, m in enumerate(messages):
+        if i < last_round and m.get("role") == "tool" and m.get("tool_call_id") in compact:
+            m = {**m, "content": compact[m["tool_call_id"]]}
+        elif i < last_round and m.get("role") == "assistant" and m.get("tool_calls"):
+            m = {**m, "tool_calls": [
+                {**c, "function": {**c["function"], "arguments": "{}"}} if c.get("id") in compact else c
+                for c in m["tool_calls"]
+            ]}
+        out.append(m)
+    return out
 
 
 def _call_to_dict(call: ToolCall) -> dict[str, Any]:
@@ -180,7 +248,9 @@ async def _drive(state: dict[str, Any], bound: list[BoundTool]) -> AsyncIterator
                 continue
 
             needs_manual = b.approval_mode == "manual" or (
-                b.tool.kind == "write" and state["auto_writes"] >= MAX_AUTO_WRITES_PER_TURN
+                b.tool.kind == "write"
+                and b.integration.requires_connection
+                and state["auto_writes"] >= MAX_AUTO_WRITES_PER_TURN
             )
             if needs_manual:
                 state["queue"].pop(0)
@@ -208,11 +278,23 @@ async def _drive(state: dict[str, Any], bound: list[BoundTool]) -> AsyncIterator
                 return
 
             state["queue"].pop(0)
+            signature = _signature(call.name, arguments)
+            if signature in state.get("failed_calls", []):
+                # Small models resend a failing call unchanged until the context is full.
+                state["repeats"] = state.get("repeats", 0) + 1
+                result = error_result(call, REPEAT_MESSAGE)
+                _add_result(state, None, result)
+                yield record({**_event_for_call(b, call, arguments, "auto"), "repeat": True})
+                yield record(_event_for_result(result))
+                continue
             yield record(_event_for_call(b, call, arguments, "auto"))
             result = await execute(b, call, arguments, conversation_id=conv_id, approval="auto")
-            if b.tool.kind == "write":
+            if b.tool.kind == "write" and b.integration.requires_connection:
                 state["auto_writes"] += 1
-            state["messages"].append(_tool_message(result))
+            if not result.ok:
+                state.setdefault("failed_calls", []).append(signature)
+                state["last_error"] = (result.data or {}).get("error", "")
+            _add_result(state, b, result)
             yield record(_event_for_result(result))
 
     async for ev in process_queue():
@@ -228,17 +310,46 @@ async def _drive(state: dict[str, Any], bound: list[BoundTool]) -> AsyncIterator
         yield {"type": "done", "finish_reason": "error", "conversation_id": conv_id}
         return
 
-    while state["iteration"] < MAX_ITERATIONS:
+    max_iterations = max([MAX_ITERATIONS, *(b.integration.max_tool_iterations for b in bound)])
+    while state["iteration"] < max_iterations:
         state["iteration"] += 1
         try:
-            turn = await adapter.complete(state["messages"], schemas, params)
+            turn = await adapter.complete(_history_for_model(state), schemas, params)
+        except ContextFullError as exc:
+            succeeded = [e for e in state.get("events", []) if e["type"] == "tool_result" and e.get("ok")]
+            if not succeeded:
+                yield {"type": "error", "message": str(exc)}
+                yield {"type": "done", "finish_reason": "error", "conversation_id": conv_id}
+                return
+            # The work is done (the tool cards show it); only the closing sentence didn't fit.
+            last = succeeded[-1].get("data") or {}
+            text = f"Done. {last['summary']}." if last.get("summary") else "Done: see the steps above."
+            text += " (The model ran out of context before it could write its own summary.)"
+            yield {"type": "content", "text": text}
+            _persist_final(state, state.get("text", "") + text)
+            yield {"type": "done", "finish_reason": "stop", "conversation_id": conv_id}
+            return
         except ModelAdapterError as exc:
             yield {"type": "error", "message": str(exc)}
             yield {"type": "done", "finish_reason": "error", "conversation_id": conv_id}
             return
 
+        if not turn.tool_calls and not state.get("nudged") and _announces_action(turn.content or "") \
+                and state["iteration"] < max_iterations:
+            # One chance to do what it just announced. The text stays visible, like text sent
+            # alongside a tool call; approval rules still apply to whatever it calls next.
+            state["nudged"] = True
+            state["messages"].append(turn.as_message())
+            state["messages"].append({"role": "user", "content": FOLLOW_THROUGH_NUDGE})
+            state["text"] = state.get("text", "") + turn.content + "\n\n"
+            yield {"type": "content", "text": turn.content + "\n\n"}
+            continue
+
         if not turn.tool_calls:
             text = turn.content or ""
+            if not text.strip() and not state.get("events") and not state.get("text"):
+                # Never leave the user looking at an empty reply.
+                text = "The model returned an empty reply. Try again, rephrase, or switch to a larger model."
             yield {"type": "content", "text": text}
             _persist_final(state, state.get("text", "") + text)
             yield {"type": "done", "finish_reason": "stop", "conversation_id": conv_id}
@@ -255,6 +366,13 @@ async def _drive(state: dict[str, Any], bound: list[BoundTool]) -> AsyncIterator
             yield ev
         if state.get("paused"):
             yield {"type": "done", "finish_reason": "approval_required", "conversation_id": conv_id}
+            return
+        if state.get("repeats", 0) >= MAX_REPEATS:
+            text = ("I couldn't finish: the model kept sending a tool call that fails. "
+                    f"The last error was: {state.get('last_error') or 'unknown'}")
+            yield {"type": "content", "text": text}
+            _persist_final(state, state.get("text", "") + text)
+            yield {"type": "done", "finish_reason": "error", "conversation_id": conv_id}
             return
 
     text = "I stopped after several tool steps without finishing. Tell me how you'd like to continue."
@@ -274,6 +392,10 @@ async def run_tool_loop(
     bound = resolve_active_tools(integration_ids)
     if not bound:
         raise NoToolsAvailable(NO_TOOLS_MESSAGE)
+    caps = [b.integration.max_temperature for b in bound if b.integration.max_temperature is not None]
+    if caps:
+        params = replace(params, temperature=min([params.temperature, *caps]) if params.temperature is not None
+                         else min(caps))
     state: dict[str, Any] = {
         "model": model,
         "messages": _normalize_messages(messages, bound),
@@ -349,7 +471,7 @@ async def resume_after_approval(
         result = await execute(b, call, arguments, conversation_id=conv_id, approval="manual")
         yield record(_event_for_result(result))
 
-    state["messages"].append(_tool_message(result))
+    _add_result(state, b if approve else None, result)
     async for ev in _drive(state, bound):
         yield ev
 

@@ -32,8 +32,10 @@ import {
   Wrench,
   ExternalLink,
   Plug,
+  Box,
 } from "lucide-react"
 import { useRouter } from "next/navigation"
+import dynamic from "next/dynamic"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import remarkBreaks from "remark-breaks"
@@ -53,6 +55,10 @@ import { Skill, recordSkillUsage, ALL_SKILLS } from "@/services/skills"
 import { CanvasPanel, type CanvasDocument } from "@/components/CanvasPanel"
 import ToolActivity, { type ApprovalDecisionHandler } from "@/components/ToolActivity"
 import { IntegrationsAPI, decideApproval, toolChatStream, type ToolEvent } from "@/services/integrations"
+import { SCENE3D_TOOLSET, Scene3DAPI, sceneVersionFromEvent } from "@/services/scene3d"
+
+// three.js is large and browser-only: load the 3D panel on demand.
+const ScenePanel = dynamic(() => import("@/components/ScenePanel"), { ssr: false })
 
 function TypingIndicator() {
   return (
@@ -830,6 +836,10 @@ export function ChatView({
     createdAt: new Date(),
     updatedAt: new Date(),
   })
+  // 3D scene (built-in scene3d toolset): shares the right-hand panel with Canvas.
+  // sceneVersion bumps whenever a scene_* tool changes the drawing, which reloads the panel.
+  const [sceneMode, setSceneMode] = useState(false)
+  const [sceneVersion, setSceneVersion] = useState(0)
   // abort controller for stop-generation
   const abortRef = useRef<AbortController | null>(null)
 
@@ -906,6 +916,23 @@ export function ChatView({
     
     loadCanvas()
 
+    return () => { isMounted = false }
+  }, [activeConversationId])
+
+  // ── Reopen the 3D scene when switching to a chat that has one ─────────────
+  useEffect(() => {
+    setSceneMode(false)
+    setSceneVersion(0)
+    if (!activeConversationId) return
+    let isMounted = true
+    Scene3DAPI.get(activeConversationId)
+      .then(doc => {
+        if (isMounted && doc.objects.length > 0) {
+          setSceneVersion(doc.version)
+          setSceneMode(true)
+        }
+      })
+      .catch(() => {})  // no scene, or the toolset is unavailable
     return () => { isMounted = false }
   }, [activeConversationId])
   // Multi-file attachments (text/code/pdf etc.)
@@ -1256,7 +1283,12 @@ export function ChatView({
     let currentResponse = '';
     let toolEvents: ToolEvent[] = [];
     // Tools and canvas mode both rewrite the reply format; canvas wins if both are on.
-    const wasToolMode = toolsActive && !canvasMode;
+    // The 3D scene is a built-in toolset, so it runs through the same tool loop.
+    const wasToolMode = (toolsActive || sceneMode) && !canvasMode;
+    const enabledToolsets = [
+      ...(toolsActive ? connectedIntegrations : []),
+      ...(sceneMode ? [SCENE3D_TOOLSET] : []),
+    ];
     let effectiveConvId = finalConvId;
     const isFirstMessage = !activeConvRef.current?.messages?.length;
     const abort = new AbortController();
@@ -1279,7 +1311,7 @@ export function ChatView({
             top_p: settings.topP,
             skill: userMsg.skill,
           },
-          connectedIntegrations,
+          enabledToolsets,
           {
             onToken: (token) => {
               if (abort.signal.aborted) return;
@@ -1292,6 +1324,8 @@ export function ChatView({
               setShowTyping(false);
               toolEvents = [...toolEvents, event];
               setStreamingToolEvents(toolEvents);
+              const v = sceneVersionFromEvent(event);
+              if (v !== null) setSceneVersion(v);
             },
             onConversationId: (newId) => {
               loadedConvIdRef.current = newId;
@@ -1553,6 +1587,7 @@ export function ChatView({
     toolsActive,
     connectedIntegrations,
     canvasMode,
+    sceneMode,
   ]);
 
   // ── Approve / reject a pending tool call, then stream the rest of the reply ──
@@ -1584,6 +1619,8 @@ export function ChatView({
           if (event.type === 'done') return;
           extraEvents = [...extraEvents, event];
           apply();
+          const v = sceneVersionFromEvent(event);
+          if (v !== null) setSceneVersion(v);
         },
       }, opts);
     } finally {
@@ -1639,7 +1676,7 @@ export function ChatView({
       {/* Left: chat column — narrows when canvas is open */}
       <div className={cn(
         "flex flex-col overflow-hidden transition-all duration-300 ease-in-out",
-        canvasMode ? "w-[360px] shrink-0" : "flex-1 min-w-0"
+        (canvasMode || sceneMode) ? "w-[360px] shrink-0" : "flex-1 min-w-0"
       )}>
       {/* Header */}
       <header className="h-14 border-b border-border flex items-center justify-between px-5 shrink-0 bg-background/95 backdrop-blur-sm sticky top-0 z-20">
@@ -1953,7 +1990,7 @@ export function ChatView({
               />
             )}
 
-            {(activeSkill || canvasMode) && (
+            {(activeSkill || canvasMode || sceneMode) && (
               <div className="px-4 pt-3.5 flex items-center gap-2 flex-wrap">
                 {activeSkill && (
                   <SkillChip
@@ -1974,12 +2011,28 @@ export function ChatView({
                     </button>
                   </div>
                 )}
+                {sceneMode && (
+                  <div
+                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-primary/10 border border-primary/25 text-[11px] font-semibold text-primary animate-in fade-in duration-200"
+                    title="The model can draw in the 3D scene"
+                  >
+                    <Box size={11} />
+                    <span>3D Scene</span>
+                    <button
+                      onClick={() => setSceneMode(false)}
+                      className="ml-0.5 text-primary/60 hover:text-primary transition-colors"
+                      title="Close the 3D scene"
+                    >
+                      <X size={10} />
+                    </button>
+                  </div>
+                )}
               </div>
             )}
 
             <div className={cn(
               "flex items-start gap-2 px-4 pb-1 min-h-[52px]",
-              (activeSkill || canvasMode) ? "pt-2" : "pt-3.5"
+              (activeSkill || canvasMode || sceneMode) ? "pt-2" : "pt-3.5"
             )}>
               <textarea
                 ref={textareaRef}
@@ -2047,6 +2100,7 @@ export function ChatView({
                             setToolsMenuOpen(false);
                             if (!canvasMode) {
                               setCanvasMode(true);
+                              setSceneMode(false);
                               setCanvasDoc({
                                 id: `canvas-${Date.now()}`,
                                 title: "Canvas",
@@ -2068,6 +2122,24 @@ export function ChatView({
                           <Layout size={14} className="shrink-0 opacity-80" />
                           <span className="flex-1">{canvasMode ? "Close Canvas" : "Canvas"}</span>
                           {canvasMode && <span className="text-[9px] font-bold text-primary bg-primary/10 px-1.5 py-0.5 rounded-full border border-primary/20">ON</span>}
+                        </button>
+                        <button
+                          onClick={() => {
+                            setToolsMenuOpen(false);
+                            setSceneMode(on => !on);
+                            setCanvasMode(false);
+                          }}
+                          title="Let the model draw 3D shapes and objects next to the chat"
+                          className={cn(
+                            "w-full text-left px-3 py-2 rounded-xl text-xs transition-all flex items-center gap-2.5 cursor-pointer font-medium",
+                            sceneMode
+                              ? "bg-primary/15 text-primary"
+                              : "text-foreground/80 hover:bg-secondary hover:text-foreground"
+                          )}
+                        >
+                          <Box size={14} className="shrink-0 opacity-80" />
+                          <span className="flex-1">{sceneMode ? "Close 3D Scene" : "3D Scene"}</span>
+                          {sceneMode && <span className="text-[9px] font-bold text-primary bg-primary/10 px-1.5 py-0.5 rounded-full border border-primary/20">ON</span>}
                         </button>
                         <button
                           onClick={() => {
@@ -2203,8 +2275,22 @@ export function ChatView({
         </div>
       )}
 
-      {/* Right: Artifact Panel (only when canvas is not active) */}
-      {!canvasMode && activeArtifact && (
+      {/* Right: 3D Scene Panel */}
+      {sceneMode && !canvasMode && (
+        <div className="flex-1 min-w-0 p-3 flex flex-col overflow-hidden animate-in slide-in-from-right-4 duration-300">
+          <div className="flex-1 rounded-2xl border border-border/50 overflow-hidden shadow-2xl flex flex-col bg-[#141414]">
+            <ScenePanel
+              conversationId={activeConversationId}
+              version={sceneVersion}
+              onVersionChange={setSceneVersion}
+              onClose={() => setSceneMode(false)}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Right: Artifact Panel (only when no other panel is active) */}
+      {!canvasMode && !sceneMode && activeArtifact && (
         <div
           ref={panelRef}
           style={{ width: 480 }}

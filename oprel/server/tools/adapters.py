@@ -41,6 +41,10 @@ class ModelAdapterError(RuntimeError):
     pass
 
 
+class ContextFullError(ModelAdapterError):
+    """The model's context had no room left to answer (or it got cut off before answering)."""
+
+
 @dataclass
 class AssistantTurn:
     content: str
@@ -129,6 +133,19 @@ class SamplingParams:
     top_p: float | None = None
 
 
+# Local llama.cpp models often run with a small context (4k on 4 GB GPUs). Tool definitions
+# take a big share of it, and "thinking" models (Qwen3, DeepSeek-R1 distills) can spend the
+# rest reasoning and get cut off before they call a tool or answer.
+MIN_ROOM_TO_ANSWER = 256      # fewer tokens left than this: fail fast with a clear message
+# Fewer than this: ask the chat template to skip thinking. Qwen3 often thinks 1.5-3k tokens
+# about tool definitions, and a multi-object tool call needs several hundred more.
+MIN_ROOM_TO_THINK = 4096
+_CONTEXT_HELP = (
+    "Use a cloud model, or give local models more context: set the environment variable "
+    "OPREL_CTX_SIZE (e.g. 8192) and restart Oprel."
+)
+
+
 class OpenAICompatibleAdapter:
     def __init__(
         self,
@@ -139,6 +156,7 @@ class OpenAICompatibleAdapter:
         headers: dict[str, str] | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
         timeout: float = 300.0,
+        llama_server_root: str | None = None,
     ):
         self.label = label
         self.base_url = base_url.rstrip("/")
@@ -146,6 +164,47 @@ class OpenAICompatibleAdapter:
         self._headers = headers or {}
         self._transport = transport
         self._timeout = timeout
+        # Set for local llama.cpp backends: enables context budgeting via /props and /tokenize.
+        self._llama_root = llama_server_root.rstrip("/") if llama_server_root else None
+
+    async def _context_window(self, client: httpx.AsyncClient) -> int | None:
+        # Not cached: a reloaded backend can reuse the port with a different --ctx-size.
+        try:
+            props = (await client.get(f"{self._llama_root}/props")).json()
+            n_ctx = (props.get("default_generation_settings") or {}).get("n_ctx") or props.get("n_ctx")
+            return int(n_ctx) if n_ctx else None
+        except (httpx.HTTPError, ValueError, AttributeError, TypeError):
+            return None
+
+    async def _prompt_tokens(self, client: httpx.AsyncClient, messages: list[dict[str, Any]],
+                             tools: list[dict[str, Any]]) -> int | None:
+        """Close upper bound: the JSON text tokenizes to slightly more than the rendered template."""
+        try:
+            resp = await client.post(f"{self._llama_root}/tokenize",
+                                     json={"content": json.dumps(messages) + json.dumps(tools)})
+            return len(resp.json()["tokens"])
+        except (httpx.HTTPError, ValueError, KeyError, TypeError):
+            return None
+
+    async def _fit_to_context(self, client: httpx.AsyncClient, body: dict[str, Any],
+                              messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> int | None:
+        """Cap max_tokens to the room left and skip thinking when it can't fit. Returns n_ctx."""
+        n_ctx = await self._context_window(client)
+        prompt = await self._prompt_tokens(client, messages, tools) if n_ctx else None
+        if not n_ctx or prompt is None:
+            return n_ctx
+        room = n_ctx - prompt
+        if room < MIN_ROOM_TO_ANSWER:
+            raise ContextFullError(
+                f"{self.label} has a {n_ctx}-token context and this conversation plus the tool definitions "
+                f"already take about {prompt} tokens, so there is no room to answer. "
+                f"Start a new chat or turn off tools you don't need. {_CONTEXT_HELP}"
+            )
+        if room < MIN_ROOM_TO_THINK:
+            # Read by thinking templates (Qwen3, ...); ignored by every other template.
+            body["chat_template_kwargs"] = {"enable_thinking": False}
+        body["max_tokens"] = min(body.get("max_tokens") or room, room)
+        return n_ctx
 
     async def complete(
         self, messages: list[dict[str, Any]], tools: list[dict[str, Any]], params: SamplingParams
@@ -165,8 +224,11 @@ class OpenAICompatibleAdapter:
         if params.top_p is not None:
             body["top_p"] = params.top_p
 
+        n_ctx = None
         try:
             async with httpx.AsyncClient(timeout=self._timeout, transport=self._transport) as client:
+                if self._llama_root:
+                    n_ctx = await self._fit_to_context(client, body, messages, tools)
                 resp = await client.post(f"{self.base_url}/chat/completions", json=body, headers=self._headers)
         except httpx.HTTPError as exc:
             raise ModelAdapterError(f"{self.label}: could not reach model ({type(exc).__name__})") from exc
@@ -188,11 +250,16 @@ class OpenAICompatibleAdapter:
         content = message.get("content") or ""
         if calls and not message.get("tool_calls"):
             content = ""  # the text *was* the tool call (fallback parse)
-        return AssistantTurn(
-            content=_THINK_RE.sub("", content).strip(),
-            tool_calls=calls,
-            reasoning=message.get("reasoning_content") or "",
-        )
+        content = _THINK_RE.sub("", content).strip()
+        reasoning = message.get("reasoning_content") or ""
+        if not calls and not content and choice.get("finish_reason") == "length":
+            # Cut off before producing anything usable: say so instead of returning an empty reply.
+            spent = "thinking" if reasoning or "<think>" in (message.get("content") or "") else "its reply"
+            window = f"its {n_ctx}-token context" if n_ctx else "its output limit"
+            raise ContextFullError(
+                f"{self.label} ran out of room before answering: it used up {window} on {spent}. {_CONTEXT_HELP}"
+            )
+        return AssistantTurn(content=content, tool_calls=calls, reasoning=reasoning)
 
 
 # ---------------------------------------------------------------------------
@@ -256,7 +323,8 @@ def _local_adapter(model_id: str) -> OpenAICompatibleAdapter:
         base = "http://localhost"
     if not base:
         raise ModelAdapterError("Local model backend is not reachable")
-    return OpenAICompatibleAdapter(label=f"Local model {model_id}", base_url=f"{base}/v1", model=resolved, transport=transport)
+    return OpenAICompatibleAdapter(label=f"Local model {model_id}", base_url=f"{base}/v1", model=resolved,
+                                   transport=transport, llama_server_root=base)
 
 
 def resolve_adapter(model: str) -> OpenAICompatibleAdapter:

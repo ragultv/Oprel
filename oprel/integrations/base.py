@@ -50,6 +50,15 @@ class Integration(ABC):
     auth_fields: tuple[AuthField, ...] = ()
     # Lines appended to the system prompt when this integration's tools are active
     system_hint: str = ""
+    # False for built-in toolsets that act on local data only (no credentials, nothing to
+    # connect). They are bound only when a request names them in `enable_tools`, run on
+    # auto-approval and are exempt from the per-turn write cap.
+    requires_connection: bool = True
+    # Model turns allowed per user message; built-ins that draw in several steps raise it.
+    max_tool_iterations: int = 8
+    # Upper bound on sampling temperature while this integration's tools are active
+    # (structured output from small models drifts at chat temperatures). None = no cap.
+    max_temperature: float | None = None
 
     # -- config ------------------------------------------------------------
 
@@ -104,6 +113,7 @@ class Integration(ABC):
             "icon": self.icon,
             "docs_url": self.docs_url,
             "auth_fields": [asdict(f) for f in self.auth_fields],
+            "requires_connection": self.requires_connection,
             "tools": [
                 {"name": t.name, "title": t.title or t.name, "description": t.description, "kind": t.kind}
                 for t in self.tools()

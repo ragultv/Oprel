@@ -60,6 +60,11 @@ function resultLink(data: Record<string, any> | undefined): { url: string; label
 
 function argSummary(args: Record<string, any>): string {
   const parts: string[] = []
+  // 3D scene tools
+  if (Array.isArray(args.objects)) parts.push(`${args.objects.length} object${args.objects.length === 1 ? '' : 's'}`)
+  if (Array.isArray(args.updates)) parts.push(`${args.updates.length} change${args.updates.length === 1 ? '' : 's'}`)
+  if (Array.isArray(args.ids)) parts.push(args.ids.join(', '))
+  if (args.all === true) parts.push('everything')
   if (args.work_item_type) parts.push(String(args.work_item_type))
   if (args.id) parts.push(`#${args.id}`)
   if (args.title) parts.push(`“${args.title}”`)
@@ -67,7 +72,7 @@ function argSummary(args: Record<string, any>): string {
   return parts.join(' ')
 }
 
-const LONG_FIELDS = new Set(['description', 'acceptance_criteria', 'text'])
+const LONG_FIELDS = new Set(['description', 'acceptance_criteria', 'text', 'plan', 'objects', 'updates'])
 
 function ArgumentsTable({ args }: { args: Record<string, any> }) {
   const entries = Object.entries(args)
@@ -80,7 +85,9 @@ function ArgumentsTable({ args }: { args: Record<string, any> }) {
             {key.replace(/_/g, ' ')}
           </span>
           <span className={cn('text-xs text-foreground break-words', LONG_FIELDS.has(key) && 'block mt-1 whitespace-pre-wrap bg-background/60 border border-border/50 rounded-md p-2 font-mono text-[11px] max-h-60 overflow-auto')}>
-            {Array.isArray(value) ? value.join(', ') : typeof value === 'object' ? JSON.stringify(value) : String(value)}
+            {Array.isArray(value)
+              ? value.some(v => v && typeof v === 'object') ? JSON.stringify(value, null, 2) : value.join(', ')
+              : typeof value === 'object' ? JSON.stringify(value) : String(value)}
           </span>
         </div>
       ))}
@@ -243,6 +250,23 @@ function CallCard({ view }: { view: CallView }) {
         </a>
       )}
       {errorText && <p className="mx-3 mb-2 text-rose-500">{errorText}</p>}
+      {result?.ok && typeof result.data?.summary === 'string' && (
+        <p className="mx-3 mb-2 text-muted-foreground">{result.data.summary}</p>
+      )}
+      {result?.ok && Array.isArray(result.data?.notes) && result.data.notes.length > 0 && (
+        <ul className="mx-3 mb-2 space-y-0.5 text-emerald-500">
+          {result.data.notes.map((n: string, i: number) => (
+            <li key={i} className="flex gap-1.5"><Check size={11} className="shrink-0 mt-0.5" /> {n}</li>
+          ))}
+        </ul>
+      )}
+      {result?.ok && Array.isArray(result.data?.warnings) && result.data.warnings.length > 0 && (
+        <ul className="mx-3 mb-2 space-y-0.5 text-amber-500">
+          {result.data.warnings.map((w: string, i: number) => (
+            <li key={i} className="flex gap-1.5"><AlertTriangle size={11} className="shrink-0 mt-0.5" /> {w}</li>
+          ))}
+        </ul>
+      )}
       {open && (
         <div className="px-3 pb-3 pt-1 border-t border-border/50 space-y-2">
           <ArgumentsTable args={view.arguments} />
