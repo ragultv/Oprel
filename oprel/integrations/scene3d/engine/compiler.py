@@ -98,7 +98,8 @@ def _is_around(obj: dict[str, Any]) -> bool:
     return (obj.get("pattern") or {}).get("type") == "around"
 
 
-_ROUND_SHAPES = {"cylinder", "circle", "torus", "sphere", "stool"}
+_ROUND_SHAPES = {"cylinder", "circle", "torus", "sphere", "stool", "lathe",
+                 "vase", "bottle", "cup", "bowl", "plant_pot", "wine_glass"}
 
 
 def _is_round(obj: dict[str, Any]) -> bool:
@@ -465,6 +466,9 @@ def _misplaced_twins(scene: CompiledScene, instance_boxes: dict[str, list[tuple[
     """
     out: list[str] = []
     on_ground: dict[tuple[Any, str, str], str] = {}
+    # Only parts of one group: two separate top-level objects (a vase on a shelf next to the
+    # same vase on the floor) are not a y/z mix-up.
+    instance_boxes = {oid: b for oid, b in instance_boxes.items() if scene.objects[oid].spec.get("parent")}
     for oid, boxes in instance_boxes.items():
         spec = scene.objects[oid].spec
         key = (spec.get("parent"), spec["shape"], json.dumps(spec.get("params"), sort_keys=True))
@@ -479,6 +483,37 @@ def _misplaced_twins(scene: CompiledScene, instance_boxes: dict[str, list[tuple[
                 f"'{oid}' is identical to '{twin}', which stands on the ground, but its bottom is at y={lowest:.2f}. "
                 f"Positions are [x, y, z] with y = height: to move a part sideways change z, not y "
                 f"(or use one object with a pattern)."
+            )
+    return out
+
+
+# Tall vessels: wider than this many times their height no longer looks like the thing.
+_MAX_WIDTH_TO_HEIGHT = {"vase": 1.6, "bottle": 1.2, "cup": 2.0, "wine_glass": 1.6}
+
+
+def _odd_proportions(scene: CompiledScene) -> list[str]:
+    """
+    A vase 4 m wide and 1.2 m tall is a flat disc: usually a number from the user taken as
+    metres when it meant cm or 'twice as wide' (seen with Qwen3-8B: "bottom radius to 2").
+    """
+    out: list[str] = []
+    for oid, co in scene.objects.items():
+        limit = _MAX_WIDTH_TO_HEIGHT.get(co.spec["shape"])
+        if not limit or co.built is None:
+            continue
+        lo, hi = aabb(co.built.points)
+        width, height = float(max(hi[0] - lo[0], hi[2] - lo[2])), float(hi[1] - lo[1])
+        if width > limit * height:
+            radii = {k: v for k, v in (co.spec.get("params") or {}).items() if k.endswith("radius") and v}
+            biggest = max(radii, key=radii.get) if radii else "radius"
+            # Same ratios between the radii, scaled to a typical width (half the height for a vase).
+            scale = (0.5 * limit / 1.6 * height / 2) / max(radii.values()) if radii else 1
+            suggested = {k: round(v * scale, 3) for k, v in radii.items()}
+            out.append(
+                f"'{oid}' is {width:.2f} m wide but only {height:.2f} m tall, so it no longer looks like a "
+                f"{co.spec['shape']} ({biggest} {radii.get(biggest, 0):g} m). User numbers without units are "
+                f"usually relative: same ratios at a {co.spec['shape']}-like size would be params "
+                f"{json.dumps(suggested)}."
             )
     return out
 
@@ -504,6 +539,7 @@ def _warnings(scene: CompiledScene, objs: dict[str, dict[str, Any]]) -> list[str
     out.extend(_overhanging_supports(scene))
     out.extend(_detached_parts(scene, instance_boxes))
     out.extend(_misplaced_twins(scene, instance_boxes))
+    out.extend(_odd_proportions(scene))
 
     def subtree(root: str) -> set[str]:
         ids = {root}

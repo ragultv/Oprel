@@ -10,7 +10,7 @@ import { Canvas, useThree, type ThreeEvent } from '@react-three/fiber'
 import { Bounds, GizmoHelper, GizmoViewport, Grid, OrbitControls, useBounds } from '@react-three/drei'
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
-import { Box, Download, Loader2, Maximize, Trash2, X, Grid3x3 } from 'lucide-react'
+import { Box, Download, Eye, EyeOff, FolderTree, Loader2, Maximize, Trash2, X, Grid3x3 } from 'lucide-react'
 import { Scene3DAPI, type SceneObjectSpec } from '@/services/scene3d'
 import { cn } from '@/services/utils'
 
@@ -91,11 +91,14 @@ function FitOnChange({ token }: { token: unknown }) {
   return null
 }
 
+const HIDDEN_LAYER = 31  // camera and raycaster use layer 0: hidden meshes are neither drawn nor clickable
+
 function SceneContent({
-  root, selected, wireframe, fitToken, onSelect,
+  root, selected, hidden, wireframe, fitToken, onSelect,
 }: {
   root: THREE.Group
   selected: string | null
+  hidden: Set<string>
   wireframe: boolean
   fitToken: unknown
   onSelect: (id: string | null) => void
@@ -104,11 +107,15 @@ function SceneContent({
     root.traverse(obj => {
       const mesh = obj as THREE.Mesh
       if (!mesh.isMesh) return
+      const id = objectId(mesh.name)
+      const isHidden = hidden.has(id)
+      mesh.visible = !isHidden
+      mesh.layers.set(isHidden ? HIDDEN_LAYER : 0)
       const mat = mesh.material as THREE.MeshStandardMaterial
       mat.wireframe = wireframe
-      if (mat.emissive) mat.emissive.set(selected && objectId(mesh.name) === selected ? '#3b2a14' : '#000000')
+      if (mat.emissive) mat.emissive.set(selected && id === selected ? '#6b4a1a' : '#000000')
     })
-  }, [root, selected, wireframe])
+  }, [root, selected, hidden, wireframe])
 
   const handleClick = (e: ThreeEvent<MouseEvent>) => {
     e.stopPropagation()
@@ -137,6 +144,83 @@ function formatParams(params?: Record<string, any>): string {
     .filter(([k]) => k !== 'segments')
     .map(([k, v]) => `${k.replace(/_/g, ' ')} ${typeof v === 'number' ? +v.toFixed(4) : JSON.stringify(v)}`)
     .join(' · ')
+}
+
+/** Ids of the given objects and everything inside them (parts of a group). */
+function withDescendants(ids: Set<string>, objects: SceneObjectSpec[]): Set<string> {
+  const out = new Set(ids)
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const o of objects) {
+      if (o.parent && out.has(o.parent) && !out.has(o.id)) { out.add(o.id); changed = true }
+    }
+  }
+  return out
+}
+
+/** Assembly tree: groups with their parts, an eye per row to hide/show, click to select. */
+function ObjectTree({
+  objects, hidden, effectiveHidden, selected, onToggle, onSelect, onShowAll,
+}: {
+  objects: SceneObjectSpec[]
+  hidden: Set<string>
+  effectiveHidden: Set<string>
+  selected: string | null
+  onToggle: (id: string) => void
+  onSelect: (id: string) => void
+  onShowAll: () => void
+}) {
+  const ids = new Set(objects.map(o => o.id))
+  const children = (parent: string | null) =>
+    objects.filter(o => (parent === null ? !o.parent || !ids.has(o.parent) : o.parent === parent))
+
+  const Row = ({ o, depth }: { o: SceneObjectSpec; depth: number }) => {
+    const kids = children(o.id)
+    const isHidden = effectiveHidden.has(o.id)
+    const viaParent = isHidden && !hidden.has(o.id)  // hidden because its group is
+    return (
+      <>
+        <div
+          className={cn(
+            'group flex items-center gap-1.5 pr-1.5 py-1 rounded-md cursor-pointer text-[11px]',
+            selected === o.id ? 'bg-primary/15 text-primary' : 'text-foreground/85 hover:bg-secondary',
+            isHidden && 'opacity-45',
+          )}
+          style={{ paddingLeft: 6 + depth * 14 }}
+          onClick={() => onSelect(o.id)}
+        >
+          {kids.length > 0 ? <FolderTree size={11} className="shrink-0 text-muted-foreground" />
+            : <Box size={11} className="shrink-0 text-muted-foreground" />}
+          <span className="font-mono truncate flex-1" title={o.id}>{o.id}</span>
+          <span className="text-[10px] text-muted-foreground shrink-0">{o.shape}</span>
+          <button
+            onClick={e => { e.stopPropagation(); onToggle(o.id) }}
+            disabled={viaParent}
+            title={viaParent ? `Hidden with ${o.parent}` : isHidden ? 'Show' : 'Hide'}
+            className="shrink-0 p-0.5 rounded text-muted-foreground hover:text-foreground disabled:cursor-not-allowed"
+          >
+            {isHidden ? <EyeOff size={12} /> : <Eye size={12} />}
+          </button>
+        </div>
+        {kids.map(k => <Row key={k.id} o={k} depth={depth + 1} />)}
+      </>
+    )
+  }
+
+  return (
+    <div className="absolute top-3 right-3 w-56 max-h-[60%] flex flex-col rounded-lg border border-border/60 bg-[#1a1a1a]/95 backdrop-blur">
+      <div className="flex items-center justify-between px-2.5 py-1.5 border-b border-border/50">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Objects</span>
+        {hidden.size > 0 && (
+          <button onClick={onShowAll} className="text-[10px] text-primary hover:underline">Show all</button>
+        )}
+      </div>
+      <div className="overflow-auto p-1">
+        {children(null).map(o => <Row key={o.id} o={o} depth={0} />)}
+      </div>
+    </div>
+  )
 }
 
 function ToolbarButton({ title, onClick, active, disabled, children }: {
@@ -168,6 +252,11 @@ export default function ScenePanel({ conversationId, version, onVersionChange, o
   const [wireframe, setWireframe] = useState(false)
   const [fitToken, setFitToken] = useState(0)
   const [viewRequest, setViewRequest] = useState<{ view: View; n: number } | null>(null)
+  // Hidden object ids: only in the viewer (the model and the saved scene still have them).
+  const [hidden, setHidden] = useState<Set<string>>(new Set())
+  const [showTree, setShowTree] = useState(true)
+
+  useEffect(() => { setHidden(new Set()) }, [conversationId])
 
   // Load the compiled mesh and the recipe whenever the version moves.
   useEffect(() => {
@@ -186,6 +275,7 @@ export default function ScenePanel({ conversationId, version, onVersionChange, o
         setFitToken(t => t + 1)
         setViewRequest(null)
         setSelected(s => (s && doc.objects.some(o => o.id === s) ? s : null))
+        setHidden(h => new Set([...h].filter(id => doc.objects.some(o => o.id === id))))  // drop deleted ids
       })
       .catch(err => { if (!cancelled) setError(err.message || 'Could not load the scene') })
       .finally(() => { if (!cancelled) setLoading(false) })
@@ -195,6 +285,15 @@ export default function ScenePanel({ conversationId, version, onVersionChange, o
   useEffect(() => () => disposeTree(root), [root])
 
   const selectedSpec = useMemo(() => objects.find(o => o.id === selected) || null, [objects, selected])
+  const effectiveHidden = useMemo(() => withDescendants(hidden, objects), [hidden, objects])
+  const toggleHidden = useCallback((id: string) => {
+    setHidden(h => {
+      const next = new Set(h)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }, [])
   const cell = useMemo(() => gridScale(root), [root])
 
   const download = useCallback(() => {
@@ -230,6 +329,7 @@ export default function ScenePanel({ conversationId, version, onVersionChange, o
           {loading && <Loader2 size={12} className="animate-spin text-muted-foreground" />}
         </div>
         <div className="flex items-center gap-0.5">
+          <ToolbarButton title="Objects (hide / show)" onClick={() => setShowTree(s => !s)} active={showTree} disabled={!objects.length}><FolderTree size={14} /></ToolbarButton>
           <ToolbarButton title="Fit to view" onClick={() => setFitToken(t => t + 1)} disabled={!root}><Maximize size={14} /></ToolbarButton>
           <ToolbarButton title="Wireframe" onClick={() => setWireframe(w => !w)} active={wireframe} disabled={!root}><Grid3x3 size={14} /></ToolbarButton>
           <ToolbarButton title="Download GLB" onClick={download} disabled={!glb}><Download size={14} /></ToolbarButton>
@@ -264,7 +364,8 @@ export default function ScenePanel({ conversationId, version, onVersionChange, o
           />
           <Suspense fallback={null}>
             {root && (
-              <SceneContent root={root} selected={selected} wireframe={wireframe} fitToken={fitToken} onSelect={setSelected} />
+              <SceneContent root={root} selected={selected} hidden={effectiveHidden} wireframe={wireframe}
+                fitToken={fitToken} onSelect={setSelected} />
             )}
           </Suspense>
           <OrbitControls makeDefault enableDamping minPolarAngle={0} maxPolarAngle={Math.PI} />
@@ -290,6 +391,18 @@ export default function ScenePanel({ conversationId, version, onVersionChange, o
               </button>
             ))}
           </div>
+        )}
+
+        {showTree && objects.length > 0 && (
+          <ObjectTree
+            objects={objects}
+            hidden={hidden}
+            effectiveHidden={effectiveHidden}
+            selected={selected}
+            onToggle={toggleHidden}
+            onSelect={setSelected}
+            onShowAll={() => setHidden(new Set())}
+          />
         )}
 
         {!root && !loading && !error && (

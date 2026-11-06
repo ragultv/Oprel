@@ -62,7 +62,7 @@ def update_schema(removable: list[str]) -> dict[str, Any]:
         "type": "object",
         "properties": {
             "id": {"type": "string"},
-            "shape": {"type": "string", "enum": shape_names()},
+            "shape": {"type": "string"},  # the add tool lists the names; the engine checks them
             "params": loose,
             "position": _VEC3,
             "rotation": _VEC3,

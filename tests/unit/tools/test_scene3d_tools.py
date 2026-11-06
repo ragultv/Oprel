@@ -23,7 +23,8 @@ class ScriptedModel:
     async def complete(self, messages, tools, params):
         self.seen.append({"messages": json.loads(json.dumps(messages)), "tools": [t["function"]["name"] for t in tools],
                           "temperature": params.temperature})
-        return self.turns.pop(0)
+        # Out of script (e.g. after a warnings reminder): answer plainly, like a model keeping its result.
+        return self.turns.pop(0) if self.turns else AssistantTurn(content="Kept as it is.")
 
 
 def _call(name, n=0, **args):
@@ -358,6 +359,240 @@ def test_a_failing_call_repeated_unchanged_stops_the_turn(client, token, monkeyp
     assert len(model.seen) == 3  # stopped instead of asking the model again
     assert text.startswith("I couldn't finish") and "height" in text
     assert events[-1]["finish_reason"] == "error"
+
+
+def test_several_things_on_one_table_are_spread_out(client, token, monkeypatch):
+    # Verbatim from Qwen3-8B: everything placed {"side": "top"} of the table, so all in its centre.
+    _, _, events, _ = _chat(client, token, monkeypatch, [
+        AssistantTurn(content="", tool_calls=[_call("scene_add_objects", objects=[
+            {"shape": "table", "id": "table", "params": {"width": 1.2, "depth": 0.6}},
+            {"shape": "bowl", "id": "bowl", "placement": {"relative_to": "table", "side": "top"}},
+            {"shape": "cup", "id": "cup1", "placement": {"relative_to": "table", "side": "top"}},
+            {"shape": "cup", "id": "cup2", "placement": {"relative_to": "table", "side": "top"}},
+            {"shape": "wine_glass", "id": "wine_glass", "placement": {"relative_to": "table", "side": "top"}},
+            {"shape": "plant_pot", "id": "plant_pot", "placement": {"relative_to": "table", "side": "right", "gap": 0.2}},
+        ])]),
+        AssistantTurn(content="done"),
+    ])
+    data = _results(events)[0]["data"]
+    assert any(n.startswith("Spread 'bowl', 'cup1', 'cup2', 'wine_glass'") for n in data["notes"])
+    on_top = sorted((o for o in data["objects"] if o["id"] in ("bowl", "cup1", "cup2", "wine_glass")),
+                    key=lambda o: o["min"][0])
+    for a, b in zip(on_top, on_top[1:]):
+        assert a["max"][0] <= b["min"][0]  # side by side, not inside each other
+    assert all(-0.6 <= o["min"][0] and o["max"][0] <= 0.6 and o["min"][1] == 0.75 for o in on_top)
+
+
+def test_follow_up_messages_see_what_is_already_drawn(client, token, monkeypatch):
+    # The web UI sends only chat text, so without the scene in the system prompt Qwen3-8B
+    # answered "reduce the bottom radius" by drawing a second vase.
+    _, first, _, _ = _chat(client, token, monkeypatch, [
+        AssistantTurn(content="", tool_calls=[_call("scene_add_objects", objects=[
+            {"id": "vase", "shape": "vase", "params": {"height": 0.4}},
+        ])]),
+        AssistantTurn(content="done"),
+    ])
+    assert "The 3D scene is empty." in first.seen[0]["messages"][0]["content"]
+    _, second, _, _ = _chat(client, token, monkeypatch, [AssistantTurn(content="ok")])
+    system = second.seen[0]["messages"][0]["content"]
+    assert "Already in the 3D scene" in system and "do NOT add it again" in system
+    assert '- vase: vase {"height":0.4}' in system and "max [" in system
+
+
+def test_relisting_an_existing_object_updates_it_instead_of_failing(client, token, monkeypatch):
+    # Verbatim from Qwen3-8B for "add a small table and put the vase on it": the vase is listed
+    # again with its id. It used to fail and the model ended up adding a second vase.
+    _chat(client, token, monkeypatch, [
+        AssistantTurn(content="", tool_calls=[_call("scene_add_objects", objects=[
+            {"shape": "vase", "params": {"base_radius": 0.08, "radius": 0.2, "neck_radius": 0.15, "top_radius": 0.3},
+             "position": [0, 0, 0]},
+        ])]),
+        AssistantTurn(content="ok"),
+    ])
+    _, _, events, _ = _chat(client, token, monkeypatch, [
+        AssistantTurn(content="", tool_calls=[_call("scene_add_objects", objects=[
+            {"shape": "table", "id": "table", "params": {"width": 1.2, "depth": 1.2, "height": 0.8}},
+            {"shape": "vase", "id": "vase", "params": {"base_radius": 0.05},
+             "placement": {"relative_to": "table", "side": "top", "align": "center"}},
+        ])]),
+        AssistantTurn(content="done"),
+    ])
+    (result,) = _results(events)
+    assert result["ok"], result["data"]
+    assert result["data"]["notes"][0] == "'vase' was already there, so it was updated instead of adding a copy."
+    saved = client.get(f"/scene3d/{CONV}", headers={"X-Oprel-Token": token}).json()["objects"]
+    assert [o["id"] for o in saved] == ["vase", "table"]  # still one vase
+    vase = saved[0]
+    assert vase["params"] == {"base_radius": 0.05, "radius": 0.2, "neck_radius": 0.15, "top_radius": 0.3}
+    assert "position" not in vase and vase["placement"]["relative_to"] == "table"
+    by_id = {o["id"]: o for o in result["data"]["objects"]}
+    assert by_id["vase"]["min"][1] == 0.8  # on the table
+
+
+def test_a_new_vase_on_the_old_vases_spot_is_an_edit(client, token, monkeypatch):
+    # Verbatim from Qwen3-8B for "bottom increase the radius to 2, top radius 1": no id, same spot.
+    _chat(client, token, monkeypatch, [
+        AssistantTurn(content="", tool_calls=[_call("scene_add_objects", objects=[
+            {"shape": "vase", "params": {"base_radius": 0.08, "radius": 0.18, "neck_radius": 0.12, "top_radius": 0.25,
+                                         "height": 1.2}, "position": [0, 0, 0]},
+        ])]),
+        AssistantTurn(content="ok"),
+    ])
+    _, _, events, _ = _chat(client, token, monkeypatch, [
+        AssistantTurn(content="", tool_calls=[_call("scene_add_objects", objects=[
+            {"shape": "vase", "params": {"base_radius": 2, "radius": 0.18, "neck_radius": 0.12, "top_radius": 1,
+                                         "height": 1.2}, "position": [0, 0, 0]},
+        ])]),
+        AssistantTurn(content="done"),
+    ])
+    data = _results(events)[0]["data"]
+    assert data["notes"][0] == "'vase' was already there, so it was updated instead of adding a copy."
+    saved = client.get(f"/scene3d/{CONV}", headers={"X-Oprel-Token": token}).json()["objects"]
+    assert [o["id"] for o in saved] == ["vase"] and saved[0]["params"]["base_radius"] == 2
+    # ...and the absurd result is pointed out to the model.
+    assert any("'vase' is 4.00 m wide but only 1.20 m tall" in w and "base_radius 2 m" in w for w in data["warnings"])
+
+
+def test_absurd_proportions_come_with_numbers_that_keep_the_ratios(client, token, monkeypatch):
+    _, _, events, _ = _chat(client, token, monkeypatch, [
+        AssistantTurn(content="", tool_calls=[_call("scene_add_objects", objects=[
+            {"shape": "vase", "params": {"base_radius": 2, "radius": 1, "neck_radius": 0.5, "top_radius": 1,
+                                         "height": 1.2}},
+        ])]),
+        AssistantTurn(content="done"),
+    ])
+    (warning,) = _results(events)[0]["data"]["warnings"]
+    suggested = json.loads(warning.split("would be params ", 1)[1].rstrip("."))
+    assert suggested == {"base_radius": 0.3, "radius": 0.15, "neck_radius": 0.075, "top_radius": 0.15}
+
+
+def test_a_reply_that_ignores_warnings_gets_one_reminder(client, token, monkeypatch):
+    _, model, events, text = _chat(client, token, monkeypatch, [
+        AssistantTurn(content="", tool_calls=[_call("scene_add_objects", objects=[
+            {"id": "vase", "shape": "vase", "params": {"base_radius": 2, "top_radius": 1, "height": 1.2}},
+        ])]),
+        AssistantTurn(content="Done, the vase has a 2 m base."),
+        AssistantTurn(content="", tool_calls=[_call("scene_update_objects", n=1, updates=[
+            {"id": "vase", "params": {"base_radius": 0.3, "top_radius": 0.15}},
+        ])]),
+        AssistantTurn(content="Made the base twice the top at a vase-like size."),
+    ])
+    results = _results(events)
+    assert [r["ok"] for r in results] == [True, True] and results[1]["data"]["warnings"] == []
+    reminder = model.seen[2]["messages"][-1]
+    assert reminder["role"] == "user" and "warnings you have not dealt with" in reminder["content"]
+    assert "4.00 m wide" in reminder["content"]
+    assert "2 m base" not in text  # the premature reply is not shown
+    assert text == "Made the base twice the top at a vase-like size."
+
+
+def test_the_warnings_reminder_happens_only_once(client, token, monkeypatch):
+    _, model, events, text = _chat(client, token, monkeypatch, [
+        AssistantTurn(content="", tool_calls=[_call("scene_add_objects", objects=[
+            {"id": "ball", "shape": "sphere", "params": {"radius": 0.2}, "position": [0, 2, 0]},
+        ])]),
+        AssistantTurn(content="Done."),
+        AssistantTurn(content="The user asked for a floating ball, so I kept it."),
+    ])
+    assert len(model.seen) == 3
+    assert text == "The user asked for a floating ball, so I kept it."
+
+
+def test_an_update_that_changes_nothing_is_flagged(client, token, monkeypatch):
+    # Seen with Qwen3-8B: for "bottom radius to 2" it resent the old values and said it was done.
+    vase = {"shape": "vase", "params": {"base_radius": 0.02, "top_radius": 0.06, "height": 0.25}, "position": [0, 0, 0]}
+    _chat(client, token, monkeypatch, [
+        AssistantTurn(content="", tool_calls=[_call("scene_add_objects", objects=[vase])]),
+        AssistantTurn(content="ok"),
+    ])
+    _, model, events, _ = _chat(client, token, monkeypatch, [
+        AssistantTurn(content="", tool_calls=[_call("scene_add_objects", objects=[vase])]),
+        AssistantTurn(content="Updated the vase."),
+        AssistantTurn(content="", tool_calls=[_call("scene_update_objects", n=1, updates=[
+            {"id": "vase", "params": {"base_radius": 0.04}}, {"id": "vase", "position": [0, 0, 0]},
+        ])]),
+        AssistantTurn(content="Doubled the base."),
+    ])
+    first, second = _results(events)
+    assert first["data"]["warnings"][0].startswith("'vase' did not change")
+    assert "did not change" in model.seen[2]["messages"][-1]["content"]  # the reminder carried it
+    # The real change is not flagged; the no-op one in the same call is ([0,0,0] = where it was).
+    assert [w for w in second["data"]["warnings"] if "did not change" in w] == [
+        "'vase' did not change: every value you sent is what it already had. Apply what the user asked "
+        "(new numbers) or tell them you didn't change it."]
+
+
+def test_another_vase_somewhere_else_is_still_added(client, token, monkeypatch):
+    _, _, events, _ = _chat(client, token, monkeypatch, [
+        AssistantTurn(content="", tool_calls=[_call("scene_add_objects", objects=[
+            {"shape": "vase", "position": [0, 0, 0]}, {"shape": "vase", "position": [0.5, 0, 0]},
+        ])]),
+        AssistantTurn(content="ok"),
+    ])
+    assert [o["id"] for o in _results(events)[0]["data"]["objects"]] == ["vase", "vase2"]
+
+
+def test_reusing_an_id_for_a_different_shape_is_still_an_error(client, token, monkeypatch):
+    _chat(client, token, monkeypatch, [
+        AssistantTurn(content="", tool_calls=[_call("scene_add_objects", objects=[{"id": "a", "shape": "vase"}])]),
+        AssistantTurn(content="ok"),
+    ])
+    _, _, events, _ = _chat(client, token, monkeypatch, [
+        AssistantTurn(content="", tool_calls=[_call("scene_add_objects", objects=[{"id": "a", "shape": "chair"}])]),
+        AssistantTurn(content="ok"),
+    ])
+    (result,) = _results(events)
+    assert not result["ok"] and "already a vase" in result["data"]["error"]
+
+
+def test_a_floating_vase_is_set_down(client, token, monkeypatch):
+    # Verbatim from Qwen3-8B: a 1.5 m vase "positioned" by its centre, 0.75 m in the air.
+    _, _, events, _ = _chat(client, token, monkeypatch, [
+        AssistantTurn(content="", tool_calls=[_call("scene_add_objects", objects=[
+            {"shape": "vase", "params": {"height": 1.5, "radius": 0.2, "neck_radius": 0.1}, "position": [0, 0.75, 0]},
+        ])]),
+        AssistantTurn(content="done"),
+    ])
+    data = _results(events)[0]["data"]
+    assert data["notes"] == ["Lowered 'vase' 0.750 m onto the ground (position is the bottom-centre)."]
+    assert data["objects"][0]["min"][1] == 0.0 and data["warnings"] == []
+
+
+def test_a_cup_floating_above_a_table_lands_on_the_table_and_hanging_primitives_stay(client, token, monkeypatch):
+    _, _, events, _ = _chat(client, token, monkeypatch, [
+        AssistantTurn(content="", tool_calls=[_call("scene_add_objects", objects=[
+            {"id": "table", "shape": "table"},
+            {"id": "cup", "shape": "cup", "position": [0, 1.2, 0]},
+            {"id": "light", "shape": "sphere", "params": {"radius": 0.1}, "position": [2, 2, 0]},
+        ])]),
+        AssistantTurn(content="done"),
+    ])
+    by_id = {o["id"]: o for o in _results(events)[0]["data"]["objects"]}
+    assert by_id["cup"]["min"][1] == 0.75  # on the table top
+    assert by_id["light"]["min"][1] == 2.0  # a plain shape may hang on purpose
+
+
+def test_relative_to_the_scene_means_just_put_it_in_the_scene(client, token, monkeypatch):
+    _, _, events, _ = _chat(client, token, monkeypatch, [
+        AssistantTurn(content="", tool_calls=[_call("scene_add_objects", objects=[
+            {"shape": "vase", "placement": {"relative_to": "scene", "side": "center"}},
+        ])]),
+        AssistantTurn(content="done"),
+    ])
+    (result,) = _results(events)
+    assert result["ok"] and "'scene' is not an object" in result["data"]["notes"][0]
+
+
+def test_two_separate_identical_objects_get_no_axis_warning(client, token, monkeypatch):
+    _, _, events, _ = _chat(client, token, monkeypatch, [
+        AssistantTurn(content="", tool_calls=[_call("scene_add_objects", objects=[
+            {"id": "shelf", "shape": "box", "params": {"width": 0.5, "height": 1, "depth": 0.3}},
+            {"id": "v1", "shape": "vase", "placement": {"relative_to": "shelf", "side": "top"}},
+            {"id": "v2", "shape": "vase", "position": [1, 0, 0]},
+        ])]),
+        AssistantTurn(content="done"),
+    ])
+    assert _results(events)[0]["data"]["warnings"] == []
 
 
 def test_builtin_is_only_bound_when_named(client, token, monkeypatch):

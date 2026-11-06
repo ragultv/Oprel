@@ -11,15 +11,17 @@ from __future__ import annotations
 from typing import Any
 
 from oprel.integrations.base import ConnectionTestResult, Integration
-from oprel.integrations.scene3d.tools import build_tools
+from oprel.integrations.scene3d.tools import build_tools, scene_summary
 from oprel.tools.base import Tool
 
 # Short on purpose: it is resent every turn and local models often have a 4k context.
 SYSTEM_HINT = """\
 You can draw in a 3D scene next to the chat with the scene_* tools.
-Ready-made objects (table, chair, stool, bench, bookshelf, bed, sofa, lamp) are complete and well proportioned: \
-ALWAYS use them for those things, one object each, default sizes unless asked (a table's legs and round/rectangle \
-top are params). Their front faces +Z. Build from primitives only what is not ready-made.
+Ready-made objects (table, chair, stool, bench, bookshelf, bed, sofa, lamp, vase, bottle, cup, bowl, plant_pot, \
+wine_glass) are complete and well proportioned: ALWAYS use them for those things, one object each, default sizes \
+unless asked (a table's legs and round/rectangle top are params). Their front faces +Z. \
+Build from primitives only what is not ready-made. Other round things (glass, chess piece, lampshade): \
+"lathe" with a [radius, height] profile from the bottom up. Flat outlines (bracket, star, letter): "extrude".
 Coordinates: metres; Y is up and the ground is y=0; right = +X, front (toward the viewer) = +Z, back = -Z.
 position = the object's bottom-centre ([x, 0, z] stands on the ground).
 Seat things around another object: "pattern": {"type": "around", "relative_to": "<id>", "count": 4} \
@@ -33,12 +35,14 @@ Never list identical parts one by one; use one object with a pattern: \
 {"type": "linear", "count": n, "step": [x, y, z]}.
 Draw everything in ONE scene_add_objects call with a short plan. The result gives exact bounds and warnings. \
 Warnings are for you: fix them with scene_update_objects before replying; never ask the user to run a tool. \
-Use short ids. Reply in one or two sentences.
-Example, "a dining table with 6 chairs and a lamp beside it":
-{"plan": "table + 6 chairs around it + floor lamp", "objects": [\
+Use short ids. Reply in one or two sentences. \
+User numbers without units: read them sensibly for the object's size (cm, or relative to its current size, \
+e.g. "bottom 2, top 1" = bottom twice the top), never so the object becomes absurd; say how you read them.
+Example, "a dining table with 6 chairs and a vase on it":
+{"plan": "table + 6 chairs around it + vase on top", "objects": [\
 {"id": "table", "shape": "table", "params": {"width": 1.8, "depth": 0.9}}, \
 {"id": "chairs", "shape": "chair", "pattern": {"type": "around", "relative_to": "table", "count": 6}}, \
-{"id": "lamp", "shape": "lamp", "placement": {"relative_to": "table", "side": "right", "gap": 0.8}}]}
+{"id": "vase", "shape": "vase", "placement": {"relative_to": "table", "side": "top"}}]}
 Example, a custom object, "a rocket":
 {"plan": "body, nose cone on top, 3 fins", "objects": [{"id": "rocket", "shape": "group"}, \
 {"id": "body", "parent": "rocket", "shape": "cylinder", "params": {"radius": 0.3, "height": 2}}, \
@@ -67,6 +71,9 @@ class Scene3DIntegration(Integration):
 
     def tools(self) -> list[Tool]:
         return self._tools
+
+    def context_hint(self, conversation_id: str | None) -> str:
+        return scene_summary(conversation_id)
 
 
 integration = Scene3DIntegration()

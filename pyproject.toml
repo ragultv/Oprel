@@ -109,6 +109,8 @@ dependencies = [
     "keyring>=24.0.0",  # OS keychain storage for integration credentials
     "numpy>=1.24.0",
     "trimesh>=4.0.0",  # 3D scene toolset: mesh building and GLB export
+    "shapely>=2.0",  # 3D scene toolset: checking 2D outlines (lathe, extrude)
+    "manifold3d>=3.0",  # 3D scene toolset: outline triangulation (and boolean cuts, next phase)
 ]
 
 [project.optional-dependencies]

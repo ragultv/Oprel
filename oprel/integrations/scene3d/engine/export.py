@@ -15,6 +15,8 @@ DEFAULT_COLOR = (0.72, 0.74, 0.78)
 SHAPE_COLORS = {
     "table": "#8b5a2b", "chair": "#a0522d", "stool": "#a0522d", "bench": "#8b5a2b", "bookshelf": "#7a4a24",
     "bed": "#d8c8a8", "sofa": "#6b7280", "lamp": "#e8d9b0",
+    "vase": "#4a7fb5", "bottle": "#2e7d5b", "cup": "#ece7de", "bowl": "#e5ddcf", "plant_pot": "#b5562f",
+    "wine_glass": "#cfe3ea",
 }
 
 _NAMED = {

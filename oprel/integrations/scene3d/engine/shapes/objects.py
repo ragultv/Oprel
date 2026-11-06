@@ -16,6 +16,7 @@ import trimesh
 
 from oprel.integrations.scene3d.engine.frame import Z_UP_TO_Y_UP
 from oprel.integrations.scene3d.engine.registry import ToolArgumentError, integer, length, shape
+from oprel.integrations.scene3d.engine.outline import catmull_rom, revolve_profile, vessel_profile
 
 _SEG = 24
 
@@ -168,6 +169,85 @@ def sofa(p: dict[str, Any]) -> trimesh.Trimesh:
     return _join(parts)
 
 
+# --- vessels: smooth hollow solids of revolution (open at the top) ----------------------
+
+def _vessel(control: list[tuple[float, float]], radius: float, floor: float, wall: float | None = None,
+            segments: int = 48) -> trimesh.Trimesh:
+    """Smooth the (radius, height) control points, hollow them out and spin them."""
+    narrowest = min(r for r, _ in control)
+    # The wall must fit inside the narrowest part, or the inside would poke through it.
+    wall = min(wall if wall is not None else max(0.003, 0.06 * radius), 0.45 * narrowest)
+    try:
+        return revolve_profile(vessel_profile(catmull_rom(control), wall, floor), segments)
+    except ToolArgumentError as exc:
+        radii = ", ".join(f"{r:g}" for r, _ in control)
+        raise ToolArgumentError(f"these radii (bottom to top: {radii} m) jump too much to make a smooth shape; "
+                                f"keep neighbouring radii within a few times of each other") from exc
+
+
+@shape("vase", "Hollow. Radii bottom to top: base_radius, radius (belly, 1/3 up), neck_radius, top_radius "
+               "(rim); any can be larger, e.g. a wide top.",
+       {"height": length("Height", 0.3), "radius": length("Belly radius", 0.08),
+        "neck_radius": length("Neck radius", 0.035), "base_radius": length("Base radius"),
+        "top_radius": length("Rim radius")})
+def vase(p: dict[str, Any]) -> trimesh.Trimesh:
+    h, r, n = p["height"], p["radius"], p["neck_radius"]
+    base = p.get("base_radius") or 0.6 * r
+    top = p.get("top_radius") or 1.35 * n
+    belly_low = base + 0.75 * (r - base)
+    # A rim much wider than the neck needs room to flare, or it looks like a funnel stuck on top.
+    neck_y = 0.82 if top <= 1.5 * n else 0.68
+    neck_mid = r + 0.5 * (n - r)
+    profile = [(base, 0), (belly_low, 0.12 * h), (r, 0.35 * h), (neck_mid, (0.35 + neck_y) / 2 * h),
+               (n, neck_y * h), (top, h)]
+    return _vessel(profile, max(base, r, n, top), floor=0.04 * h)
+
+
+@shape("bottle", "Hollow.",
+       {"height": length("Height", 0.3), "radius": length("Body radius", 0.04),
+        "neck_radius": length("Neck radius", 0.013)})
+def bottle(p: dict[str, Any]) -> trimesh.Trimesh:
+    h, r, n = p["height"], p["radius"], p["neck_radius"]
+    _need(n < r, "bottle 'neck_radius' must be smaller than 'radius'")
+    wall = max(0.002, 0.25 * n)
+    return _vessel([(0.94 * r, 0), (r, 0.04 * h), (r, 0.55 * h), (0.75 * r, 0.68 * h), (n, 0.78 * h),
+                    (n, 0.97 * h), (n * 1.15, h)], r, floor=0.03 * h, wall=wall)
+
+
+@shape("cup", "Hollow, no handle.",
+       {"height": length("Height", 0.1), "radius": length("Top radius", 0.04)})
+def cup(p: dict[str, Any]) -> trimesh.Trimesh:
+    h, r = p["height"], p["radius"]
+    return _vessel([(0.82 * r, 0), (0.9 * r, 0.4 * h), (r, h)], r, floor=0.08 * h)
+
+
+@shape("bowl", "Hollow.",
+       {"radius": length("Rim radius", 0.08), "height": length("Height", 0.06)})
+def bowl(p: dict[str, Any]) -> trimesh.Trimesh:
+    h, r = p["height"], p["radius"]
+    return _vessel([(0.45 * r, 0), (0.5 * r, 0.08 * h), (0.8 * r, 0.35 * h), (0.96 * r, 0.7 * h), (r, h)],
+                   r, floor=0.1 * h)
+
+
+@shape("plant_pot", "Hollow, with rim.",
+       {"height": length("Height", 0.2), "radius": length("Top radius", 0.1)})
+def plant_pot(p: dict[str, Any]) -> trimesh.Trimesh:
+    h, r = p["height"], p["radius"]
+    # Straight segments (no smoothing): a pot has crisp edges.
+    profile = [(0.7 * r, 0), (0.92 * r, 0.85 * h), (1.06 * r, 0.86 * h), (1.06 * r, h)]
+    return revolve_profile(vessel_profile(profile, max(0.004, 0.07 * r), 0.08 * h), 48)
+
+
+@shape("wine_glass", "Foot, stem, hollow bowl.",
+       {"height": length("Height", 0.2), "radius": length("Bowl radius", 0.04)})
+def wine_glass(p: dict[str, Any]) -> trimesh.Trimesh:
+    h, r = p["height"], p["radius"]
+    stem_r, stem_top = max(0.003, 0.1 * r), 0.45 * h
+    foot = [(0.85 * r, 0), (0.85 * r, 0.015 * h), (stem_r * 1.6, 0.04 * h), (stem_r, 0.08 * h), (stem_r, stem_top)]
+    cup_ = catmull_rom([(stem_r, stem_top), (0.6 * r, 0.52 * h), (r, 0.72 * h), (0.85 * r, h)])
+    return revolve_profile(vessel_profile(foot + cup_[1:], max(0.0015, 0.04 * r), stem_top + 0.06 * h), 48)
+
+
 @shape("lamp", "Floor lamp.",
        {"height": length("Total height", 1.6), "shade_radius": length("Shade radius", 0.2)})
 def lamp(p: dict[str, Any]) -> trimesh.Trimesh:
@@ -176,3 +256,8 @@ def lamp(p: dict[str, Any]) -> trimesh.Trimesh:
     _need(h > shade_h + 0.05, "lamp 'height' is too low")
     return _join([_cyl(max(sr * 0.75, 0.1), 0.03), _cyl(0.012, h - shade_h, y=0.03),
                   _cyl(sr, shade_h, y=h - shade_h, r_top=sr * 0.6)])
+
+
+# Things that always stand on something: one floating in mid-air is a mistake (see repair.py).
+STANDING_OBJECTS = frozenset({"table", "chair", "stool", "bench", "bookshelf", "bed", "sofa", "vase", "bottle",
+                              "cup", "bowl", "plant_pot", "wine_glass", "lamp"})

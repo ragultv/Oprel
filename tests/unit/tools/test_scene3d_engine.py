@@ -39,19 +39,21 @@ def test_every_shape_is_watertight_and_rests_on_the_ground(shape):
     assert (lo[2] + hi[2]) / 2 == pytest.approx(0, abs=1e-6)
 
 
-READY_MADE = ["table", "chair", "stool", "bench", "bookshelf", "bed", "sofa", "lamp"]
+READY_MADE = ["table", "chair", "stool", "bench", "bookshelf", "bed", "sofa", "lamp",
+              "vase", "bottle", "cup", "bowl", "plant_pot", "wine_glass"]
+PROFILE_SHAPES = ["lathe", "extrude"]  # tested in test_scene3d_profiles.py
 
 
 def test_every_registered_mesh_shape_is_tested():
     meshy = {s.name for s in all_shapes() if s.builder is not None}
-    assert meshy == set(SAMPLE_PARAMS) | set(READY_MADE)
+    assert meshy == set(SAMPLE_PARAMS) | set(READY_MADE) | set(PROFILE_SHAPES)
 
 
 @pytest.mark.parametrize("shape", READY_MADE)
 def test_ready_made_objects_build_with_defaults_and_stand_on_the_ground(shape):
     scene = compile_scene([{"id": "o", "shape": shape}])
     lo, hi = scene.objects["o"].bbox
-    assert lo[1] == pytest.approx(0, abs=1e-9) and hi[1] > 0.3
+    assert lo[1] == pytest.approx(0, abs=1e-9) and hi[1] > 0.05
     assert scene.warnings == []
 
 

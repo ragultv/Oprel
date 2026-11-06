@@ -105,6 +105,10 @@ class Integration(ABC):
     def tools(self) -> list[Tool]:
         ...
 
+    def context_hint(self, conversation_id: str | None) -> str:
+        """Live state to add to the system prompt at the start of each turn (e.g. what's drawn)."""
+        return ""
+
     def manifest(self) -> dict[str, Any]:
         return {
             "id": self.id,

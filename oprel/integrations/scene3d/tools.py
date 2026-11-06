@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import json
 import re
 from typing import Any
 
@@ -16,6 +17,7 @@ from oprel.integrations.scene3d import store
 from oprel.integrations.scene3d.repair import repair
 from oprel.integrations.scene3d.engine import CompiledScene, SceneError, compile_scene
 from oprel.integrations.scene3d.engine.compiler import CompiledObject
+from oprel.integrations.scene3d.engine.frame import vec3
 from oprel.integrations.scene3d.engine.registry import all_shapes
 from oprel.integrations.scene3d.engine.schema import object_schema, update_schema
 from oprel.tools.base import Tool, ToolContext, ToolError
@@ -122,18 +124,38 @@ async def add_objects(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     if not new:
         raise ToolError("'objects' is empty: give at least one object to add.")
     scene = store.get_scene(conv)
-    existing = scene["objects"]
-    taken = {o["id"] for o in existing}
+    existing = copy.deepcopy(scene["objects"])
+    by_id = {o["id"]: o for o in existing}
+    taken = set(by_id)
 
-    added = [copy.deepcopy(raw) for raw in new]
-    for i, obj in enumerate(added):
+    # An object listed again with its existing id is an update, not a copy: models re-list
+    # what is there to move it ("put the vase on the table") and then fumble the id error.
+    added, updated, unchanged = [], [], []
+    for raw in new:
+        obj = copy.deepcopy(raw)
         oid = _clean_id(obj.get("id"))
-        if oid and oid in taken:
-            raise ToolError(f"objects[{i}]: id '{oid}' already exists. Use scene_update_objects to change it, "
-                            f"or pick a new id.")
+        if oid in by_id:
+            if obj.get("shape") and str(obj["shape"]).lower() != by_id[oid].get("shape"):
+                raise ToolError(f"id '{oid}' is already a {by_id[oid].get('shape')}. Pick a new id for the "
+                                f"{obj['shape']}, or delete '{oid}' first.")
+            obj.pop("shape", None)
+            if not _apply_change(by_id[oid], obj):
+                unchanged.append(oid)
+            updated.append(oid)
+            continue
+        twin = _same_spot_twin(obj, existing)
+        if twin is not None:
+            # Seen with Qwen3-8B: "make the bottom bigger" sent as a new vase on the old one's spot.
+            obj.pop("shape", None)
+            obj.pop("id", None)
+            if not _apply_change(twin, obj):
+                unchanged.append(twin["id"])
+            updated.append(twin["id"])
+            continue
         obj["id"] = oid
         if oid:
             taken.add(oid)
+        added.append(obj)
     for obj in added:
         if not obj["id"]:
             # Models often skip ids and then refer to "the table": name it after its shape.
@@ -145,7 +167,12 @@ async def add_objects(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
             obj["id"] = oid
             taken.add(oid)
 
-    notes = _resolve_references(added, existing + added) + _adopt_orphans(added, existing)
+    changed = added + [by_id[u] for u in updated]
+    notes = _resolve_references(changed, existing + added) + _adopt_orphans(added, existing)
+    if updated:
+        notes.insert(0, f"{', '.join(repr(u) for u in updated)} {'was' if len(updated) == 1 else 'were'} "
+                        f"already there, so {'it was' if len(updated) == 1 else 'they were'} updated "
+                        f"instead of adding a copy.")
     objects = existing + added
     try:
         compiled, fixes = await _compile_and_repair(objects)
@@ -153,10 +180,30 @@ async def add_objects(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         raise ToolError(f"{exc} (ids in the scene: {', '.join(o['id'] for o in objects)})") from exc
     notes += fixes
     version = store.save_scene(conv, objects)
-    result = _result(version, compiled, [o["id"] for o in added], "Added")
+    result = _result(version, compiled, [o["id"] for o in added] + updated, "Added" if added else "Updated")
     if notes:
         result["notes"] = notes
+    result["warnings"] = _unchanged_warnings(unchanged) + result["warnings"]
     return result
+
+
+def _same_spot_twin(obj: dict[str, Any], existing: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """
+    The one existing object this 'new' one would sit exactly on top of: same shape, same parent,
+    same position, neither placed relatively or patterned. Two identical things in the same spot
+    are never wanted, so the 'add' is really an edit of that object.
+    """
+    if obj.get("placement") or obj.get("pattern"):
+        return None
+    shape_, pos = str(obj.get("shape", "")).lower(), np.array(vec3(obj.get("position")))
+    matches = [e for e in existing
+               if e.get("shape") == shape_ and e.get("parent") == obj.get("parent")
+               and not e.get("placement") and not e.get("pattern")
+               and np.allclose(np.array(vec3(e.get("position"))), pos, atol=0.01)]
+    return matches[0] if len(matches) == 1 else None
+
+
+_WORLD_WORDS = {"scene", "ground", "floor", "world", "origin", "center", "centre"}
 
 
 def _resolve_references(added: list[dict[str, Any]], objects: list[dict[str, Any]]) -> list[str]:
@@ -176,6 +223,14 @@ def _resolve_references(added: list[dict[str, Any]], objects: list[dict[str, Any
 
     notes = []
     for obj in added:
+        pl = obj.get("placement")
+        if isinstance(pl, dict) and str(pl.get("relative_to", "")).strip().lower() in _WORLD_WORDS \
+                and pl.get("relative_to") not in ids:
+            # "relative to the scene/ground" just means "stand it in the scene": use a position.
+            obj.pop("placement")
+            obj.setdefault("position", [0, 0, 0])
+            notes.append(f"Placed '{obj['id']}' in the scene at {obj['position']} "
+                         f"('{pl.get('relative_to')}' is not an object).")
         for holder, key in ((obj, "parent"), (obj.get("placement"), "relative_to"), (obj.get("pattern"), "relative_to")):
             if not isinstance(holder, dict):
                 continue
@@ -204,6 +259,42 @@ def _adopt_orphans(added: list[dict[str, Any]], existing: list[dict[str, Any]]) 
     return [f"Put {', '.join(repr(o['id']) for o in orphans)} in group '{gid}'."] if orphans else []
 
 
+def _normalized(obj: dict[str, Any]) -> dict[str, Any]:
+    """For comparing: a missing position or rotation is the same as zeros."""
+    out = copy.deepcopy(obj)
+    for key in ("position", "rotation"):
+        out[key] = vec3(out.get(key))
+    return out
+
+
+def _apply_change(obj: dict[str, Any], change: dict[str, Any]) -> bool:
+    """Merge a change into an object: only the given fields change; params are merged.
+    Returns False when the object ended up exactly as it was."""
+    before = _normalized(obj)
+    _merge(obj, change)
+    return _normalized(obj) != before
+
+
+def _merge(obj: dict[str, Any], change: dict[str, Any]) -> None:
+    for key in change.get("remove") or []:
+        obj.pop(key, None)
+    same_shape = change.get("shape") in (None, obj.get("shape"))
+    for key, value in change.items():
+        if key in ("id", "remove"):
+            continue
+        if key == "params" and isinstance(value, dict) and same_shape:
+            obj["params"] = {**(obj.get("params") or {}), **value}
+        elif key == "parent" and value == "":
+            obj.pop("parent", None)
+        else:
+            obj[key] = value
+    # Moving an object one way replaces the other way of positioning it.
+    if "position" in change and "placement" not in change:
+        obj.pop("placement", None)
+    if "placement" in change and "position" not in change:
+        obj.pop("position", None)
+
+
 async def update_objects(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     conv = _conversation(ctx)
     updates = args.get("updates") or []
@@ -213,28 +304,14 @@ async def update_objects(ctx: ToolContext, args: dict[str, Any]) -> dict[str, An
     by_id = {o["id"]: o for o in objects}
 
     touched: list[str] = []
+    unchanged: list[str] = []
     for i, change in enumerate(updates):
         oid = change.get("id")
         if oid not in by_id:
             known = ", ".join(list(by_id)[:30]) or "none"
             raise ToolError(f"updates[{i}]: no object with id '{oid}'. Existing ids: {known}")
-        obj = by_id[oid]
-        for key in change.get("remove") or []:
-            obj.pop(key, None)
-        for key, value in change.items():
-            if key in ("id", "remove"):
-                continue
-            if key == "params" and isinstance(value, dict) and "shape" not in change:
-                obj["params"] = {**(obj.get("params") or {}), **value}
-            elif key == "parent" and value == "":
-                obj.pop("parent", None)
-            else:
-                obj[key] = value
-        # Moving an object one way replaces the other way of positioning it.
-        if "position" in change and "placement" not in change:
-            obj.pop("placement", None)
-        if "placement" in change and "position" not in change:
-            obj.pop("position", None)
+        if not _apply_change(by_id[oid], change):
+            unchanged.append(oid)
         touched.append(oid)
 
     compiled, notes = await _compile_and_repair(objects)
@@ -242,7 +319,14 @@ async def update_objects(ctx: ToolContext, args: dict[str, Any]) -> dict[str, An
     result = _result(version, compiled, touched, "Updated")
     if notes:
         result["notes"] = notes
+    result["warnings"] = _unchanged_warnings(unchanged) + result["warnings"]
     return result
+
+
+def _unchanged_warnings(ids: list[str]) -> list[str]:
+    # Seen with Qwen3-8B: resent the old values for "make the bottom bigger", then said it was done.
+    return [f"'{oid}' did not change: every value you sent is what it already had. Apply what the user "
+            f"asked (new numbers) or tell them you didn't change it." for oid in ids]
 
 
 async def delete_objects(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
@@ -292,6 +376,44 @@ async def get_scene(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     if len(compiled.objects) > MAX_LISTED:
         out["note"] = f"Only the first {MAX_LISTED} objects are listed."
     return out
+
+
+MAX_IN_SUMMARY = 25
+
+
+def scene_summary(conversation_id: str | None) -> str:
+    """
+    What is already drawn, for the system prompt. Without it a follow-up ("make the bottom
+    smaller") can't see the earlier tool calls and draws a second copy instead of editing.
+    """
+    if not conversation_id:
+        return ""
+    objects = store.get_scene(conversation_id)["objects"]
+    if not objects:
+        return "The 3D scene is empty."
+    try:
+        compiled = compile_scene(objects)
+    except SceneError:
+        compiled = None
+    lines = []
+    for o in objects[:MAX_IN_SUMMARY]:
+        line = f"- {o['id']}: {o['shape']}"
+        if o.get("params"):
+            line += " " + json.dumps(o["params"], separators=(",", ":"))
+        if o.get("parent"):
+            line += f" in {o['parent']}"
+        if compiled and o["id"] in compiled.objects:
+            lo, hi = compiled.objects[o["id"]].bbox
+            line += f" min {_round2(lo)} max {_round2(hi)}"
+        lines.append(line)
+    if len(objects) > MAX_IN_SUMMARY:
+        lines.append(f"- ... and {len(objects) - MAX_IN_SUMMARY} more (scene_get_scene lists all)")
+    return ("Already in the 3D scene. To change one of these, call scene_update_objects with its id "
+            "(e.g. new params); do NOT add it again. Add only new things:\n" + "\n".join(lines))
+
+
+def _round2(v: np.ndarray) -> list[float]:
+    return [round(float(x), 2) + 0.0 for x in v]
 
 
 # ---------------------------------------------------------------------------

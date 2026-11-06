@@ -55,6 +55,22 @@ FOLLOW_THROUGH_NUDGE = (
 )
 
 
+WARNINGS_NUDGE = (
+    "Before you answer: the last tool result has warnings you have not dealt with:\n{warnings}\n"
+    "Fix them now with another tool call (use any numbers they suggest). Only if the user explicitly asked "
+    "for exactly this, answer and say why you kept it."
+)
+
+
+def _open_warnings(state: dict[str, Any]) -> list[str]:
+    """Warnings in the most recent tool result, if it succeeded."""
+    last = next((e for e in reversed(state.get("events", [])) if e["type"] == "tool_result"), None)
+    if not last or not last.get("ok"):
+        return []
+    warnings = (last.get("data") or {}).get("warnings")
+    return [str(w) for w in warnings] if isinstance(warnings, list) else []
+
+
 MAX_REPEATS = 2
 REPEAT_MESSAGE = (
     "This is exactly the call that already failed, so it was not run again. Read that error and change "
@@ -86,20 +102,32 @@ class NoToolsAvailable(Exception):
 # helpers
 # ---------------------------------------------------------------------------
 
-def _system_prompt(bound: list[BoundTool], existing: str | None) -> str:
+def _system_prompt(bound: list[BoundTool], existing: str | None, conversation_id: str | None = None) -> str:
     hints = []
     seen = set()
     for b in bound:
-        if b.integration.id not in seen and b.integration.system_hint:
+        if b.integration.id in seen:
+            continue
+        seen.add(b.integration.id)
+        if b.integration.system_hint:
             hints.append(b.integration.system_hint)
-            seen.add(b.integration.id)
+        try:
+            # Live state (e.g. what is already drawn): the client's history holds only chat text,
+            # so without this a follow-up message can't see what earlier tool calls made.
+            context = b.integration.context_hint(conversation_id)
+        except Exception as exc:  # never let a state summary break the chat
+            logger.warning(f"context_hint failed for {b.integration.id}: {exc}")
+            context = ""
+        if context:
+            hints.append(context)
     parts = [BASE_TOOL_PROMPT, *hints]
     if existing and existing.strip():
         parts.append(existing.strip())
     return "\n\n".join(parts)
 
 
-def _normalize_messages(messages: list[dict[str, Any]], bound: list[BoundTool]) -> list[dict[str, Any]]:
+def _normalize_messages(messages: list[dict[str, Any]], bound: list[BoundTool],
+                        conversation_id: str | None = None) -> list[dict[str, Any]]:
     """Fold any client system messages into one leading system prompt that also explains the tools."""
     existing_system = "\n\n".join(
         m["content"]
@@ -111,7 +139,7 @@ def _normalize_messages(messages: list[dict[str, Any]], bound: list[BoundTool]) 
         for m in messages
         if m.get("role") != "system"
     ]
-    return [{"role": "system", "content": _system_prompt(bound, existing_system)}] + rest
+    return [{"role": "system", "content": _system_prompt(bound, existing_system, conversation_id)}] + rest
 
 
 def _tool_message(result: ToolResult) -> dict[str, Any]:
@@ -345,6 +373,16 @@ async def _drive(state: dict[str, Any], bound: list[BoundTool]) -> AsyncIterator
             yield {"type": "content", "text": turn.content + "\n\n"}
             continue
 
+        warnings = _open_warnings(state)
+        if not turn.tool_calls and warnings and not state.get("warned") and state["iteration"] < max_iterations:
+            # Small models reply "done" right past warnings (a 4 m-wide 'vase'). One chance to fix
+            # them. The premature reply isn't shown: the user sees the corrected answer instead.
+            state["warned"] = True
+            state["messages"].append(turn.as_message())
+            state["messages"].append({"role": "user", "content": WARNINGS_NUDGE.format(
+                warnings="\n".join(f"- {w}" for w in warnings[:5]))})
+            continue
+
         if not turn.tool_calls:
             text = turn.content or ""
             if not text.strip() and not state.get("events") and not state.get("text"):
@@ -398,7 +436,7 @@ async def run_tool_loop(
                          else min(caps))
     state: dict[str, Any] = {
         "model": model,
-        "messages": _normalize_messages(messages, bound),
+        "messages": _normalize_messages(messages, bound, conversation_id),
         "integration_ids": integration_ids,
         "params": asdict(params),
         "conversation_id": conversation_id,
