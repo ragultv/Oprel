@@ -406,15 +406,15 @@ export default function ScenePanel({ conversationId, version, onVersionChange, o
     <div className="flex flex-col h-full bg-[#141414] overflow-hidden">
       {/* Top bar */}
       <div className="h-12 flex items-center justify-between px-4 border-b border-border/40 shrink-0 gap-3">
-        <div className="flex items-center gap-2 min-w-0">
+        <div className="flex items-center gap-2 min-w-0 overflow-hidden">
           <Box size={15} className="text-primary shrink-0" />
-          <span className="text-sm font-semibold text-foreground">3D Scene</span>
+          <span className="text-sm font-semibold text-foreground whitespace-nowrap">3D Scene</span>
           <span className="text-[10px] text-muted-foreground truncate">
             {objects.length} object{objects.length === 1 ? '' : 's'}{loadedVersion ? ` · v${loadedVersion}` : ''}
           </span>
           {loading && <Loader2 size={12} className="animate-spin text-muted-foreground" />}
         </div>
-        <div className="flex items-center gap-0.5">
+        <div className="flex items-center gap-0.5 shrink-0">
           <ToolbarButton title="Objects (hide / show)" onClick={() => setShowTree(s => !s)} active={showTree} disabled={!objects.length}><FolderTree size={14} /></ToolbarButton>
           <ToolbarButton title="Fit to view" onClick={() => setFitToken(t => t + 1)} disabled={!root}><Maximize size={14} /></ToolbarButton>
           <ToolbarButton title="Wireframe" onClick={() => setWireframe(w => !w)} active={wireframe} disabled={!root}><Grid3x3 size={14} /></ToolbarButton>

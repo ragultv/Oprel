@@ -60,6 +60,13 @@ import { SCENE3D_TOOLSET, Scene3DAPI, sceneVersionFromEvent } from "@/services/s
 // three.js is large and browser-only: load the 3D panel on demand.
 const ScenePanel = dynamic(() => import("@/components/ScenePanel"), { ssr: false })
 
+// Chat column next to Canvas / 3D Scene (px). Below SIDE_CHAT_COMPACT the input bar drops its extras.
+const SIDE_CHAT_KEY = "oprel.sideChatWidth"
+const SIDE_CHAT_DEFAULT = 420
+const SIDE_CHAT_MIN = 320
+const SIDE_CHAT_COMPACT = 400
+const SIDE_PANEL_MIN = 440
+
 function TypingIndicator() {
   return (
     <div className="flex items-center gap-1 py-2">
@@ -840,6 +847,34 @@ export function ChatView({
   // sceneVersion bumps whenever a scene_* tool changes the drawing, which reloads the panel.
   const [sceneMode, setSceneMode] = useState(false)
   const [sceneVersion, setSceneVersion] = useState(0)
+  // Chat column width while Canvas / 3D Scene is open: drag the divider to resize, double-click to reset.
+  const layoutRef = useRef<HTMLDivElement>(null)
+  const [chatWidth, setChatWidth] = useState(SIDE_CHAT_DEFAULT)
+  const [resizing, setResizing] = useState(false)
+  useEffect(() => {
+    const saved = Number(localStorage.getItem(SIDE_CHAT_KEY))
+    if (saved >= SIDE_CHAT_MIN) setChatWidth(saved)
+  }, [])
+  const startResize = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    e.currentTarget.setPointerCapture(e.pointerId)
+    setResizing(true)
+  }
+  const onResize = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!resizing || !layoutRef.current) return
+    const box = layoutRef.current.getBoundingClientRect()
+    const max = box.width - SIDE_PANEL_MIN
+    setChatWidth(Math.round(Math.max(SIDE_CHAT_MIN, Math.min(max, e.clientX - box.left))))
+  }
+  const endResize = () => {
+    if (!resizing) return
+    setResizing(false)
+    localStorage.setItem(SIDE_CHAT_KEY, String(chatWidth))
+  }
+  const resetResize = () => {
+    setChatWidth(SIDE_CHAT_DEFAULT)
+    localStorage.removeItem(SIDE_CHAT_KEY)
+  }
   // abort controller for stop-generation
   const abortRef = useRef<AbortController | null>(null)
 
@@ -1670,14 +1705,20 @@ export function ChatView({
   }
 
   const tokenCount = Math.ceil(input.length / 4)
+  const sidePanel = canvasMode || sceneMode
+  const compact = sidePanel && chatWidth < SIDE_CHAT_COMPACT
 
   return (
-    <div className="flex h-full bg-background overflow-hidden">
-      {/* Left: chat column — narrows when canvas is open */}
-      <div className={cn(
-        "flex flex-col overflow-hidden transition-all duration-300 ease-in-out",
-        (canvasMode || sceneMode) ? "w-[360px] shrink-0" : "flex-1 min-w-0"
-      )}>
+    <div ref={layoutRef} className={cn("flex h-full bg-background overflow-hidden", resizing && "select-none cursor-col-resize")}>
+      {/* Left: chat column — narrows when canvas is open; the divider resizes it */}
+      <div
+        className={cn(
+          "flex flex-col overflow-hidden",
+          !resizing && "transition-all duration-300 ease-in-out",
+          sidePanel ? "shrink-0" : "flex-1 min-w-0"
+        )}
+        style={sidePanel ? { width: chatWidth, minWidth: SIDE_CHAT_MIN, maxWidth: `calc(100% - ${SIDE_PANEL_MIN}px)` } : undefined}
+      >
       {/* Header */}
       <header className="h-14 border-b border-border flex items-center justify-between px-5 shrink-0 bg-background/95 backdrop-blur-sm sticky top-0 z-20">
         <div className="flex items-center gap-3">
@@ -2054,8 +2095,8 @@ export function ChatView({
               onChange={handleFileSelect}
             />
 
-            <div className="flex items-center justify-between px-3 pb-3 pt-1">
-              <div className="flex items-center gap-2">
+            <div className="flex items-center justify-between gap-2 px-3 pb-3 pt-1">
+              <div className={cn("flex items-center min-w-0", compact ? "gap-1" : "gap-2")}>
                 <div className="relative">
                   <button
                     onClick={() => setToolsMenuOpen(!toolsMenuOpen)}
@@ -2173,10 +2214,10 @@ export function ChatView({
                     </>
                   )}
                 </div>
-                <div className="h-4 w-px bg-border mx-1" />
+                {!compact && <div className="h-4 w-px bg-border mx-1 shrink-0" />}
 
                 {/* Mode toggle */}
-                <div className="flex items-center bg-[#171717] border border-border rounded-full p-0.5 gap-0.5">
+                <div className="flex items-center bg-[#171717] border border-border rounded-full p-0.5 gap-0.5 shrink-0">
                   <button
                     onClick={() => setRagEnabled(false)}
                     className={cn(
@@ -2203,7 +2244,8 @@ export function ChatView({
                   <button
                     onClick={() => setToolsEnabled(v => !v)}
                     className={cn(
-                      "ml-1 px-3 py-1 rounded-full text-[10px] font-bold transition-all flex items-center gap-1 border",
+                      "px-3 py-1 rounded-full text-[10px] font-bold transition-all flex items-center gap-1 border shrink-0",
+                      !compact && "ml-1",
                       toolsEnabled
                         ? "bg-primary text-primary-foreground border-primary shadow-sm"
                         : "bg-[#171717] text-muted-foreground border-border hover:text-foreground"
@@ -2217,15 +2259,19 @@ export function ChatView({
                   </button>
                 )}
 
-                <div className="h-4 w-px bg-border mx-1" />
-                <span className="text-[10px] font-mono text-muted-foreground">{tokenCount} / {settings.maxTokens}</span>
+                {!compact && (
+                  <>
+                    <div className="h-4 w-px bg-border mx-1 shrink-0" />
+                    <span className="text-[10px] font-mono text-muted-foreground whitespace-nowrap truncate">{tokenCount} / {settings.maxTokens}</span>
+                  </>
+                )}
               </div>
 
               {/* Send / Stop button */}
               {isGenerating ? (
                 <button
                   onClick={stopGeneration}
-                  className="w-9 h-9 rounded-lg flex items-center justify-center transition-all bg-destructive/90 text-white hover:bg-destructive shadow-lg shadow-destructive/20 animate-pulse"
+                  className="w-9 h-9 shrink-0 rounded-lg flex items-center justify-center transition-all bg-destructive/90 text-white hover:bg-destructive shadow-lg shadow-destructive/20 animate-pulse"
                   title="Stop generation"
                 >
                   <Square size={14} fill="currentColor" />
@@ -2235,7 +2281,7 @@ export function ChatView({
                   onClick={sendMessage}
                   disabled={!input.trim() && !selectedImage && attachments.length === 0}
                   className={cn(
-                    "w-9 h-9 rounded-lg flex items-center justify-center transition-all",
+                    "w-9 h-9 shrink-0 rounded-lg flex items-center justify-center transition-all",
                     (input.trim() || selectedImage || attachments.length > 0)
                       ? "bg-primary text-primary-foreground hover:bg-primary/90 shadow-lg shadow-primary/20"
                       : "bg-secondary text-muted-foreground cursor-not-allowed"
@@ -2260,6 +2306,26 @@ export function ChatView({
       </div>
       {/* END left column */}
       </div>
+
+      {/* Divider: drag to resize the chat / panel split */}
+      {sidePanel && (
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          title="Drag to resize · double-click to reset"
+          onPointerDown={startResize}
+          onPointerMove={onResize}
+          onPointerUp={endResize}
+          onPointerCancel={endResize}
+          onDoubleClick={resetResize}
+          className="group relative w-1.5 -mr-1.5 shrink-0 cursor-col-resize z-10 touch-none"
+        >
+          <div className={cn(
+            "absolute inset-y-3 left-1/2 -translate-x-1/2 w-0.5 rounded-full transition-colors",
+            resizing ? "bg-primary" : "bg-transparent group-hover:bg-primary/60"
+          )} />
+        </div>
+      )}
 
       {/* Right: Canvas Panel — fills all remaining space, rounded design */}
       {canvasMode && (
