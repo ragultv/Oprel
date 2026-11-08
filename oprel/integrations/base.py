@@ -59,6 +59,9 @@ class Integration(ABC):
     # Upper bound on sampling temperature while this integration's tools are active
     # (structured output from small models drifts at chat temperatures). None = no cap.
     max_temperature: float | None = None
+    # False: ask local thinking models (Qwen3, ...) to skip their reasoning step while this
+    # integration's tools are active, for tools whose results already check the model's work.
+    allow_thinking: bool = True
 
     # -- config ------------------------------------------------------------
 

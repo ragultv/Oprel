@@ -15,6 +15,7 @@ frame before the parent's own pattern), so parts of a patterned group follow eve
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any, Iterable
@@ -22,7 +23,8 @@ from typing import Any, Iterable
 import numpy as np
 import trimesh
 
-from oprel.integrations.scene3d.engine import patterns
+from oprel.integrations.scene3d.engine import cuts, merge, patterns
+from oprel.integrations.scene3d.engine.merge import MergedSolid
 from oprel.integrations.scene3d.engine.frame import (
     IDENTITY, aabb, rotation_deg, transform_points, translation, vec3,
 )
@@ -50,6 +52,7 @@ class SceneError(ValueError):
 class BuiltMesh:
     mesh: trimesh.Trimesh  # bottom-centre at the origin; shared, never mutate
     points: np.ndarray     # vertices used for exact bounds after any rotation
+    notes: tuple[str, ...] = ()  # from cuts: what the model should check (a cut that misses)
 
 
 @dataclass
@@ -71,6 +74,7 @@ class CompiledObject:
 class CompiledScene:
     objects: dict[str, CompiledObject] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
+    merged: dict[str, MergedSolid] = field(default_factory=dict)  # merged group id -> its fused solid
 
     @property
     def triangles(self) -> int:
@@ -82,20 +86,33 @@ class CompiledScene:
 # ---------------------------------------------------------------------------
 
 @lru_cache(maxsize=512)
-def _build(shape_name: str, params_json: str) -> BuiltMesh:
+def _build(shape_name: str, params_json: str, cuts_json: str = "[]") -> BuiltMesh:
     sd = get_shape(shape_name)
     assert sd is not None and sd.builder is not None
     mesh = sd.builder(json.loads(params_json))
     lo, hi = mesh.bounds
     mesh.apply_translation([-(lo[0] + hi[0]) / 2, -lo[1], -(lo[2] + hi[2]) / 2])
+    notes: list[str] = []
+    if cuts_json != "[]":
+        # Cut in the anchored frame: cut positions are from the uncut object's bottom-centre.
+        mesh, notes = cuts.apply(mesh, json.loads(cuts_json), round_body=shape_name in _ROUND_SHAPES)
     points = np.asarray(mesh.vertices)
     if len(points) > _MAX_EXTENT_POINTS:
         points = _corners(*aabb(points))
-    return BuiltMesh(mesh, points)
+    return BuiltMesh(mesh, points, tuple(notes))
 
 
 def _is_around(obj: dict[str, Any]) -> bool:
     return (obj.get("pattern") or {}).get("type") == "around"
+
+
+def _between(obj: dict[str, Any]) -> list[str] | None:
+    return (obj.get("placement") or {}).get("between")
+
+
+def _spans(obj: dict[str, Any], params: dict[str, Any]) -> bool:
+    """A box placed between two objects without a width: it joins them (a plate, a beam, a bridge)."""
+    return obj["shape"] == "box" and bool(_between(obj)) and "width" not in params
 
 
 _ROUND_SHAPES = {"cylinder", "circle", "torus", "sphere", "stool", "lathe",
@@ -139,11 +156,30 @@ def _check(objects: list[dict[str, Any]]) -> tuple[dict[str, dict[str, Any]], li
         if sd is None:
             errors.append(f"{label}: unknown shape '{obj['shape']}'. Shapes: {', '.join(shape_names())}")
             continue
+        params = dict(obj.get("params") or {})
+        if _spans(obj, params):
+            # A box between two objects with no width reaches from one's centre to the other's;
+            # the compiler works the width out once it knows where they are.
+            params["width"] = 1.0
+            obj["_span"] = True
         try:
-            obj["params"] = sd.validate(obj.get("params"))
+            obj["params"] = sd.validate(params)
         except ToolArgumentError as exc:
             errors.append(f"{label} ({sd.name}): {exc}. Expected {sd.signature()}")
             continue
+        if obj.get("merge") and sd.builder is not None:
+            errors.append(f"{label}: merge is for groups: put the parts in a group with \"merge\": true "
+                          f"to fuse them into one solid")
+            continue
+        if obj.get("cuts"):
+            if sd.builder is None:
+                errors.append(f"{label}: a group has no shape of its own to cut; put the cuts on one of its parts")
+                continue
+            try:
+                obj["cuts"] = cuts.check(obj["cuts"])
+            except ToolArgumentError as exc:
+                errors.append(f"{label}: {exc}")
+                continue
         try:
             if obj.get("pattern") and not _is_around(obj):
                 patterns.copies(obj["pattern"])
@@ -165,7 +201,21 @@ def _check(objects: list[dict[str, Any]]) -> tuple[dict[str, dict[str, Any]], li
         elif parent == oid:
             errors.append(f"'{oid}' cannot be its own parent")
         placement = obj.get("placement")
-        if placement:
+        between = (placement or {}).get("between")
+        if between is not None:
+            if len(between) != 2 or between[0] == between[1]:
+                errors.append(f"'{oid}': placement.between needs two different ids, e.g. [\"post1\", \"post2\"]")
+            for ref in between:
+                if ref == oid:
+                    errors.append(f"'{oid}' cannot be placed between itself and something else")
+                elif ref not in checked:
+                    errors.append(f"'{oid}': placement.between '{ref}' does not exist")
+                elif ref in _ancestors(oid, checked):
+                    errors.append(f"'{oid}' cannot be placed between '{ref}', which contains it, and another object")
+        elif placement and not placement.get("relative_to"):
+            errors.append(f"'{oid}': placement needs 'relative_to' (the object to place it next to) or "
+                          f"'between' (two objects to place it between)")
+        elif placement:
             ref = placement["relative_to"]
             if ref == oid:
                 errors.append(f"'{oid}' cannot be placed relative to itself")
@@ -243,6 +293,24 @@ def _place(ref_pts: np.ndarray, own_pts: np.ndarray, placement: dict[str, Any]) 
     elif side == "bottom":
         t[1] = rmin[1] - gap - omax[1]
 
+    return t + np.array(vec3(placement.get("offset")))
+
+
+def _place_between(boxes: list[tuple[np.ndarray, np.ndarray]], own_pts: np.ndarray,
+                   placement: dict[str, Any]) -> np.ndarray:
+    """
+    Translation that centres an object midway between two others (in the ground plane), standing
+    on the lower of their bottoms; vertical "top" lines its top up with the lower of their tops.
+    """
+    (alo, ahi), (blo, bhi) = boxes
+    omin, omax = aabb(own_pts)
+    mid = ((alo + ahi) / 2 + (blo + bhi) / 2) / 2
+    t = mid - (omin + omax) / 2
+    vertical = placement.get("vertical", "bottom")
+    if vertical == "bottom":
+        t[1] = min(alo[1], blo[1]) - omin[1]
+    elif vertical == "top":
+        t[1] = min(ahi[1], bhi[1]) - omax[1]
     return t + np.array(vec3(placement.get("offset")))
 
 
@@ -324,9 +392,18 @@ class _Resolver:
         a lying capsule or pen still rests at its position instead of sinking into the ground.
         """
         def compute() -> np.ndarray:
-            if _is_around(self.objs[oid]):
+            obj = self.objs[oid]
+            if _is_around(obj):
                 return IDENTITY  # each copy is turned to face the reference instead
-            r = rotation_deg(self.objs[oid].get("rotation"))
+            if _between(obj) and not any(obj.get("rotation") or []):
+                # Turned so its width (X) runs from the first object to the second: a plate or
+                # beam joining two things that stand diagonally needs no angle from the model.
+                (ca, cb) = (sum(box) / 2 for box in self.between_boxes(oid))
+                dx, dz = cb[0] - ca[0], cb[2] - ca[2]
+                yaw = np.degrees(np.arctan2(-dz, dx)) if abs(dx) + abs(dz) > 1e-9 else 0.0
+                r = rotation_deg([0, yaw, 0])
+            else:
+                r = rotation_deg(obj.get("rotation"))
             if np.allclose(r, IDENTITY):
                 return IDENTITY
             pts = self._shape_points(oid)
@@ -346,10 +423,17 @@ class _Resolver:
             placement = obj.get("placement")
             if not placement:
                 return np.array(vec3(obj.get("position")))
-            ref_pts = self._points_in_content_frame(oid, placement["relative_to"], self._parent(oid))
             own_pts = transform_points(self.rotation(oid), self.extent(oid))
+            if placement.get("between"):
+                return _place_between(self.between_boxes(oid), own_pts, placement)
+            ref_pts = self._points_in_content_frame(oid, placement["relative_to"], self._parent(oid))
             return _place(ref_pts, own_pts, placement)
         return self._memo("position", oid, compute)
+
+    def between_boxes(self, oid: str) -> list[tuple[np.ndarray, np.ndarray]]:
+        """Bounds of the two objects `oid` is placed between, in `oid`'s parent's content frame."""
+        return [aabb(self._points_in_content_frame(oid, ref, self._parent(oid)))
+                for ref in _between(self.objs[oid])]
 
     def local(self, oid: str) -> np.ndarray:
         return translation(self.position(oid)) @ self.rotation(oid)
@@ -518,6 +602,89 @@ def _odd_proportions(scene: CompiledScene) -> list[str]:
     return out
 
 
+# Solid all the way through: one standing inside another is never meant (a vase or a table has room inside).
+_SOLID_SHAPES = {"box", "cylinder", "cone", "sphere", "capsule"}
+
+
+def _inside_another(scene: CompiledScene) -> list[str]:
+    """
+    A solid standing mostly inside a bigger one beside it. Seen with Qwen3-8B: "a thin cylinder
+    with a 15 cm gap to the big one" put 15 cm between the centres, so it stood inside the big one.
+    """
+    out: list[str] = []
+    cands = [co for co in scene.objects.values()
+             if co.built is not None and co.spec["shape"] in _SOLID_SHAPES and len(co.instances) == 1
+             and not _between(co.spec)]
+    for small in cands:
+        if small.spec["shape"] == "box":
+            continue  # often a plate or beam meant to reach into things; `between` covers joining
+        slo, shi = small.bbox
+        for big in cands:
+            blo, bhi = big.bbox
+            if big is small or small.spec.get("parent") != big.spec.get("parent"):
+                continue
+            if np.prod(shi - slo) >= np.prod(bhi - blo):
+                continue  # judge the smaller one
+            overlap = np.clip(np.minimum(shi, bhi) - np.maximum(slo, blo), 0, None)
+            if np.prod(overlap) < 0.5 * np.prod(shi - slo):
+                continue
+            sc, bc = (slo + shi) / 2, (blo + bhi) / 2
+            dx, dz = sc[0] - bc[0], sc[2] - bc[2]
+            side = ("right" if dx > 0 else "left") if abs(dx) >= abs(dz) else ("front" if dz > 0 else "back")
+            dist = float(np.hypot(dx, dz))
+            out.append(
+                f"'{small.id}' stands inside '{big.id}': their centres are {dist:.3g} m apart, but '{big.id}' "
+                f"alone reaches {float(max(bhi[0] - blo[0], bhi[2] - blo[2])) / 2:.3g} m from its centre. A gap is "
+                f"measured between their surfaces: let the engine do it with \"placement\": {{\"relative_to\": "
+                f"\"{big.id}\", \"side\": \"{side}\", \"gap\": {max(round(dist, 3), 0.01):g}}} on '{small.id}'."
+            )
+            break
+    return out
+
+
+_JOIN_WORDS = re.compile(r"join|connect|link|bridge|beam|plate|web|brace|strut|rail", re.IGNORECASE)
+
+
+def _loose_connectors(scene: CompiledScene) -> list[str]:
+    """
+    A box named like a connector ("joining plate", "beam") that touches fewer than two things.
+    Seen with Qwen3-8B: the plate meant to join two cylinders was drawn from coordinates, and
+    stayed behind when one cylinder was moved.
+    """
+    out: list[str] = []
+    for co in scene.objects.values():
+        name = f"{co.id} {co.spec.get('label', '')}"
+        if co.built is None or co.spec["shape"] != "box" or _between(co.spec) or not _JOIN_WORDS.search(name):
+            continue
+        size = co.bbox[1] - co.bbox[0]
+        if size[1] < 0.25 * min(size[0], size[2]):
+            continue  # a flat slab (a base plate things stand on), not a web or beam between things
+        others = sorted(
+            (_box_gap(co.bbox, other.bbox), other.id) for other in scene.objects.values()
+            if other is not co and other.built is not None and other.spec.get("parent") == co.spec.get("parent")
+        )
+        if len(others) < 2 or sum(gap <= _TOUCH_TOL for gap, _ in others) >= 2:
+            continue
+        (_, a), (_, b) = others[:2]
+        touching = [oid for gap, oid in others if gap <= _TOUCH_TOL]
+        state = f"touches only '{touching[0]}'" if touching else "touches nothing"
+        out.append(
+            f"'{co.id}' {state}. To join two objects let the engine size and place it: \"placement\": "
+            f"{{\"between\": [\"{a}\", \"{b}\"]}} and leave out its width."
+        )
+    return out
+
+
+def _below_ground(oid: str, lowest: float, spec: dict[str, Any]) -> str:
+    placement = spec.get("placement") or {}
+    if placement.get("side") == "bottom" and placement.get("relative_to"):
+        # Seen with Qwen3-8B: side "bottom" used to mean "at the bottom, next to it".
+        return (f"'{oid}' goes {-lowest:.3f} m below the ground: side \"bottom\" puts it underneath "
+                f"'{placement['relative_to']}'. To stand it on the ground next to it use side \"left\", \"right\", "
+                f"\"front\" or \"back\"; to join two objects use \"placement\": {{\"between\": [\"a\", \"b\"]}}.")
+    return f"'{oid}' goes {-lowest:.3f} m below the ground (y=0)."
+
+
 def _warnings(scene: CompiledScene, objs: dict[str, dict[str, Any]]) -> list[str]:
     out: list[str] = []
     instance_boxes: dict[str, list[tuple[np.ndarray, np.ndarray]]] = {}
@@ -530,13 +697,16 @@ def _warnings(scene: CompiledScene, objs: dict[str, dict[str, Any]]) -> list[str
                 out.append(f"'{oid}' is an empty group: set \"parent\": \"{oid}\" on its parts "
                            f"so they move together.")
             continue
+        out.extend(f"'{oid}': {note}" for note in co.built.notes)
         boxes = [aabb(transform_points(m, co.built.points)) for m in co.instances]
         instance_boxes[oid] = boxes
         lowest = min(b[0][1] for b in boxes)
         if lowest < -_TOUCH_TOL:
-            out.append(f"'{oid}' goes {-lowest:.3f} m below the ground (y=0).")
+            out.append(_below_ground(oid, lowest, co.spec))
 
     out.extend(_overhanging_supports(scene))
+    out.extend(_inside_another(scene))
+    out.extend(_loose_connectors(scene))
     out.extend(_detached_parts(scene, instance_boxes))
     out.extend(_misplaced_twins(scene, instance_boxes))
     out.extend(_odd_proportions(scene))
@@ -588,13 +758,37 @@ def compile_scene(objects: list[dict[str, Any]]) -> CompiledScene:
             built[oid] = None
             continue
         try:
-            built[oid] = _build(sd.name, json.dumps(obj["params"], sort_keys=True))
+            built[oid] = _build(sd.name, json.dumps(obj["params"], sort_keys=True),
+                                json.dumps(obj.get("cuts") or [], sort_keys=True))
         except ToolArgumentError as exc:
             errors.append(f"'{oid}' ({sd.name}): {exc}")
     if errors:
         raise SceneError(errors)
 
     resolver = _Resolver(objs, built)
+    spans = [oid for oid, obj in objs.items() if obj.get("_span")]
+    if spans:
+        # Second pass: now that the objects they join are placed, give spanning boxes their width
+        # (centre to centre, so the box reaches into both) and rebuild with the real sizes.
+        for oid in spans:
+            try:
+                (alo, ahi), (blo, bhi) = resolver.between_boxes(oid)
+            except SceneError as exc:
+                errors.extend(exc.errors)
+                continue
+            d = (blo + bhi) / 2 - (alo + ahi) / 2
+            width = float(np.hypot(d[0], d[2]))
+            a, b = _between(objs[oid])
+            if width < 1e-4:
+                errors.append(f"'{oid}' is between '{a}' and '{b}', but they stand on the same spot, so there is "
+                              f"nothing to span. Give it a width, or move one of them.")
+                continue
+            objs[oid]["params"]["width"] = round(width, 6)
+            built[oid] = _build("box", json.dumps(objs[oid]["params"], sort_keys=True),
+                                json.dumps(objs[oid].get("cuts") or [], sort_keys=True))
+        if errors:
+            raise SceneError(errors)
+        resolver = _Resolver(objs, built)
     scene = CompiledScene()
     instance_total = 0
     for oid, obj in objs.items():
@@ -618,5 +812,27 @@ def compile_scene(objects: list[dict[str, Any]]) -> CompiledScene:
     if scene.triangles > MAX_TRIANGLES:
         raise SceneError([f"The scene has {scene.triangles} triangles; the limit is {MAX_TRIANGLES}. "
                           f"Lower 'segments' or the number of copies."])
-    scene.warnings = _warnings(scene, objs)
+    try:
+        scene.merged = merge.merge_groups(scene.objects)
+    except ToolArgumentError as exc:
+        raise SceneError([f"Could not merge: {exc}"]) from exc
+    scene.warnings = _warnings(scene, objs) + _split_merges(scene)
     return scene
+
+
+def _split_merges(scene: CompiledScene) -> list[str]:
+    """A merged group that still comes out as several bodies: some part touches nothing else in it."""
+    out: list[str] = []
+    for gid, solid in scene.merged.items():
+        if solid.bodies <= 1:
+            continue
+        boxes = {oid: [aabb(transform_points(m, scene.objects[oid].built.points)) for m in scene.objects[oid].instances]
+                 for oid in solid.parts}
+        loose = [oid for oid, own in boxes.items()
+                 if not any(_box_gap(a, b) <= _TOUCH_TOL for a in own
+                            for other, theirs in boxes.items() if other != oid for b in theirs)]
+        which = f": {', '.join(repr(o) for o in loose)} touch{'es' if len(loose) == 1 else ''} nothing else in it" \
+            if loose else ""
+        out.append(f"'{gid}' is merged but comes out as {solid.bodies} separate bodies{which}. Move the parts so "
+                   f"they touch or overlap, or take the loose ones out of the group.")
+    return out

@@ -6,6 +6,7 @@ built-in binding (no connection, auto-approved, no write cap) and the /scene3d r
 import io
 import json
 
+import pytest
 import trimesh
 
 from oprel.server.tools import loop
@@ -22,7 +23,7 @@ class ScriptedModel:
 
     async def complete(self, messages, tools, params):
         self.seen.append({"messages": json.loads(json.dumps(messages)), "tools": [t["function"]["name"] for t in tools],
-                          "temperature": params.temperature})
+                          "temperature": params.temperature, "thinking": params.thinking})
         # Out of script (e.g. after a warnings reminder): answer plainly, like a model keeping its result.
         return self.turns.pop(0) if self.turns else AssistantTurn(content="Kept as it is.")
 
@@ -257,6 +258,7 @@ def test_drawing_runs_at_a_capped_temperature(client, token, monkeypatch):
                 json={"model": "m", "stream": False, "enable_tools": ["scene3d"], "temperature": 0.7,
                       "messages": [{"role": "user", "content": "draw"}]})
     assert model.seen[0]["temperature"] == 0.3
+    assert model.seen[0]["thinking"] is False  # drawing skips the reasoning step on local models
 
 
 # The user's table (chat_095ab5381eaa): top 3 cm above the legs, legs sticking out past the top.
@@ -486,7 +488,7 @@ def test_a_reply_that_ignores_warnings_gets_one_reminder(client, token, monkeypa
     assert text == "Made the base twice the top at a vase-like size."
 
 
-def test_the_warnings_reminder_happens_only_once(client, token, monkeypatch):
+def test_the_same_warnings_are_not_pointed_out_twice(client, token, monkeypatch):
     _, model, events, text = _chat(client, token, monkeypatch, [
         AssistantTurn(content="", tool_calls=[_call("scene_add_objects", objects=[
             {"id": "ball", "shape": "sphere", "params": {"radius": 0.2}, "position": [0, 2, 0]},
@@ -618,3 +620,262 @@ def test_empty_scene_glb_is_204_and_clear_works(client, token, monkeypatch):
     cleared = client.delete(f"/scene3d/{CONV}", headers={"X-Oprel-Token": token}).json()
     assert cleared["objects"] == [] and cleared["version"] == 2
     assert client.get(f"/scene3d/{CONV}/scene.glb", headers={"X-Oprel-Token": token}).status_code == 204
+
+
+def test_cuts_through_the_tools_and_in_the_follow_up_summary(client, token, monkeypatch):
+    plate = {"id": "plate", "shape": "box", "params": {"width": 0.4, "height": 0.02, "depth": 0.3},
+             "cuts": [{"shape": "cylinder", "params": {"radius": 0.05}, "position": [2, 0, 0]}]}
+    _, _, events, _ = _chat(client, token, monkeypatch, [
+        AssistantTurn(content="", tool_calls=[_call("scene_add_objects", objects=[plate])]),
+        AssistantTurn(content="", tool_calls=[_call("scene_update_objects", n=1, updates=[
+            {"id": "plate", "cuts": [{"shape": "cylinder", "params": {"radius": 0.05}}]}])]),
+        AssistantTurn(content="Drilled a hole through the middle of the plate."),
+    ])
+    missed, fixed = _results(events)
+    # A cut that misses is a warning the model can act on (and it did).
+    assert missed["ok"] and any("misses the object" in w for w in missed["data"]["warnings"])
+    assert fixed["ok"] and not fixed["data"].get("warnings")
+
+    # The next message sees the cuts, so "add another hole" can resend the whole list.
+    _, model, _, _ = _chat(client, token, monkeypatch, [AssistantTurn(content="ok")])
+    system = model.seen[0]["messages"][0]["content"]
+    assert '- plate: box' in system and 'cuts [{"shape":"cylinder","params":{"radius":0.05}}]' in system
+
+    # Removing the cuts gives the solid plate back.
+    _, _, events, _ = _chat(client, token, monkeypatch, [
+        AssistantTurn(content="", tool_calls=[_call("scene_update_objects", updates=[{"id": "plate", "remove": ["cuts"]}])]),
+        AssistantTurn(content="ok"),
+    ])
+    (result,) = _results(events)
+    assert result["ok"]
+    scene = client.get(f"/scene3d/{CONV}", headers={"X-Oprel-Token": token}).json()
+    assert "cuts" not in scene["objects"][0]
+
+
+def test_update_that_drops_earlier_cuts_is_flagged(client, token, monkeypatch):
+    hole = {"shape": "cylinder", "params": {"radius": 0.03}}
+    corners = {"shape": "cylinder", "params": {"radius": 0.004},
+               "pattern": {"type": "grid", "count": 2, "rows": 2, "spacing": [0.24, 0.24]}}
+    _chat(client, token, monkeypatch, [
+        AssistantTurn(content="", tool_calls=[_call("scene_add_objects", objects=[
+            {"id": "plate", "shape": "box", "params": {"width": 0.3, "height": 0.01, "depth": 0.3}, "cuts": [hole]}])]),
+        AssistantTurn(content="ok"),
+    ])
+    # "add 4 screw holes": only the new holes sent, then fixed after the warning.
+    _, _, events, _ = _chat(client, token, monkeypatch, [
+        AssistantTurn(content="", tool_calls=[_call("scene_update_objects", updates=[{"id": "plate", "cuts": [corners]}])]),
+        AssistantTurn(content="", tool_calls=[_call("scene_update_objects", n=1, updates=[
+            {"id": "plate", "cuts": [hole, corners]}])]),
+        AssistantTurn(content="Added 4 screw holes."),
+    ])
+    dropped, fixed = _results(events)
+    assert any("replaced 1 earlier cut(s) (cylinder)" in w for w in dropped["data"]["warnings"])
+    assert not fixed["data"]["warnings"]
+
+    # Clearing the cuts on purpose is not flagged.
+    _, _, events, _ = _chat(client, token, monkeypatch, [
+        AssistantTurn(content="", tool_calls=[_call("scene_update_objects", updates=[{"id": "plate", "remove": ["cuts"]}])]),
+        AssistantTurn(content="ok"),
+    ])
+    assert not _results(events)[0]["data"]["warnings"]
+
+
+def test_solid_object_named_like_a_hole_is_flagged(client, token, monkeypatch):
+    _chat(client, token, monkeypatch, [
+        AssistantTurn(content="", tool_calls=[_call("scene_add_objects", objects=[
+            {"id": "plate", "shape": "rectangle", "params": {"width": 0.3, "depth": 0.3, "thickness": 0.01}}])]),
+        AssistantTurn(content="ok"),
+    ])
+    _, _, events, _ = _chat(client, token, monkeypatch, [
+        AssistantTurn(content="", tool_calls=[_call("scene_add_objects", objects=[
+            {"shape": "box", "params": {"width": 0.1, "height": 0.1, "depth": 0.1}, "label": "screw_holes"}])]),
+        AssistantTurn(content="ok"),
+    ])
+    (result,) = _results(events)
+    assert any("named like an opening" in w for w in result["data"]["warnings"])
+
+
+def test_solid_window_inside_a_wall_is_flagged_but_a_door_on_its_own_is_not(client, token, monkeypatch):
+    _, _, events, _ = _chat(client, token, monkeypatch, [
+        AssistantTurn(content="", tool_calls=[_call("scene_add_objects", objects=[
+            {"id": "wall", "shape": "box", "params": {"width": 4, "height": 2.5, "depth": 0.2}},
+            {"id": "window", "shape": "box", "params": {"width": 1, "height": 1.2, "depth": 0.2}, "position": [1, 0.9, 0]},
+            {"id": "door", "shape": "box", "params": {"width": 0.9, "height": 2, "depth": 0.04}, "position": [0, 0, 2]},
+        ])]),
+        AssistantTurn(content="ok"),
+    ])
+    warnings = _results(events)[0]["data"]["warnings"]
+    assert any("'window' is a solid box named like an opening" in w and "cut of 'wall'" in w for w in warnings)
+    assert not any("'door'" in w for w in warnings)
+
+
+def test_plate_between_two_cylinders_follows_and_survives_deleting_one(client, token, monkeypatch):
+    big = {"id": "big", "shape": "cylinder", "params": {"radius": 0.2, "height": 1.0}}
+    thin = {"id": "thin", "shape": "cylinder", "params": {"radius": 0.07, "height": 1.1},
+            "placement": {"relative_to": "big", "side": "left", "gap": 0.15}}
+    plate = {"id": "plate", "shape": "box", "params": {"height": 0.2, "depth": 0.02},
+             "placement": {"between": ["thin", "big"]}}
+    _, _, events, _ = _chat(client, token, monkeypatch, [
+        AssistantTurn(content="", tool_calls=[_call("scene_add_objects", objects=[big, thin, plate])]),
+        AssistantTurn(content="ok"),
+    ])
+    (result,) = _results(events)
+    assert result["ok"] and not result["data"]["warnings"]
+
+    # "more space": only the gap changes; the plate still reaches both centres.
+    _, model, events, _ = _chat(client, token, monkeypatch, [
+        AssistantTurn(content="", tool_calls=[_call("scene_update_objects", updates=[
+            {"id": "thin", "placement": {"relative_to": "big", "side": "left", "gap": 0.4}}])]),
+        AssistantTurn(content="ok"),
+    ])
+    system = model.seen[0]["messages"][0]["content"]
+    assert "- plate: box" in system and "between thin and big" in system
+    assert _results(events)[0]["ok"]
+    scene = client.get(f"/scene3d/{CONV}", headers={"X-Oprel-Token": token}).json()
+    assert scene["objects"][2]["placement"] == {"between": ["thin", "big"]}
+
+    # Deleting one cylinder keeps the plate exactly where and how big it was.
+    _chat(client, token, monkeypatch, [
+        AssistantTurn(content="", tool_calls=[_call("scene_delete_objects", ids=["thin"])]),
+        AssistantTurn(content="ok"),
+    ])
+    plate_after = next(o for o in client.get(f"/scene3d/{CONV}", headers={"X-Oprel-Token": token}).json()["objects"]
+                       if o["id"] == "plate")
+    assert "placement" not in plate_after
+    assert plate_after["params"]["width"] == pytest.approx(0.67) and plate_after["position"] == [-0.335, 0.0, 0.0]
+
+
+def test_summary_shows_how_objects_are_placed():
+    from oprel.integrations.scene3d.tools import _placement_words
+    assert _placement_words({"relative_to": "big", "side": "left", "gap": 0.15}) == " left of big gap 0.15"
+    assert _placement_words({"between": ["thin", "big"], "vertical": "top"}) == " between thin and big"
+    assert _placement_words(None) == ""
+
+
+def test_new_warnings_after_a_fix_get_a_second_reminder(client, token, monkeypatch):
+    # Live Qwen3-8B: fixing the thin cylinder raised "the plate touches only one", then it said "done".
+    big = {"id": "big", "shape": "cylinder", "params": {"radius": 0.2, "height": 1}}
+    thin = {"id": "thin", "shape": "cylinder", "params": {"radius": 0.07, "height": 1.1}, "position": [-0.15, 0, 0]}
+    # Off the midpoint, so the midpoint repair doesn't apply and the warning path is exercised.
+    plate = {"id": "plate", "shape": "box", "params": {"width": 0.14, "height": 0.2, "depth": 0.02},
+             "position": [-0.03, 0, 0], "label": "Joining plate"}
+    _, model, events, text = _chat(client, token, monkeypatch, [
+        AssistantTurn(content="", tool_calls=[_call("scene_add_objects", objects=[big, thin, plate])]),
+        AssistantTurn(content="Done."),
+        AssistantTurn(content="", tool_calls=[_call("scene_update_objects", n=1, updates=[
+            {"id": "thin", "placement": {"relative_to": "big", "side": "left", "gap": 0.15}}])]),
+        AssistantTurn(content="Done, they are joined."),
+        AssistantTurn(content="", tool_calls=[_call("scene_update_objects", n=2, updates=[
+            {"id": "plate", "placement": {"between": ["thin", "big"]}}])]),
+        AssistantTurn(content="The plate now joins both cylinders."),
+    ])
+    first, second, third = _results(events)
+    assert any("stands inside" in w for w in first["data"]["warnings"])
+    assert any("touches only 'big'" in w for w in second["data"]["warnings"])
+    assert third["data"]["warnings"] == []
+    assert text == "The plate now joins both cylinders."
+    # Moving it "between" dropped the old 14 cm width, so it reaches from centre to centre.
+    plate_now = next(o for o in third["data"]["objects"] if o["id"] == "plate")
+    assert plate_now["min"][0] == pytest.approx(-0.42) and plate_now["max"][0] == pytest.approx(0)
+
+
+def test_plate_drawn_at_the_midpoint_becomes_between_and_follows_the_cylinders(client, token, monkeypatch):
+    # Live Qwen3-8B, unlabelled: thin cylinder 15 cm from the big one's centre, plate at the midpoint.
+    objects = [{"shape": "cylinder", "params": {"radius": 0.2, "height": 1}, "position": [0, 0, 0]},
+               {"shape": "cylinder", "params": {"radius": 0.07, "height": 1.1}, "position": [-0.15, 0, 0]},
+               {"shape": "box", "params": {"width": 0.15, "height": 0.2, "depth": 0.02}, "position": [-0.075, 0, 0]}]
+    _, _, events, _ = _chat(client, token, monkeypatch, [
+        AssistantTurn(content="", tool_calls=[_call("scene_add_objects", objects=objects)]),
+        AssistantTurn(content="", tool_calls=[_call("scene_update_objects", n=1, updates=[
+            {"id": "cylinder2", "placement": {"relative_to": "cylinder", "side": "left", "gap": 0.15}}])]),
+        AssistantTurn(content="Done."),
+    ])
+    first, second = _results(events)
+    assert any("Placed 'box' between" in n for n in first["data"]["notes"])
+    assert second["data"]["warnings"] == []
+    # "more spacing" as {"gap": 0.4} alone keeps side and reference; the plate still joins both.
+    _, _, events, _ = _chat(client, token, monkeypatch, [
+        AssistantTurn(content="", tool_calls=[_call("scene_update_objects", updates=[
+            {"id": "cylinder2", "placement": {"gap": 0.4}}])]),
+        AssistantTurn(content="Done."),
+    ])
+    (result,) = _results(events)
+    assert result["ok"] and result["data"]["warnings"] == []
+    scene = client.get(f"/scene3d/{CONV}", headers={"X-Oprel-Token": token}).json()
+    by_id = {o["id"]: o for o in scene["objects"]}
+    assert by_id["cylinder2"]["placement"] == {"relative_to": "cylinder", "side": "left", "gap": 0.4}
+    assert by_id["box"]["placement"] == {"between": ["cylinder", "cylinder2"]}
+    assert by_id["box"]["params"] == {"height": 0.2, "depth": 0.02}
+
+
+def test_coffee_table_between_two_sofas_is_left_alone():
+    from oprel.integrations.scene3d.engine import compile_scene
+    from oprel.integrations.scene3d.repair import join_midpoint_boxes
+    objects = [{"id": "s1", "shape": "sofa", "position": [-1.5, 0, 0]}, {"id": "s2", "shape": "sofa", "position": [1.5, 0, 0]},
+               {"id": "coffee", "shape": "box", "params": {"width": 1, "height": 0.4, "depth": 0.6}, "position": [0, 0, 0]}]
+    assert join_midpoint_boxes(objects, compile_scene(objects)) == []
+
+
+THREE_PARTS = [
+    {"id": "big", "shape": "cylinder", "params": {"radius": 0.2, "height": 1}},
+    {"id": "thin", "shape": "cylinder", "params": {"radius": 0.07, "height": 1.1},
+     "placement": {"relative_to": "big", "side": "left", "gap": 0.15}},
+    {"id": "plate", "shape": "box", "params": {"height": 0.2, "depth": 0.02}, "placement": {"between": ["thin", "big"]}},
+]
+
+
+def test_make_it_one_solid_with_an_empty_merged_group(client, token, monkeypatch):
+    _chat(client, token, monkeypatch, [
+        AssistantTurn(content="", tool_calls=[_call("scene_add_objects", objects=THREE_PARTS)]),
+        AssistantTurn(content="ok"),
+    ])
+    # "make it one solid part": the model adds just the merged group; the engine fills it.
+    _, _, events, _ = _chat(client, token, monkeypatch, [
+        AssistantTurn(content="", tool_calls=[_call("scene_add_objects", objects=[
+            {"id": "part", "shape": "group", "merge": True}])]),
+        AssistantTurn(content="Merged into one solid."),
+    ])
+    (result,) = _results(events)
+    assert result["ok"] and not result["data"]["warnings"]
+    assert any("in merged group 'part'" in n for n in result["data"]["notes"])
+    objects = {o["id"]: o for o in client.get(f"/scene3d/{CONV}", headers={"X-Oprel-Token": token}).json()["objects"]}
+    assert all(objects[i]["parent"] == "part" for i in ("big", "thin", "plate"))
+    glb = trimesh.load(io.BytesIO(client.get(f"/scene3d/{CONV}/scene.glb", headers={"X-Oprel-Token": token}).content),
+                       file_type="glb")
+    assert sorted(glb.graph.nodes_geometry) == ["part"]
+
+
+def test_merge_sent_on_one_object_merges_everything(client, token, monkeypatch):
+    _chat(client, token, monkeypatch, [
+        AssistantTurn(content="", tool_calls=[_call("scene_add_objects", objects=THREE_PARTS)]),
+        AssistantTurn(content="ok"),
+    ])
+    _, model, events, _ = _chat(client, token, monkeypatch, [
+        AssistantTurn(content="", tool_calls=[_call("scene_update_objects", updates=[{"id": "big", "merge": True}])]),
+        AssistantTurn(content="ok"),
+    ])
+    (result,) = _results(events)
+    assert result["ok"] and any("into one solid, group 'part'" in n for n in result["data"]["notes"])
+    _, model, _, _ = _chat(client, token, monkeypatch, [AssistantTurn(content="ok")])
+    assert "- part: group merged (one solid)" in model.seen[0]["messages"][0]["content"]
+
+
+def test_canvas_merge_button_and_stl_download(client, token, monkeypatch):
+    _chat(client, token, monkeypatch, [
+        AssistantTurn(content="", tool_calls=[_call("scene_add_objects", objects=THREE_PARTS)]),
+        AssistantTurn(content="ok"),
+    ])
+    h = {"X-Oprel-Token": token}
+    r = client.post(f"/scene3d/{CONV}/merge", headers=h, json={"merge": True})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["merged"] == {"part": {"bodies": 1, "parts": ["big", "thin", "plate"]}} and body["warnings"] == []
+
+    stl = client.get(f"/scene3d/{CONV}/scene.stl", headers=h)
+    assert stl.status_code == 200 and stl.headers["x-solid-bodies"] == "1" and stl.headers["x-solid-watertight"] == "true"
+    assert trimesh.load(io.BytesIO(stl.content), file_type="stl").is_watertight
+
+    # Split again: the group stays, its parts are separate meshes.
+    r = client.post(f"/scene3d/{CONV}/merge", headers=h, json={"merge": False, "group": "part"})
+    assert r.status_code == 200 and r.json()["merged"] == {}
+    assert client.post(f"/scene3d/{CONV}/merge", headers=h, json={"merge": True, "group": "big"}).status_code == 400

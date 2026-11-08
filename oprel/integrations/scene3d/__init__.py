@@ -22,13 +22,24 @@ wine_glass) are complete and well proportioned: ALWAYS use them for those things
 unless asked (a table's legs and round/rectangle top are params). Their front faces +Z. \
 Build from primitives only what is not ready-made. Other round things (glass, chess piece, lampshade): \
 "lathe" with a [radius, height] profile from the bottom up. Flat outlines (bracket, star, letter): "extrude".
+Holes, slots, windows, doors: "cuts" on that object, never extra objects. A plate with a hole in the middle and \
+4 corner holes: "cuts": [{"shape": "cylinder", "params": {"radius": 0.03}}, {"shape": "cylinder", "params": \
+{"radius": 0.004}, "pattern": {"type": "grid", "count": 2, "rows": 2, "spacing": [0.24, 0.24]}}] (a ring of holes: \
+"radial"). A cut's position is its centre from the object's bottom-centre (x = z = 0 is the middle, not a corner; \
+leave it out for the middle). No height (box: no size) = right through; rotation [90, 0, 0] = front to back. \
+"side" only to open a cut onto a face: "bottom" for a door, "top" for a pocket. To add cuts later, update the \
+object with its whole cuts list.
 Coordinates: metres; Y is up and the ground is y=0; right = +X, front (toward the viewer) = +Z, back = -Z.
 position = the object's bottom-centre ([x, 0, z] stands on the ground).
 Seat things around another object: "pattern": {"type": "around", "relative_to": "<id>", "count": 4} \
 (spaced along its sides, each turned to face it).
 Prefer placement to coordinates: {"relative_to": "<id>", "side": "top|bottom|left|right|front|back|center", \
-"align": "front-right", "gap": 0.1}; the engine computes the exact spot.
+"align": "front-right", "gap": 0.1}; the engine computes the exact spot (side = where it goes, bottom = underneath; \
+gap = between the surfaces). A part joining two objects (plate, beam, bridge): "placement": {"between": ["a", "b"]} \
+and leave out its width: the engine sizes and turns it.
 rotation = degrees [x, y, z] about the object's centre; it stays resting where it was.
+One solid part (for flow simulation, 3D printing): the group gets "merge": true, and its parts are fused. To merge \
+what is already drawn, add {"id": "part", "shape": "group", "merge": true} with no parts.
 Custom multi-part objects: a "group", then parts with "parent": "<group id>" (positions relative to the group). \
 Never list identical parts one by one; use one object with a pattern: \
 {"type": "grid", "count": 2, "rows": 2, "spacing": [sx, sz]} | {"type": "radial", "count": 8, "radius": r} | \
@@ -43,13 +54,15 @@ Example, "a dining table with 6 chairs and a vase on it":
 {"id": "table", "shape": "table", "params": {"width": 1.8, "depth": 0.9}}, \
 {"id": "chairs", "shape": "chair", "pattern": {"type": "around", "relative_to": "table", "count": 6}}, \
 {"id": "vase", "shape": "vase", "placement": {"relative_to": "table", "side": "top"}}]}
-Example, a custom object, "a rocket":
-{"plan": "body, nose cone on top, 3 fins", "objects": [{"id": "rocket", "shape": "group"}, \
-{"id": "body", "parent": "rocket", "shape": "cylinder", "params": {"radius": 0.3, "height": 2}}, \
-{"id": "nose", "parent": "rocket", "shape": "cone", "params": {"radius": 0.3, "height": 0.6}, \
-"placement": {"relative_to": "body", "side": "top"}}, \
-{"id": "fins", "parent": "rocket", "shape": "box", "params": {"width": 0.05, "height": 0.5, "depth": 0.4}, \
-"pattern": {"type": "radial", "count": 3, "radius": 0.3, "face_center": true}}]}"""
+Example, a custom object, "two posts 1.2 m apart, a beam joining their tops":
+{"plan": "group; post; second post 1.2 m to its left; beam between them", "objects": [\
+{"id": "gate", "shape": "group"}, \
+{"id": "post1", "parent": "gate", "shape": "cylinder", "params": {"radius": 0.08, "height": 2}}, \
+{"id": "post2", "parent": "gate", "shape": "cylinder", "params": {"radius": 0.08, "height": 2}, \
+"placement": {"relative_to": "post1", "side": "left", "gap": 1.2}}, \
+{"id": "beam", "parent": "gate", "shape": "box", "params": {"height": 0.1, "depth": 0.1}, \
+"placement": {"between": ["post2", "post1"], "vertical": "top"}}]}
+More space between them later = a bigger "gap" on post2; the beam follows."""
 
 
 class Scene3DIntegration(Integration):
@@ -62,6 +75,9 @@ class Scene3DIntegration(Integration):
     max_tool_iterations = 16
     # At 0.7, Qwen3-8B drifted from the worked example (legs listed one by one, y/z mixed up).
     max_temperature = 0.3
+    # The engine checks every drawing and its warnings name the fix, so thinking adds little but
+    # minutes: Qwen3-8B on a 4 GB GPU thought for 5+ minutes (and timed out) on a 3-object part.
+    allow_thinking = False
 
     def __init__(self) -> None:
         self._tools = build_tools()

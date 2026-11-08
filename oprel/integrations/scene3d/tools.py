@@ -19,12 +19,12 @@ from oprel.integrations.scene3d.engine import CompiledScene, SceneError, compile
 from oprel.integrations.scene3d.engine.compiler import CompiledObject
 from oprel.integrations.scene3d.engine.frame import vec3
 from oprel.integrations.scene3d.engine.registry import all_shapes
-from oprel.integrations.scene3d.engine.schema import object_schema, update_schema
+from oprel.integrations.scene3d.engine.schema import lean, object_schema, update_schema
 from oprel.tools.base import Tool, ToolContext, ToolError
 
 MAX_OBJECTS_PER_CALL = 60
 MAX_LISTED = 60  # objects described in one result (keeps it under the executor's size cap)
-REMOVABLE = ["placement", "position", "rotation", "pattern", "parent", "color", "opacity", "label"]
+REMOVABLE = ["placement", "position", "rotation", "pattern", "cuts", "merge", "parent", "color", "opacity", "label"]
 
 
 # ---------------------------------------------------------------------------
@@ -123,6 +123,8 @@ async def add_objects(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     new = args.get("objects") or []
     if not new:
         raise ToolError("'objects' is empty: give at least one object to add.")
+    if len(new) > MAX_OBJECTS_PER_CALL:
+        raise ToolError(f"{len(new)} objects in one call; the limit is {MAX_OBJECTS_PER_CALL}. Use patterns for repeats.")
     scene = store.get_scene(conv)
     existing = copy.deepcopy(scene["objects"])
     by_id = {o["id"]: o for o in existing}
@@ -130,7 +132,7 @@ async def add_objects(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
 
     # An object listed again with its existing id is an update, not a copy: models re-list
     # what is there to move it ("put the vase on the table") and then fumble the id error.
-    added, updated, unchanged = [], [], []
+    added, updated, unchanged, edit_warnings = [], [], [], []
     for raw in new:
         obj = copy.deepcopy(raw)
         oid = _clean_id(obj.get("id"))
@@ -139,8 +141,7 @@ async def add_objects(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
                 raise ToolError(f"id '{oid}' is already a {by_id[oid].get('shape')}. Pick a new id for the "
                                 f"{obj['shape']}, or delete '{oid}' first.")
             obj.pop("shape", None)
-            if not _apply_change(by_id[oid], obj):
-                unchanged.append(oid)
+            _edit(by_id[oid], obj, unchanged, edit_warnings)
             updated.append(oid)
             continue
         twin = _same_spot_twin(obj, existing)
@@ -148,8 +149,7 @@ async def add_objects(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
             # Seen with Qwen3-8B: "make the bottom bigger" sent as a new vase on the old one's spot.
             obj.pop("shape", None)
             obj.pop("id", None)
-            if not _apply_change(twin, obj):
-                unchanged.append(twin["id"])
+            _edit(twin, obj, unchanged, edit_warnings)
             updated.append(twin["id"])
             continue
         obj["id"] = oid
@@ -168,7 +168,8 @@ async def add_objects(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
             taken.add(oid)
 
     changed = added + [by_id[u] for u in updated]
-    notes = _resolve_references(changed, existing + added) + _adopt_orphans(added, existing)
+    notes = (_resolve_references(changed, existing + added) + _adopt_orphans(added, existing)
+             + _fill_merge_groups(added, existing))
     if updated:
         notes.insert(0, f"{', '.join(repr(u) for u in updated)} {'was' if len(updated) == 1 else 'were'} "
                         f"already there, so {'it was' if len(updated) == 1 else 'they were'} updated "
@@ -183,7 +184,8 @@ async def add_objects(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     result = _result(version, compiled, [o["id"] for o in added] + updated, "Added" if added else "Updated")
     if notes:
         result["notes"] = notes
-    result["warnings"] = _unchanged_warnings(unchanged) + result["warnings"]
+    result["warnings"] = (_unchanged_warnings(unchanged) + edit_warnings
+                          + _hole_like_warnings(added, compiled) + result["warnings"])
     return result
 
 
@@ -238,6 +240,71 @@ def _resolve_references(added: list[dict[str, Any]], objects: list[dict[str, Any
             if target and target != obj["id"]:
                 notes.append(f"Read '{holder[key]}' as '{target}' for '{obj['id']}'.")
                 holder[key] = target
+        between = (obj.get("placement") or {}).get("between")
+        if isinstance(between, list):
+            for i, ref in enumerate(between):
+                target = resolve(ref)
+                if target and target != obj["id"]:
+                    notes.append(f"Read '{ref}' as '{target}' for '{obj['id']}'.")
+                    between[i] = target
+    return notes
+
+
+def merge_scene(objects: list[dict[str, Any]], group: str | None, merge: bool) -> list[str]:
+    """
+    Turn merging on or off (in place). Used by the canvas's Merge button and by the tools.
+      merge on,  group given      that group becomes one solid
+      merge on,  no group         everything becomes one solid: the single top-level group if there
+                                  is one, otherwise a new merged group "part" wrapping all top-level objects
+      merge off, group given      that group's parts are separate again
+      merge off, no group         every group's parts are separate again
+    Returns notes for the caller. Raises ToolError for a group id that isn't a group.
+    """
+    by_id = {o["id"]: o for o in objects}
+    if group is not None:
+        target = by_id.get(group)
+        if target is None or target.get("shape") != "group":
+            groups = [i for i, o in by_id.items() if o.get("shape") == "group"]
+            raise ToolError(f"'{group}' is not a group in the scene; merge works on groups"
+                            + (f" ({', '.join(groups)})." if groups else ", or on everything at once."))
+        if merge:
+            target["merge"] = True
+            return [f"'{group}' is now one solid."]
+        target.pop("merge", None)
+        return [f"'{group}' is separate parts again."]
+    if not merge:
+        names = [o["id"] for o in objects if o.pop("merge", None)]
+        return [f"{', '.join(repr(n) for n in names)} {'is' if len(names) == 1 else 'are'} separate parts again."] \
+            if names else []
+    tops = [o for o in objects if not o.get("parent") or o["parent"] not in by_id]
+    if len(tops) == 1 and tops[0].get("shape") == "group":
+        tops[0]["merge"] = True
+        return [f"'{tops[0]['id']}' is now one solid."]
+    gid, n = "part", 1
+    while gid in by_id:
+        n += 1
+        gid = f"part{n}"
+    for o in tops:
+        o["parent"] = gid
+    objects.insert(0, {"id": gid, "shape": "group", "merge": True})
+    return [f"Merged {', '.join(repr(o['id']) for o in tops)} into one solid, group '{gid}'."]
+
+
+def _fill_merge_groups(added: list[dict[str, Any]], existing: list[dict[str, Any]]) -> list[str]:
+    """
+    A new merged group with no parts means "merge what is drawn" ("make it one solid part"): put
+    every existing top-level object in it. Saves a small model one update per object.
+    """
+    notes: list[str] = []
+    everything = existing + added
+    for g in added:
+        if g.get("shape") != "group" or not g.get("merge") or any(o.get("parent") == g["id"] for o in everything):
+            continue
+        tops = [o for o in existing if not o.get("parent") and o["id"] != g["id"]]
+        for o in tops:
+            o["parent"] = g["id"]
+        if tops:
+            notes.append(f"Put {', '.join(repr(o['id']) for o in tops)} in merged group '{g['id']}': one solid now.")
     return notes
 
 
@@ -267,12 +334,45 @@ def _normalized(obj: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _edit(obj: dict[str, Any], change: dict[str, Any], unchanged: list[str], warnings: list[str]) -> None:
+    """Apply a change, noting an object that didn't change and earlier cuts the change threw away."""
+    old_cuts = list(obj.get("cuts") or [])
+    if not _apply_change(obj, change):
+        unchanged.append(obj["id"])
+    new_cuts = obj.get("cuts") or []
+
+    def kind(c: dict[str, Any]) -> tuple[Any, Any]:
+        return c.get("shape"), (c.get("pattern") or {}).get("type")
+
+    # A new cut of the same kind is the old one moved or resized, not dropped.
+    dropped = [c for c in old_cuts if kind(c) not in {kind(n) for n in new_cuts}]
+    # Seen with Qwen3-8B: "add 4 screw holes" sent only the 4 new holes, losing the one in the middle.
+    # A cleared list ("remove": ["cuts"] or []) is deliberate.
+    if dropped and new_cuts:
+        shapes = ", ".join(str(c.get("shape")) for c in dropped)
+        warnings.append(
+            f"'{obj['id']}': the new cuts list replaced {len(dropped)} earlier cut(s) ({shapes}), which are gone now. "
+            f"If the user only asked to add cuts, send the whole list again: the earlier cuts plus the new ones."
+        )
+
+
 def _apply_change(obj: dict[str, Any], change: dict[str, Any]) -> bool:
     """Merge a change into an object: only the given fields change; params are merged.
     Returns False when the object ended up exactly as it was."""
     before = _normalized(obj)
     _merge(obj, change)
     return _normalized(obj) != before
+
+
+def _same_reference(old: Any, new: dict[str, Any]) -> bool:
+    """Is a placement change about the same reference (or names none), so it adjusts the old one?"""
+    if not isinstance(old, dict):
+        return False
+    if "between" in new:
+        return new["between"] == old.get("between")
+    if "between" in old:
+        return "relative_to" not in new  # e.g. {"vertical": "top"} for a beam already between two posts
+    return new.get("relative_to") in (None, old.get("relative_to"))
 
 
 def _merge(obj: dict[str, Any], change: dict[str, Any]) -> None:
@@ -284,6 +384,9 @@ def _merge(obj: dict[str, Any], change: dict[str, Any]) -> None:
             continue
         if key == "params" and isinstance(value, dict) and same_shape:
             obj["params"] = {**(obj.get("params") or {}), **value}
+        elif key == "placement" and isinstance(value, dict) and _same_reference(obj.get("placement"), value):
+            # "more space" sent as {"gap": 0.4} alone (seen with Qwen3-8B) keeps the side and reference.
+            obj["placement"] = {**obj["placement"], **value}
         elif key == "parent" and value == "":
             obj.pop("parent", None)
         else:
@@ -293,6 +396,12 @@ def _merge(obj: dict[str, Any], change: dict[str, Any]) -> None:
         obj.pop("placement", None)
     if "placement" in change and "position" not in change:
         obj.pop("position", None)
+    # A box moved "between" two objects should reach both: drop the width it had, so the engine
+    # sizes it (seen with Qwen3-8B: the old 14 cm width kept the plate from joining). A width in
+    # the same change is kept.
+    if (obj.get("shape") == "box" and (change.get("placement") or {}).get("between")
+            and "width" not in (change.get("params") or {})):
+        (obj.get("params") or {}).pop("width", None)
 
 
 async def update_objects(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
@@ -300,27 +409,70 @@ async def update_objects(ctx: ToolContext, args: dict[str, Any]) -> dict[str, An
     updates = args.get("updates") or []
     if not updates:
         raise ToolError("'updates' is empty.")
+    if len(updates) > MAX_OBJECTS_PER_CALL:
+        raise ToolError(f"{len(updates)} updates in one call; the limit is {MAX_OBJECTS_PER_CALL}.")
     objects = copy.deepcopy(store.get_scene(conv)["objects"])
     by_id = {o["id"]: o for o in objects}
 
     touched: list[str] = []
     unchanged: list[str] = []
+    edit_warnings: list[str] = []
+    merge_notes: list[str] = []
     for i, change in enumerate(updates):
         oid = change.get("id")
         if oid not in by_id:
             known = ", ".join(list(by_id)[:30]) or "none"
             raise ToolError(f"updates[{i}]: no object with id '{oid}'. Existing ids: {known}")
-        if not _apply_change(by_id[oid], change):
-            unchanged.append(oid)
+        if "merge" in change and by_id[oid].get("shape") != "group":
+            # "merge" on a single object can only mean "make it all one solid".
+            change = {k: v for k, v in change.items() if k != "merge"}
+            merge_notes += merge_scene(objects, None, bool(updates[i]["merge"]))
+            if len(change) == 1:  # nothing else to change on it
+                touched.append(oid)
+                continue
+        _edit(by_id[oid], change, unchanged, edit_warnings)
         touched.append(oid)
 
     compiled, notes = await _compile_and_repair(objects)
+    notes = merge_notes + notes
     version = store.save_scene(conv, objects)
     result = _result(version, compiled, touched, "Updated")
     if notes:
         result["notes"] = notes
-    result["warnings"] = _unchanged_warnings(unchanged) + result["warnings"]
+    result["warnings"] = _unchanged_warnings(unchanged) + edit_warnings + result["warnings"]
     return result
+
+
+_HOLE_WORDS = re.compile(r"hole|slot|opening|cut.?out|bore", re.IGNORECASE)
+_PANEL_WORDS = re.compile(r"window|door", re.IGNORECASE)
+
+
+def _hole_like_warnings(added: list[dict[str, Any]], compiled: CompiledScene) -> list[str]:
+    """
+    Solid boxes standing in for holes. Seen with Qwen3-8B: "add 4 screw holes" drew a box labelled
+    "screw_holes" next to the plate; "a wall with a window and a door" drew solid window and door
+    boxes inside the wall. A window or door is only flagged inside another object: a door panel
+    on its own is a real thing.
+    """
+    out = []
+    for o in added:
+        name = f"{o.get('id', '')} {o.get('label', '')}"
+        if o.get("shape") not in ("box", "cylinder") or o["id"] not in compiled.objects:
+            continue
+        lo, hi = compiled.objects[o["id"]].bbox
+        mid = (lo + hi) / 2
+        host = next((oid for oid, co in compiled.objects.items()
+                     if oid != o["id"] and not co.spec.get("parent") and co.built is not None
+                     and np.all(co.bbox[0] <= mid) and np.all(mid <= co.bbox[1])), None)
+        if _HOLE_WORDS.search(name) and len(compiled.objects) > 1:
+            target = f"'{host}'" if host else "the object it goes through"
+        elif _PANEL_WORDS.search(name) and host:
+            target = f"'{host}'"
+        else:
+            continue
+        out.append(f"'{o['id']}' is a solid {o['shape']} named like an opening. If it is meant as a hole, delete "
+                   f"'{o['id']}' and make it a cut of {target} (send its whole cuts list).")
+    return out
 
 
 def _unchanged_warnings(ids: list[str]) -> list[str]:
@@ -352,8 +504,17 @@ async def delete_objects(ctx: ToolContext, args: dict[str, Any]) -> dict[str, An
         if o["id"] in gone:
             continue
         o = copy.deepcopy(o)
-        if o.get("placement", {}).get("relative_to") in gone:
-            o["position"] = _round(current.objects[o["id"]].position)
+        pl = o.get("placement") or {}
+        if pl.get("relative_to") in gone or set(pl.get("between") or []) & gone:
+            co = current.objects[o["id"]]
+            o["position"] = _round(co.position)
+            if pl.get("between"):
+                # Freeze what `between` worked out: its turn and (for a spanning box) its width.
+                o["params"] = {**(o.get("params") or {}), **{k: v for k, v in co.spec["params"].items()
+                                                              if k == "width"}}
+                if not any(o.get("rotation") or []):
+                    m = co.local
+                    o["rotation"] = [0, round(float(np.degrees(np.arctan2(-m[2, 0], m[0, 0]))), 3), 0]
             o.pop("placement")
         kept.append(o)
 
@@ -381,6 +542,27 @@ async def get_scene(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
 MAX_IN_SUMMARY = 25
 
 
+def _placement_words(pl: dict[str, Any] | None) -> str:
+    """
+    How an object is placed, for the summary: " left of big gap 0.15". Seen with Qwen3-8B: asked
+    for "more space between the cylinders", it overwrote a neat gap with guessed coordinates
+    because it couldn't see the gap was there to change.
+    """
+    if not isinstance(pl, dict):
+        return ""
+    if pl.get("between"):
+        out = f" between {' and '.join(map(str, pl['between']))}"
+    elif pl.get("relative_to"):
+        out = f" {pl.get('side', 'center')} of {pl['relative_to']}"
+    else:
+        return ""
+    if pl.get("gap"):
+        out += f" gap {pl['gap']:g}"
+    if pl.get("align"):
+        out += f" align {pl['align']}"
+    return out
+
+
 def scene_summary(conversation_id: str | None) -> str:
     """
     What is already drawn, for the system prompt. Without it a follow-up ("make the bottom
@@ -400,8 +582,14 @@ def scene_summary(conversation_id: str | None) -> str:
         line = f"- {o['id']}: {o['shape']}"
         if o.get("params"):
             line += " " + json.dumps(o["params"], separators=(",", ":"))
+        if o.get("cuts"):
+            # Updating cuts replaces the list, so the model needs the current one to add to it.
+            line += " cuts " + json.dumps(o["cuts"], separators=(",", ":"))
         if o.get("parent"):
             line += f" in {o['parent']}"
+        line += _placement_words(o.get("placement"))
+        if o.get("merge"):
+            line += " merged (one solid)"
         if compiled and o["id"] in compiled.objects:
             lo, hi = compiled.objects[o["id"]].bbox
             line += f" min {_round2(lo)} max {_round2(hi)}"
@@ -409,7 +597,8 @@ def scene_summary(conversation_id: str | None) -> str:
     if len(objects) > MAX_IN_SUMMARY:
         lines.append(f"- ... and {len(objects) - MAX_IN_SUMMARY} more (scene_get_scene lists all)")
     return ("Already in the 3D scene. To change one of these, call scene_update_objects with its id "
-            "(e.g. new params); do NOT add it again. Add only new things:\n" + "\n".join(lines))
+            "(e.g. new params, a new gap for more or less space, or holes as its cuts); do NOT add it again. "
+            "Add only new things:\n" + "\n".join(lines))
 
 
 def _round2(v: np.ndarray) -> list[float]:
@@ -438,8 +627,8 @@ def build_tools() -> list[Tool]:
             parameters={
                 "type": "object",
                 "properties": {
-                    "plan": {"type": "string", "maxLength": 1500},
-                    "objects": {"type": "array", "items": object_schema(), "maxItems": MAX_OBJECTS_PER_CALL},
+                    "plan": {"type": "string"},
+                    "objects": {"type": "array", "items": lean(object_schema())},
                 },
                 "required": ["objects"],
             },
@@ -457,7 +646,7 @@ def build_tools() -> list[Tool]:
             parameters={
                 "type": "object",
                 "properties": {
-                    "updates": {"type": "array", "items": update_schema(REMOVABLE), "maxItems": MAX_OBJECTS_PER_CALL},
+                    "updates": {"type": "array", "items": lean(update_schema(REMOVABLE))},
                 },
                 "required": ["updates"],
             },

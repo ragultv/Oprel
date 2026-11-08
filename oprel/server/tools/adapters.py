@@ -131,6 +131,7 @@ class SamplingParams:
     max_tokens: int | None = 2048
     temperature: float | None = 0.7
     top_p: float | None = None
+    thinking: bool = True  # False: local thinking models skip reasoning (see Integration.allow_thinking)
 
 
 # Local llama.cpp models often run with a small context (4k on 4 GB GPUs). Tool definitions
@@ -201,7 +202,6 @@ class OpenAICompatibleAdapter:
                 f"Start a new chat or turn off tools you don't need. {_CONTEXT_HELP}"
             )
         if room < MIN_ROOM_TO_THINK:
-            # Read by thinking templates (Qwen3, ...); ignored by every other template.
             body["chat_template_kwargs"] = {"enable_thinking": False}
         body["max_tokens"] = min(body.get("max_tokens") or room, room)
         return n_ctx
@@ -224,12 +224,23 @@ class OpenAICompatibleAdapter:
         if params.top_p is not None:
             body["top_p"] = params.top_p
 
+        if self._llama_root and not params.thinking:
+            # Read by thinking templates (Qwen3, ...); ignored by every other template. Only sent to
+            # local llama.cpp: cloud APIs may reject unknown fields. Seen at 8k context on a 4 GB GPU:
+            # Qwen3-8B thought for 1,700+ tokens (~5 minutes) about a 3-object drawing and timed out.
+            body["chat_template_kwargs"] = {"enable_thinking": False}
+
         n_ctx = None
         try:
             async with httpx.AsyncClient(timeout=self._timeout, transport=self._transport) as client:
                 if self._llama_root:
                     n_ctx = await self._fit_to_context(client, body, messages, tools)
                 resp = await client.post(f"{self.base_url}/chat/completions", json=body, headers=self._headers)
+        except httpx.TimeoutException as exc:
+            raise ModelAdapterError(
+                f"{self.label} did not answer within {self._timeout / 60:.0f} minutes. On a slow GPU a thinking model "
+                f"can spend that long reasoning; try a smaller context (OPREL_CTX_SIZE), a smaller model, or a cloud model."
+            ) from exc
         except httpx.HTTPError as exc:
             raise ModelAdapterError(f"{self.label}: could not reach model ({type(exc).__name__})") from exc
 

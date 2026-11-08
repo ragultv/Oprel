@@ -7,6 +7,7 @@ the system hint are generated from this registry, so the model always sees the r
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -17,6 +18,7 @@ from oprel.tools.validation import ToolArgumentError, validate_arguments
 # Sane bounds for any length, in metres: 0.1 mm .. 1 km
 MIN_LEN = 0.0001
 MAX_LEN = 1000.0
+_SIZE_WORDS = re.compile(r"height|width|depth|radius|length|thickness|diameter|size", re.IGNORECASE)
 
 
 def length(description: str, default: float | None = None) -> dict[str, Any]:
@@ -55,6 +57,11 @@ class ShapeDef:
 
     def validate(self, params: dict[str, Any] | None) -> dict[str, Any]:
         """Check and fill defaults. Raises ToolArgumentError with a message the model can act on."""
+        # Unknown params are dropped, except sizes: a "rectangle" with "height": 2.5 (seen with
+        # Qwen3-8B, meaning a wall) would silently become a flat plate on the ground.
+        sizes = [k for k in (params or {}) if k not in self.params and _SIZE_WORDS.search(k)]
+        if sizes:
+            raise ToolArgumentError(f"{self.name} has no {', '.join(repr(k) for k in sizes)}")
         out = validate_arguments(self.schema, params or {})
         for key, spec in self.params.items():
             if key not in out and "default" in spec:

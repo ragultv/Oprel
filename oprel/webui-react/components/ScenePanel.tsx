@@ -10,7 +10,7 @@ import { Canvas, useThree, type ThreeEvent } from '@react-three/fiber'
 import { Bounds, GizmoHelper, GizmoViewport, Grid, OrbitControls, useBounds } from '@react-three/drei'
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
-import { Box, Download, Eye, EyeOff, FolderTree, Loader2, Maximize, Trash2, X, Grid3x3 } from 'lucide-react'
+import { Box, Combine, Download, Eye, EyeOff, FileDown, FolderTree, Loader2, Maximize, Trash2, X, Grid3x3 } from 'lucide-react'
 import { Scene3DAPI, type SceneObjectSpec } from '@/services/scene3d'
 import { cn } from '@/services/utils'
 
@@ -159,9 +159,23 @@ function withDescendants(ids: Set<string>, objects: SceneObjectSpec[]): Set<stri
   return out
 }
 
+/** Part id -> the merged group it is fused into (the outermost one), as the server does it. */
+function mergedInto(objects: SceneObjectSpec[]): Map<string, string> {
+  const byId = new Map(objects.map(o => [o.id, o]))
+  const out = new Map<string, string>()
+  for (const o of objects) {
+    let root: string | null = null
+    for (let node = o.parent ? byId.get(o.parent) : undefined; node; node = node.parent ? byId.get(node.parent) : undefined) {
+      if (node.shape === 'group' && node.merge) root = node.id
+    }
+    if (root) out.set(o.id, root)
+  }
+  return out
+}
+
 /** Assembly tree: groups with their parts, an eye per row to hide/show, click to select. */
 function ObjectTree({
-  objects, hidden, effectiveHidden, selected, onToggle, onSelect, onShowAll,
+  objects, hidden, effectiveHidden, selected, onToggle, onSelect, onShowAll, onMerge, busy,
 }: {
   objects: SceneObjectSpec[]
   hidden: Set<string>
@@ -170,8 +184,12 @@ function ObjectTree({
   onToggle: (id: string) => void
   onSelect: (id: string) => void
   onShowAll: () => void
+  /** Fuse a group's parts into one solid (true) or split them again (false). */
+  onMerge: (group: string, merge: boolean) => void
+  busy: boolean
 }) {
   const ids = new Set(objects.map(o => o.id))
+  const fused = mergedInto(objects)
   const children = (parent: string | null) =>
     objects.filter(o => (parent === null ? !o.parent || !ids.has(o.parent) : o.parent === parent))
 
@@ -179,6 +197,7 @@ function ObjectTree({
     const kids = children(o.id)
     const isHidden = effectiveHidden.has(o.id)
     const viaParent = isHidden && !hidden.has(o.id)  // hidden because its group is
+    const fusedInto = fused.get(o.id)  // one mesh with its merged group: hide the group instead
     return (
       <>
         <div
@@ -193,11 +212,22 @@ function ObjectTree({
           {kids.length > 0 ? <FolderTree size={11} className="shrink-0 text-muted-foreground" />
             : <Box size={11} className="shrink-0 text-muted-foreground" />}
           <span className="font-mono truncate flex-1" title={o.id}>{o.id}</span>
-          <span className="text-[10px] text-muted-foreground shrink-0">{o.shape}</span>
+          <span className="text-[10px] text-muted-foreground shrink-0">{o.merge ? 'solid' : o.shape}</span>
+          {o.shape === 'group' && !fusedInto && (
+            <button
+              onClick={e => { e.stopPropagation(); onMerge(o.id, !o.merge) }}
+              disabled={busy}
+              title={o.merge ? 'Merged into one solid: click to split into separate parts' : 'Merge into one solid'}
+              className={cn('shrink-0 p-0.5 rounded disabled:opacity-40',
+                o.merge ? 'text-primary' : 'text-muted-foreground hover:text-foreground')}
+            >
+              <Combine size={12} />
+            </button>
+          )}
           <button
             onClick={e => { e.stopPropagation(); onToggle(o.id) }}
-            disabled={viaParent}
-            title={viaParent ? `Hidden with ${o.parent}` : isHidden ? 'Show' : 'Hide'}
+            disabled={viaParent || !!fusedInto}
+            title={fusedInto ? `Fused into ${fusedInto}: hide that instead` : viaParent ? `Hidden with ${o.parent}` : isHidden ? 'Show' : 'Hide'}
             className="shrink-0 p-0.5 rounded text-muted-foreground hover:text-foreground disabled:cursor-not-allowed"
           >
             {isHidden ? <EyeOff size={12} /> : <Eye size={12} />}
@@ -255,6 +285,15 @@ export default function ScenePanel({ conversationId, version, onVersionChange, o
   // Hidden object ids: only in the viewer (the model and the saved scene still have them).
   const [hidden, setHidden] = useState<Set<string>>(new Set())
   const [showTree, setShowTree] = useState(true)
+  const [busy, setBusy] = useState(false)
+  // Result of a merge or STL export, shown briefly over the viewport.
+  const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null)
+
+  useEffect(() => {
+    if (!notice) return
+    const t = setTimeout(() => setNotice(null), 7000)
+    return () => clearTimeout(t)
+  }, [notice])
 
   useEffect(() => { setHidden(new Set()) }, [conversationId])
 
@@ -306,6 +345,53 @@ export default function ScenePanel({ conversationId, version, onVersionChange, o
     URL.revokeObjectURL(url)
   }, [glb, loadedVersion])
 
+  // Everything is one solid when every top-level object is a merged group.
+  const allMerged = useMemo(() => {
+    const ids = new Set(objects.map(o => o.id))
+    const tops = objects.filter(o => !o.parent || !ids.has(o.parent))
+    return tops.length > 0 && tops.every(o => o.shape === 'group' && o.merge)
+  }, [objects])
+
+  const merge = useCallback(async (on: boolean, group?: string) => {
+    if (!conversationId) return
+    setBusy(true)
+    try {
+      const res = await Scene3DAPI.merge(conversationId, on, group)
+      const split = Object.entries(res.merged).filter(([, m]) => m.bodies > 1)
+      setNotice(split.length
+        ? { ok: false, text: `${split.map(([g, m]) => `${g} is ${m.bodies} separate bodies`).join('; ')}: some parts don't touch.` }
+        : { ok: true, text: res.notes.join(' ') || (on ? 'Merged into one solid.' : 'Split into separate parts.') })
+      onVersionChange?.(res.version)
+    } catch (err: any) {
+      setNotice({ ok: false, text: err.message })
+    } finally {
+      setBusy(false)
+    }
+  }, [conversationId, onVersionChange])
+
+  const downloadStl = useCallback(async () => {
+    if (!conversationId) return
+    setBusy(true)
+    try {
+      const stl = await Scene3DAPI.stl(conversationId)
+      if (!stl) return
+      const url = URL.createObjectURL(new Blob([stl.data], { type: 'model/stl' }))
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `scene-v${stl.version}.stl`
+      a.click()
+      URL.revokeObjectURL(url)
+      // What a mesher will see: one closed body is ready for flow simulation or printing.
+      setNotice(stl.bodies === 1 && stl.watertight
+        ? { ok: true, text: 'STL saved: one watertight solid (metres), ready for simulation or printing.' }
+        : { ok: false, text: `STL saved, but it is ${stl.bodies} separate bodies${stl.watertight ? '' : ' and not watertight'}: move the parts so they touch.` })
+    } catch (err: any) {
+      setNotice({ ok: false, text: err.message })
+    } finally {
+      setBusy(false)
+    }
+  }, [conversationId])
+
   const clear = useCallback(async () => {
     if (!conversationId || !window.confirm('Clear the whole 3D scene?')) return
     try {
@@ -332,7 +418,13 @@ export default function ScenePanel({ conversationId, version, onVersionChange, o
           <ToolbarButton title="Objects (hide / show)" onClick={() => setShowTree(s => !s)} active={showTree} disabled={!objects.length}><FolderTree size={14} /></ToolbarButton>
           <ToolbarButton title="Fit to view" onClick={() => setFitToken(t => t + 1)} disabled={!root}><Maximize size={14} /></ToolbarButton>
           <ToolbarButton title="Wireframe" onClick={() => setWireframe(w => !w)} active={wireframe} disabled={!root}><Grid3x3 size={14} /></ToolbarButton>
+          <ToolbarButton
+            title={allMerged ? 'One solid: click to split into separate parts' : 'Merge everything into one solid'}
+            onClick={() => merge(!allMerged)} active={allMerged} disabled={!root || busy}
+          ><Combine size={14} /></ToolbarButton>
           <ToolbarButton title="Download GLB" onClick={download} disabled={!glb}><Download size={14} /></ToolbarButton>
+          <ToolbarButton title="Download STL: everything fused into one solid, for flow simulation or 3D printing"
+            onClick={downloadStl} disabled={!root || busy}><FileDown size={14} /></ToolbarButton>
           <ToolbarButton title="Clear scene" onClick={clear} disabled={!objects.length}><Trash2 size={14} /></ToolbarButton>
           <div className="h-4 w-px bg-border mx-1" />
           <ToolbarButton title="Close" onClick={onClose}><X size={14} /></ToolbarButton>
@@ -402,7 +494,18 @@ export default function ScenePanel({ conversationId, version, onVersionChange, o
             onToggle={toggleHidden}
             onSelect={setSelected}
             onShowAll={() => setHidden(new Set())}
+            onMerge={(group, on) => merge(on, group)}
+            busy={busy}
           />
+        )}
+
+        {notice && (
+          <div className={cn(
+            'absolute bottom-3 left-1/2 -translate-x-1/2 max-w-[80%] rounded-lg border px-3 py-2 text-xs backdrop-blur',
+            notice.ok ? 'text-emerald-300 bg-emerald-500/10 border-emerald-500/25' : 'text-amber-300 bg-amber-500/10 border-amber-500/25',
+          )}>
+            {notice.text}
+          </div>
         )}
 
         {!root && !loading && !error && (

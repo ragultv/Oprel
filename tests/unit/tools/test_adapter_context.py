@@ -106,3 +106,29 @@ async def test_cloud_providers_are_not_budgeted():
 @pytest.fixture
 def anyio_backend():
     return "asyncio"
+
+
+@pytest.mark.anyio
+async def test_thinking_off_is_sent_to_local_models_even_with_a_roomy_context():
+    transport, seen = _server(n_ctx=8192, prompt_tokens=3000)
+    await _adapter(transport).complete(MESSAGES, TOOLS, SamplingParams(max_tokens=4096, thinking=False))
+    assert seen["body"]["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+@pytest.mark.anyio
+async def test_thinking_off_is_not_sent_to_cloud_apis():
+    transport, seen = _server(n_ctx=8192, prompt_tokens=3000)
+    await _adapter(transport, local=False).complete(MESSAGES, TOOLS, SamplingParams(thinking=False))
+    assert "chat_template_kwargs" not in seen["body"]
+
+
+@pytest.mark.anyio
+async def test_timeout_says_what_happened():
+    def handler(req):
+        if req.url.path == "/v1/chat/completions":
+            raise httpx.ReadTimeout("slow", request=req)
+        return httpx.Response(404)
+    adapter = OpenAICompatibleAdapter(label="Local model qwen", base_url="http://llama/v1", model="qwen",
+                                      transport=httpx.MockTransport(handler), timeout=300)
+    with pytest.raises(ModelAdapterError, match="did not answer within 5 minutes"):
+        await adapter.complete(MESSAGES, TOOLS, SamplingParams())

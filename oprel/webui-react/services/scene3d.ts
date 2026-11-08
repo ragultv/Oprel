@@ -14,6 +14,23 @@ export interface SceneObjectSpec {
   parent?: string
   label?: string
   color?: string
+  /** On a group: its parts are fused into one solid. */
+  merge?: boolean
+}
+
+export interface MergeResult extends SceneDocument {
+  notes: string[]
+  warnings: string[]
+  /** Merged group id -> how many separate bodies it came out as (1 = one solid part). */
+  merged: Record<string, { bodies: number; parts: string[] }>
+}
+
+export interface StlDownload {
+  data: ArrayBuffer
+  version: number
+  /** Separate pieces in the fused scene: 1 means one solid part. */
+  bodies: number
+  watertight: boolean
 }
 
 export interface SceneDocument {
@@ -51,9 +68,40 @@ export const Scene3DAPI = {
     return { data: await res.arrayBuffer(), version }
   },
 
+  /** Fuse a group (or, with no group, the whole scene) into one solid; merge=false splits it again. */
+  merge: async (conversationId: string, merge: boolean, group?: string): Promise<MergeResult> => {
+    const res = await authFetch(`/scene3d/${enc(conversationId)}/merge`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ merge, group: group ?? null }),
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      throw new Error(typeof err.detail === 'string' ? err.detail : `Could not merge (${res.status})`)
+    }
+    return res.json()
+  },
+
+  /** The whole scene fused into one solid, as STL (metres), or null when nothing is drawn. */
+  stl: async (conversationId: string): Promise<StlDownload | null> => {
+    const res = await authFetch(`/scene3d/${enc(conversationId)}/scene.stl`, { cache: 'no-store' })
+    if (res.status === 204) return null
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      throw new Error(typeof err.detail === 'string' ? err.detail : `Could not export STL (${res.status})`)
+    }
+    return {
+      data: await res.arrayBuffer(),
+      version: Number(res.headers.get('X-Scene-Version') || 0),
+      bodies: Number(res.headers.get('X-Solid-Bodies') || 0),
+      watertight: res.headers.get('X-Solid-Watertight') === 'true',
+    }
+  },
+
   clear: async (conversationId: string): Promise<SceneDocument> => {
     const res = await authFetch(`/scene3d/${enc(conversationId)}`, { method: 'DELETE' })
     if (!res.ok) throw new Error(`Could not clear the 3D scene (${res.status})`)
     return res.json()
   },
 }
+

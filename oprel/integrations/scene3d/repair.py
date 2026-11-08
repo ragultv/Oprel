@@ -6,6 +6,7 @@ rounds (seen with Qwen3-8B at 4k context):
   close_gaps     a part a few cm above the part it should rest on    -> lower it onto it
   spread_on_top  several things put "on top" of the same object      -> space them out
   drop_standing  a chair/vase/... hanging in mid-air                 -> set it down
+  join_midpoint  a thin box drawn midway between two objects        -> place it between them
 
 The engine has the exact numbers; the model does not. Each fix edits the recipe (so it is
 saved and visible) and is reported back as a note. Anything ambiguous is left to warnings.
@@ -133,8 +134,8 @@ def spread_on_top(objects: list[dict[str, Any]], scene: CompiledScene) -> list[s
     groups: dict[str, list[dict[str, Any]]] = {}
     for o in objects:
         pl = o.get("placement") or {}
-        if pl.get("side") == "top" and not pl.get("align") and not any(vec3(pl.get("offset"))) \
-                and not o.get("pattern") and o["id"] in scene.objects:
+        if pl.get("side") == "top" and pl.get("relative_to") and not pl.get("align") \
+                and not any(vec3(pl.get("offset"))) and not o.get("pattern") and o["id"] in scene.objects:
             groups.setdefault(pl["relative_to"], []).append(o)
     notes: list[str] = []
     for ref, items in groups.items():
@@ -182,7 +183,54 @@ def drop_standing_objects(objects: list[dict[str, Any]], scene: CompiledScene) -
     return notes
 
 
+def join_midpoint_boxes(objects: list[dict[str, Any]], scene: CompiledScene) -> list[str]:
+    """
+    A thin box drawn by coordinates exactly midway between two objects is a plate or beam joining
+    them: place it `between` them so it reaches both and stays joined when they move. Seen with
+    Qwen3-8B: the joining plate was drawn at the midpoint, then left behind when a cylinder moved.
+    """
+    notes: list[str] = []
+    for o in objects:
+        co = scene.objects.get(o["id"])
+        params = o.get("params") or {}
+        if (o.get("shape") != "box" or co is None or co.built is None or len(co.instances) != 1
+                or o.get("placement") or o.get("pattern") or any(vec3(o.get("rotation")))
+                or "width" not in params or "depth" not in params):
+            continue
+        if min(params["width"], params["depth"]) > 0.25 * max(params["width"], params["depth"]):
+            continue  # not thin: a coffee table between two sofas is not a connector
+        lo, hi = co.bbox
+        centre = (lo + hi) / 2
+        best = None
+        siblings = [s for s in scene.objects.values() if s is not co and s.built is not None
+                    and len(s.instances) == 1 and s.spec.get("parent") == o.get("parent")]
+        for i, a in enumerate(siblings):
+            for b in siblings[i + 1:]:
+                ca, cb = (a.bbox[0] + a.bbox[1]) / 2, (b.bbox[0] + b.bbox[1]) / 2
+                span = float(np.hypot(*(cb - ca)[[0, 2]]))
+                off = float(np.hypot(*(centre - (ca + cb) / 2)[[0, 2]]))
+                if span > 0.05 and off <= max(0.02, 0.1 * span) and (best is None or off < best[0]):
+                    best = (off, a, b)
+        if best is None:
+            continue
+        _, a, b = best
+        if abs(lo[1] - min(a.bbox[0][1], b.bbox[0][1])) <= TOL:
+            vertical = "bottom"
+        elif abs(hi[1] - min(a.bbox[1][1], b.bbox[1][1])) <= TOL:
+            vertical = "top"
+        else:
+            continue
+        o.pop("position", None)
+        o["placement"] = {"between": [a.id, b.id], **({"vertical": "top"} if vertical == "top" else {})}
+        # Its thin side stays the thickness; the engine works out the length and turns it.
+        o["params"] = {**{k: v for k, v in params.items() if k != "width"},
+                       "depth": min(params["width"], params["depth"])}
+        notes.append(f"Placed '{o['id']}' between '{a.id}' and '{b.id}' (it was at their midpoint), so it reaches "
+                     f"both and stays joined when they move.")
+    return notes
+
+
 def repair(objects: list[dict[str, Any]], scene: CompiledScene) -> list[str]:
     """Apply every fix to `objects` in place. Returns notes; empty when nothing changed."""
-    return (spread_on_top(objects, scene) or fit_supports(objects, scene) or close_gaps(objects, scene)
-            or drop_standing_objects(objects, scene))
+    return (join_midpoint_boxes(objects, scene) or spread_on_top(objects, scene) or fit_supports(objects, scene)
+            or close_gaps(objects, scene) or drop_standing_objects(objects, scene))

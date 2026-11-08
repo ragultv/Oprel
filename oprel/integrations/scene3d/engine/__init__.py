@@ -6,6 +6,6 @@ exact meshes: validate -> build -> anchor -> pattern -> place -> report -> expor
 """
 
 from oprel.integrations.scene3d.engine.compiler import CompiledScene, SceneError, compile_scene
-from oprel.integrations.scene3d.engine.export import export_glb
+from oprel.integrations.scene3d.engine.export import export_glb, export_stl
 
-__all__ = ["CompiledScene", "SceneError", "compile_scene", "export_glb"]
+__all__ = ["CompiledScene", "SceneError", "compile_scene", "export_glb", "export_stl"]

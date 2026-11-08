@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from oprel.integrations.scene3d.engine import patterns
+from oprel.integrations.scene3d.engine import cuts, patterns
 from oprel.integrations.scene3d.engine.registry import shape_names
 
 SIDES = ["top", "bottom", "left", "right", "front", "back", "center"]
@@ -22,14 +22,29 @@ PLACEMENT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "relative_to": {"type": "string"},
+        "between": {"type": "array", "items": {"type": "string"}, "maxItems": 2},
         "side": {"type": "string", "enum": SIDES},
         "align": {"type": "string"},
         "vertical": {"type": "string", "enum": VERTICAL},
         "gap": {"type": "number", "minimum": 0, "maximum": 1000},
         "offset": _VEC3,
     },
-    "required": ["relative_to"],
 }
+
+
+_LIMITS = {"minimum", "maximum", "maxLength", "maxItems"}
+
+
+def lean(schema: Any) -> Any:
+    """
+    The schema without its numeric limits, for sending to the model: the engine checks the
+    full schema anyway (compiler._check), and the limits cost ~150 tokens on every turn.
+    """
+    if isinstance(schema, dict):
+        return {k: lean(v) for k, v in schema.items() if k not in _LIMITS}
+    if isinstance(schema, list):
+        return [lean(v) for v in schema]
+    return schema
 
 
 def object_schema() -> dict[str, Any]:
@@ -44,6 +59,8 @@ def object_schema() -> dict[str, Any]:
             "placement": PLACEMENT_SCHEMA,
             "parent": {"type": "string"},
             "pattern": patterns.SCHEMA,
+            "cuts": cuts.SCHEMA,
+            "merge": {"type": "boolean"},
             "color": {"type": "string"},
             "opacity": {"type": "number", "minimum": 0.05, "maximum": 1},
             "label": {"type": "string", "maxLength": 80},
@@ -68,6 +85,8 @@ def update_schema(removable: list[str]) -> dict[str, Any]:
             "rotation": _VEC3,
             "placement": loose,
             "pattern": loose,
+            "cuts": {"type": "array", "items": loose},
+            "merge": {"type": "boolean"},
             "parent": {"type": "string"},
             "color": {"type": "string"},
             "opacity": {"type": "number", "minimum": 0.05, "maximum": 1},

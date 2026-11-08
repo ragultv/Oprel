@@ -60,6 +60,7 @@ WARNINGS_NUDGE = (
     "Fix them now with another tool call (use any numbers they suggest). Only if the user explicitly asked "
     "for exactly this, answer and say why you kept it."
 )
+MAX_WARNING_NUDGES = 2  # per user message; each only for warnings not pointed out before
 
 
 def _open_warnings(state: dict[str, Any]) -> list[str]:
@@ -374,10 +375,16 @@ async def _drive(state: dict[str, Any], bound: list[BoundTool]) -> AsyncIterator
             continue
 
         warnings = _open_warnings(state)
-        if not turn.tool_calls and warnings and not state.get("warned") and state["iteration"] < max_iterations:
-            # Small models reply "done" right past warnings (a 4 m-wide 'vase'). One chance to fix
-            # them. The premature reply isn't shown: the user sees the corrected answer instead.
-            state["warned"] = True
+        nudged = state.setdefault("nudged_warnings", [])
+        fresh = [w for w in warnings if w not in nudged]
+        if not turn.tool_calls and fresh and len(state.get("nudges", [])) < MAX_WARNING_NUDGES \
+                and state["iteration"] < max_iterations:
+            # Small models reply "done" right past warnings (a 4 m-wide 'vase'). A chance to fix
+            # them, and one more if fixing raised new ones (seen with Qwen3-8B: moving a cylinder
+            # left the joining plate behind). Warnings already pointed out don't repeat. The
+            # premature reply isn't shown: the user sees the corrected answer instead.
+            state.setdefault("nudges", []).append(state["iteration"])
+            nudged.extend(warnings)
             state["messages"].append(turn.as_message())
             state["messages"].append({"role": "user", "content": WARNINGS_NUDGE.format(
                 warnings="\n".join(f"- {w}" for w in warnings[:5]))})
@@ -434,6 +441,8 @@ async def run_tool_loop(
     if caps:
         params = replace(params, temperature=min([params.temperature, *caps]) if params.temperature is not None
                          else min(caps))
+    if any(not b.integration.allow_thinking for b in bound):
+        params = replace(params, thinking=False)
     state: dict[str, Any] = {
         "model": model,
         "messages": _normalize_messages(messages, bound, conversation_id),

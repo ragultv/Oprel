@@ -336,3 +336,11 @@ def test_group_without_parts_is_flagged():
 def test_shape_signatures_are_prompt_friendly():
     assert get_shape("box").signature() == "box(width, height, depth)"
     assert get_shape("cylinder").signature() == "cylinder(radius?, radius_top?, radius_bottom?, height, segments?)"
+
+
+def test_size_param_a_shape_does_not_have_is_an_error():
+    # Qwen3-8B drew a wall as a rectangle with "height": 2.5; it would have been a flat plate.
+    import pytest
+    from oprel.integrations.scene3d.engine import SceneError, compile_scene
+    with pytest.raises(SceneError, match=r"rectangle has no 'height'.*Expected rectangle\(width, depth, thickness\?\)"):
+        compile_scene([{"id": "wall", "shape": "rectangle", "params": {"width": 4, "depth": 0.2, "height": 2.5}}])
