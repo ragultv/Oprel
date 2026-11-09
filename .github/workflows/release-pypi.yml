@@ -56,12 +56,29 @@ jobs:
       - name: Verify distribution archives
         run: twine check --strict dist/*
 
-      - name: Extract package version
+      - name: Extract package version and release notes
         id: pkg_version
         run: |
           VERSION=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
           echo "VERSION=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "TAG_NAME=v${VERSION}" >> "$GITHUB_OUTPUT"
+
+          # Extract version-specific release notes from CHANGELOG.md
+          python3 -c "
+          import re
+          from pathlib import Path
+
+          changelog = Path('CHANGELOG.md').read_text(encoding='utf-8')
+          pattern = rf'## \[{re.escape(\"${VERSION}\")}\][^\n]*\n(.*?)(?=\n## \[|\Z)'
+          match = re.search(pattern, changelog, re.DOTALL)
+          if match:
+              notes = match.group(1).strip()
+              Path('RELEASE_NOTES.md').write_text(notes, encoding='utf-8')
+              print('Extracted version notes successfully')
+          else:
+              Path('RELEASE_NOTES.md').write_text(changelog, encoding='utf-8')
+              print('Fallback to full changelog')
+          "
 
       - name: Publish distribution to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
@@ -75,9 +92,10 @@ jobs:
         with:
           tag_name: ${{ steps.pkg_version.outputs.TAG_NAME }}
           name: Oprel ${{ steps.pkg_version.outputs.TAG_NAME }}
-          body_path: CHANGELOG.md
+          body_path: RELEASE_NOTES.md
           files: dist/*
           draft: false
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+

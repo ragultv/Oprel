@@ -152,6 +152,7 @@ Homepage = "https://github.com/ragultv/Oprel"
 Documentation = "https://oprel.dev/docs"
 Repository = "https://github.com/ragultv/Oprel"
 Issues = "https://github.com/ragultv/Oprel/issues"
+Changelog = "https://github.com/ragultv/Oprel/blob/main/CHANGELOG.md"
 
 [project.scripts]
 oprel = "oprel.cli.main:main"
