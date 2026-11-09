@@ -404,7 +404,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
         isPremium: Boolean(s.is_premium),
         enabled: Boolean(s.enabled),
       }))
-      setSkills(mappedSkills)
+      if (mappedSkills && mappedSkills.length > 0) {
+        setSkills(mappedSkills)
+      } else {
+        setSkills(ALL_SKILLS)
+      }
     } catch (err) {
       console.error("Failed to fetch skills, keeping defaults:", err)
     }

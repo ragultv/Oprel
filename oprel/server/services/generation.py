@@ -343,105 +343,89 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
         except Exception as exc:
             logger.error(f"RAG search failed: {exc}")
 
-    # --- AUTO SKILL MATCHING ---
-    # Always attempt skill matching, but only override the system_prompt when
-    # it is safe to do so (None, empty, or the user's generic global setting).
-    # Explicit functional prompts (title generator, selected skills) are preserved.
     effective_system_prompt = params.system_prompt
 
-    try:
-        from oprel.server.services.skill_matcher import (
-            match_skill_for_prompt,
-            _is_overridable_system_prompt,
-        )
 
-        if _is_overridable_system_prompt(params.system_prompt):
-            # Get the text portion of the prompt (handles multimodal / list prompts)
-            prompt_text_for_matching = (
-                params.prompt
-                if isinstance(params.prompt, str)
-                else " ".join(
-                    part.get("text", "")
-                    for part in params.prompt
-                    if isinstance(part, dict) and part.get("type") == "text"
-                )
+    # --- DYNAMIC CONTEXT BUDGET & MEMORY COMPACTION ---
+    model = state.models[resolved_model_id]
+    max_ctx = getattr(model, "ctx_size", None) or getattr(CONFIG, "ctx_size", 32768)
+    reserve_tokens = min(params.max_tokens or 2048, max(256, int(max_ctx * 0.35)))
+
+    active_history = list(history) if history else []
+    if getattr(CONFIG, "supermemory_enabled", True) and conv_id and active_history:
+        try:
+            from oprel.knowledge.context_compactor import compact_conversation_context, estimate_messages_tokens
+            from oprel.knowledge.supermemory import SuperMemoryStore
+            from oprel.downloader.aliases import resolve_model_id
+
+            recalled_facts = []
+            if estimate_messages_tokens(active_history) > max_ctx - reserve_tokens - 1000:
+                try:
+                    async def memory_embed(text: str) -> list[float]:
+                        try:
+                            resolved_embed_model = resolve_model_id("nomic-embed-text")
+                            res = await get_embeddings(EmbeddingParams(input=text, model=resolved_embed_model))
+                            return res.embedding or []
+                        except Exception:
+                            return []
+
+                    mem_store = SuperMemoryStore(embed_func=memory_embed)
+                    results = await mem_store.search_memories(
+                        conversation_id=conv_id,
+                        query=text_prompt,
+                        top_k=4,
+                    )
+                    if results:
+                        recalled_facts = [m.get("content", "") for m in results]
+                except Exception as mem_err:
+                    logger.debug(f"[Compactor] SuperMemory lookup: {mem_err}")
+
+            active_history, effective_system_prompt, was_compacted = compact_conversation_context(
+                history=active_history,
+                current_prompt=text_prompt,
+                system_prompt=effective_system_prompt,
+                max_context_tokens=max_ctx,
+                reserve_generation_tokens=reserve_tokens,
+                min_recent_turns=getattr(CONFIG, "supermemory_recency_window", 6),
+                recalled_memories=recalled_facts,
             )
+            if was_compacted:
+                logger.info(f"[Compactor] Conversation compacted to stay within {max_ctx} tokens; earlier turns recalled from memory")
+        except Exception as exc:
+            logger.warning(f"[Compactor] Compaction fallback: {exc}")
 
-            matched_skill = match_skill_for_prompt(prompt_text_for_matching)
+    # --- HARD SLIDING WINDOW: FIFO TURN DROPPING TO PREVENT 400 OVERFLOW ---
+    prompt_token_ceiling = max(256, max_ctx - reserve_tokens - 64)
 
-            if matched_skill:
-                effective_system_prompt = matched_skill.get("system_prompt")
-                logger.info(
-                    f"[SkillMatcher] Auto-matched skill '{matched_skill.get('name')}' "
-                    f"(id={matched_skill.get('id')}) for prompt: "
-                    f"'{prompt_text_for_matching[:80]}...'"
-                )
+    def _estimate_item_tokens(item: Any) -> int:
+        if isinstance(item, dict):
+            c = item.get("content", "")
+        else:
+            c = str(item)
+        return int(len(str(c).split()) * 1.3) + 4
 
-                # Apply skill's parameter overrides if present.
-                # Use dataclasses.replace() — never mutate a frozen dataclass directly.
-                skill_max_tokens = matched_skill.get("max_tokens")
-                skill_temperature = matched_skill.get("temperature")
+    sys_tokens = int(len(str(effective_system_prompt or "").split()) * 1.3) + 10
+    new_user_tokens = int(len(str(text_prompt or "").split()) * 1.3) + 10
 
-                override_kwargs: dict = {}
-                if skill_max_tokens is not None:
-                    override_kwargs["max_tokens"] = int(skill_max_tokens)
-                if skill_temperature is not None:
-                    override_kwargs["temperature"] = float(skill_temperature)
+    current_prompt_tokens = sys_tokens + new_user_tokens + sum(_estimate_item_tokens(m) for m in active_history)
 
-                if override_kwargs:
-                    params = dataclasses.replace(params, **override_kwargs)
+    dropped_history_count = 0
+    while current_prompt_tokens > prompt_token_ceiling and active_history:
+        dropped = active_history.pop(0)
+        dropped_history_count += 1
+        current_prompt_tokens = sys_tokens + new_user_tokens + sum(_estimate_item_tokens(m) for m in active_history)
 
-    except Exception as e:
-        # Never let skill matching break generation — degrade gracefully.
-        logger.warning(
-            f"[SkillMatcher] Skill matching failed, continuing without skill: {e}"
+    if dropped_history_count > 0:
+        logger.info(
+            f"[SlidingWindow] Dropped {dropped_history_count} oldest turns to fit within {prompt_token_ceiling} "
+            f"tokens (model ctx_size: {max_ctx}). Zero 400 errors."
         )
-        effective_system_prompt = params.system_prompt
-    # --- END AUTO SKILL MATCHING ---
 
-
-    # --- SUPERMEMORY LONG-TERM CONVERSATION RECALL ---
-    active_history = history
-    if getattr(CONFIG, "supermemory_enabled", True) and conv_id:
-        recency_window = getattr(CONFIG, "supermemory_recency_window", 6)
-        if len(history) > recency_window:
-            # Keep immediate dialogue window for active continuity
-            active_history = history[-recency_window:]
-            try:
-                from oprel.knowledge.supermemory import SuperMemoryStore
-                from oprel.downloader.aliases import resolve_model_id
-
-                async def memory_embed(text: str) -> list[float]:
-                    try:
-                        resolved_embed_model = resolve_model_id("nomic-embed-text")
-                        res = await get_embeddings(EmbeddingParams(input=text, model=resolved_embed_model))
-                        return res.embedding or []
-                    except Exception:
-                        return []
-
-                recent_hint = None
-                if active_history:
-                    last_msg = active_history[-1]
-                    if isinstance(last_msg, dict):
-                        recent_hint = str(last_msg.get("content", ""))
-
-                memory_store = SuperMemoryStore(embed_func=memory_embed)
-                recalled = await memory_store.search_memories(
-                    conversation_id=conv_id,
-                    query=text_prompt,
-                    top_k=getattr(CONFIG, "supermemory_top_k", 3),
-                    context_hint=recent_hint,
-                )
-                if recalled:
-                    memory_block = memory_store.format_memory_context(recalled)
-                    if effective_system_prompt:
-                        effective_system_prompt = f"{effective_system_prompt}\n\n{memory_block}"
-                    else:
-                        effective_system_prompt = memory_block
-                    logger.info(f"[Supermemory] Injected {len(recalled)} recalled historical turns into context")
-            except Exception as exc:
-                logger.warning(f"[Supermemory] Context recall failed gracefully: {exc}")
-    # --- END SUPERMEMORY RECALL ---
+    if current_prompt_tokens > prompt_token_ceiling:
+        allowed_chars = max(100, int((prompt_token_ceiling - sys_tokens - 20) * 3.2))
+        text_prompt = text_prompt[:allowed_chars] + "\n\n[...prompt truncated to fit model context window]"
+        logger.warning(f"[SlidingWindow] User prompt truncated to {allowed_chars} chars to fit context ceiling")
+    # --- END SLIDING WINDOW ---
 
     # Old chats may hold UI-only tool blocks from the parked connectors feature; never send them to a model.
     from oprel.utils.legacy import strip_legacy_tool_cards
@@ -458,8 +442,6 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
         thinking=params.thinking,
     )
 
-    model = state.models[resolved_model_id]
-
     async def _token_stream() -> AsyncIterator[str]:
         for tok in model._client.generate(
             prompt=full_prompt,
@@ -474,6 +456,7 @@ async def generate_text(params: GenerateParams) -> GenerateResult | StreamResult
             cache_prompt=getattr(CONFIG, "prompt_cache_enabled", True),
         ):
             yield tok
+            await asyncio.sleep(0)
 
     if params.stream:
         async def generate_stream() -> AsyncIterator[str]:

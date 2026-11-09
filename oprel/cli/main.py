@@ -14,7 +14,7 @@ from oprel.utils.logging import set_log_level, get_logger
 
 # Import decoupled command modules
 from .text import cmd_chat, cmd_generate, cmd_run
-from .image import cmd_gen_image, cmd_setup_image, cmd_setup_runtimes
+from .image import cmd_gen_image, cmd_setup_image, cmd_setup_runtimes, cmd_update
 from .vision import cmd_vision
 from .embed import cmd_embed
 from .knowledge import cmd_index, cmd_knowledge_search, cmd_knowledge_sync
@@ -325,9 +325,10 @@ def cmd_pull(args: argparse.Namespace) -> int:
             return 1
 
     target_model = MODEL_ALIASES.get(model_id, model_id)
-    print(f"Downloading model: {target_model}...")
+    quantization = getattr(args, "quantization", None) or "Q4_K_M"
+    print(f"Downloading model: {target_model} (quantization: {quantization})...")
     try:
-        download_gguf(target_model)
+        download_gguf(target_model, quantization=quantization, show_cli_progress=True)
         if model_id in MODEL_ALIASES:
             print(f"Successfully pulled {model_id}")
         return 0
@@ -824,8 +825,14 @@ def main() -> int:
     # Setup command
     setup_parser = subparsers.add_parser("setup", help="Setup additional features")
     setup_subparsers = setup_parser.add_subparsers(dest="setup_command")
-    setup_subparsers.add_parser("runtime", help="Download and prepare llama.cpp + stable-diffusion.cpp backends")
+    runtime_setup = setup_subparsers.add_parser("runtime", help="Download and prepare llama.cpp + stable-diffusion.cpp backends")
+    runtime_setup.add_argument("--force", action="store_true", help="Force re-download even if already installed")
     setup_subparsers.add_parser("image", help="Download and prepare the stable-diffusion.cpp backend")
+
+    # Update command
+    update_parser = subparsers.add_parser("update", help="Update inference runtime backends (llama.cpp, stable-diffusion.cpp)")
+    update_parser.add_argument("--force", action="store_true", help="Force re-download even if already installed")
+    update_parser.add_argument("--target", choices=["all", "llama", "image"], default="all", help="Specific runtime to update")
 
     # List-models command
     list_models_parser = subparsers.add_parser("list-models", help="List all available model aliases")
@@ -842,6 +849,12 @@ def main() -> int:
     # Pull command
     pull_parser = subparsers.add_parser("pull", help="Download a model")
     pull_parser.add_argument("model", help="Model ID, alias, or HF repo")
+    pull_parser.add_argument(
+        "-q", "--quant", "--quantization",
+        dest="quantization",
+        default=None,
+        help="Quantization level (e.g. Q4_0, Q4_K_M, Q8_0). Defaults to Q4_K_M."
+    )
 
     # Multimodal commands
     
@@ -1073,6 +1086,8 @@ def main() -> int:
         return cmd_stop(args)
     elif args.command == "info":
         return cmd_info(args)
+    elif args.command == "update":
+        return cmd_update(args)
     elif args.command == "setup":
         if args.setup_command == "runtime":
             return cmd_setup_runtimes(args)

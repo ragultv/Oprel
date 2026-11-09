@@ -364,6 +364,7 @@ class Model:
             self.model_id,
             quantization=self.quantization,
             cache_dir=self.config.cache_dir,
+            show_cli_progress=True,
         )
         self._model_path = model_path
 
@@ -399,6 +400,13 @@ class Model:
 
         self._loaded = True
         logger.info(f"Model loaded successfully on port {self._process.port}")
+
+    @property
+    def ctx_size(self) -> int:
+        """Active context size of the underlying running backend process."""
+        if hasattr(self, "_process") and self._process:
+            return getattr(self._process, "ctx_size", 32768)
+        return getattr(self.config, "ctx_size", 32768)
 
     def generate(
         self,

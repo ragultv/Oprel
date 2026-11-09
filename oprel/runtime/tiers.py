@@ -12,7 +12,7 @@ TIER_A = "A"  # <= 5 GB VRAM, or CPU only
 TIER_B = "B"  # 5-7.5 GB VRAM
 TIER_C = "C"  # > 7.5 GB VRAM
 
-_CTX = {TIER_A: 4096, TIER_B: 6144, TIER_C: 8192}
+_CTX = {TIER_A: 8192, TIER_B: 16384, TIER_C: 32768}
 
 
 def detect_tier(vram_gb: Optional[float]) -> str:

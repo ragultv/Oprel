@@ -45,6 +45,16 @@ const TEXT_STYLES = [
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+export function cleanCanvasHtml(raw: string): string {
+  if (!raw) return ""
+  let cleaned = raw.trim()
+  // Strip leading ```html or ```xml or ``` with optional newline
+  cleaned = cleaned.replace(/^```(?:html|xml)?\s*\n?/i, "")
+  // Strip trailing ``` with optional whitespace
+  cleaned = cleaned.replace(/\n?```\s*$/i, "")
+  return cleaned.trim()
+}
+
 function execCmd(command: string, value?: string) {
   document.execCommand(command, false, value ?? undefined)
 }
@@ -167,9 +177,10 @@ export function CanvasPanel({ document: doc, onClose, onChange, isStreaming }: C
   // Sync incoming AI-streamed content into editor
   useEffect(() => {
     if (!editorRef.current) return
+    const sanitized = cleanCanvasHtml(doc.content)
     // Only sync if the content actually differs (avoids cursor jump during user editing)
-    if (editorRef.current.innerHTML !== doc.content) {
-      editorRef.current.innerHTML = doc.content
+    if (editorRef.current.innerHTML !== sanitized) {
+      editorRef.current.innerHTML = sanitized
       // Auto-scroll to bottom during streaming
       if (isStreaming) {
         editorRef.current.scrollTop = editorRef.current.scrollHeight

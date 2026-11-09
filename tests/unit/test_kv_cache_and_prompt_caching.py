@@ -61,10 +61,10 @@ def test_resolve_kv_cache_type_turboquant():
     assert _resolve_kv_cache_type(cfg_extreme, "Q8_0", is_vision=False) == "q4_0"
 
     cfg_auto = Config(kv_cache_type="auto")
-    # auto never picks the lossy q4_0 KV cache; q4_0 is opt-in only.
-    assert _resolve_kv_cache_type(cfg_auto, "Q4_K_M", is_vision=False) == "q8_0"
-    assert _resolve_kv_cache_type(cfg_auto, "Q8_0", is_vision=False) == "q8_0"
-    assert _resolve_kv_cache_type(cfg_auto, "Q4_K_M", is_vision=True) == "f16"
+    # Strictly enforces q4_0 across the entire application (including vision)
+    assert _resolve_kv_cache_type(cfg_auto, "Q4_K_M", is_vision=False) == "q4_0"
+    assert _resolve_kv_cache_type(cfg_auto, "Q8_0", is_vision=False) == "q4_0"
+    assert _resolve_kv_cache_type(cfg_auto, "Q4_K_M", is_vision=True) == "q4_0"
 
 
 def test_llama_cpp_build_command_turboquant_and_prompt_cache(tmp_path):
@@ -110,8 +110,9 @@ def test_llama_cpp_build_command_turboquant_and_prompt_cache(tmp_path):
     assert prompt_dir.exists()
 
 
-def test_http_client_cache_prompt_payload():
+def test_http_client_cache_prompt_payload(monkeypatch):
     """Verify HTTP client sends cache_prompt: True by default."""
+    monkeypatch.setenv("OPREL_API_TOKEN", "test-token")
     from oprel.client.http import HTTPClient
 
     client = HTTPClient(port=8080)

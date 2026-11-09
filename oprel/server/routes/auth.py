@@ -31,11 +31,18 @@ def _mask_token(token: str) -> str:
 
 @router.get("/v1/auth/hf/status")
 async def get_hf_status():
-    """Return whether Hugging Face account is connected and user profile details."""
+    """
+    Live verification of Hugging Face access token status.
+    Returns status: 'valid' (verified active), 'expired' (401/403 unauthorized), or 'missing'.
+    """
     auth = db.get_hf_auth()
-    if not auth or not auth.get("token"):
+    token = (auth.get("token") if auth else None) or os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+
+    if not token or not token.strip():
         return {
             "connected": False,
+            "status": "missing",
+            "message": "No Hugging Face token configured.",
             "username": None,
             "display_name": None,
             "avatar_url": None,
@@ -44,15 +51,75 @@ async def get_hf_status():
             "connected_at": None,
         }
 
-    token = auth.get("token", "")
+    token = token.strip()
+    whoami_url = "https://huggingface.co/api/whoami-v2"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "User-Agent": "Oprel-Studio/1.0",
+    }
+
+    try:
+        resp = requests.get(whoami_url, headers=headers, timeout=4.0)
+        if resp.status_code == 200:
+            data = resp.json()
+            username = data.get("name") or data.get("username") or (auth.get("username") if auth else "HF User")
+            display_name = data.get("fullname") or username
+            avatar_url = data.get("avatarUrl") or (auth.get("avatar_url") if auth else "")
+            email = data.get("email") or (auth.get("email") if auth else "")
+
+            # Sync updated details into local DB cache
+            if auth and (auth.get("username") != username or auth.get("display_name") != display_name):
+                db.save_hf_auth(
+                    token=token,
+                    username=username,
+                    display_name=display_name,
+                    avatar_url=avatar_url,
+                    email=email,
+                )
+
+            return {
+                "connected": True,
+                "status": "valid",
+                "message": "Hugging Face token is active and valid.",
+                "username": username,
+                "display_name": display_name,
+                "avatar_url": avatar_url,
+                "email": email,
+                "masked_token": _mask_token(token),
+                "connected_at": auth.get("connected_at") if auth else None,
+            }
+        elif resp.status_code in (401, 403):
+            # Token is explicitly expired or revoked
+            logger.warning("Configured Hugging Face token returned 401/403 Unauthorized (expired)")
+            return {
+                "connected": False,
+                "status": "expired",
+                "message": "Hugging Face token has expired or is unauthorized. Please update it.",
+                "username": auth.get("username") if auth else None,
+                "display_name": auth.get("display_name") if auth else None,
+                "avatar_url": auth.get("avatar_url") if auth else None,
+                "email": auth.get("email") if auth else None,
+                "masked_token": _mask_token(token),
+                "connected_at": auth.get("connected_at") if auth else None,
+            }
+        else:
+            # Server error on Hugging Face side; assume cached token valid
+            logger.debug(f"HF whoami returned status {resp.status_code}, falling back to cached state")
+    except Exception as exc:
+        # Offline or network timeout: fall back gracefully to cached state so offline inference works
+        logger.debug(f"Hugging Face live status check skipped (offline/timeout): {exc}")
+
+    # Fallback to cached state as valid if token is present
     return {
         "connected": True,
-        "username": auth.get("username"),
-        "display_name": auth.get("display_name") or auth.get("username"),
-        "avatar_url": auth.get("avatar_url"),
-        "email": auth.get("email"),
+        "status": "valid",
+        "message": "Cached token active (offline/unreachable).",
+        "username": auth.get("username") if auth else "HF User",
+        "display_name": auth.get("display_name") if auth else (auth.get("username") if auth else "HF User"),
+        "avatar_url": auth.get("avatar_url") if auth else None,
+        "email": auth.get("email") if auth else None,
         "masked_token": _mask_token(token),
-        "connected_at": auth.get("connected_at"),
+        "connected_at": auth.get("connected_at") if auth else None,
     }
 
 

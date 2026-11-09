@@ -644,7 +644,7 @@ function ModelDetailPanel({ model }: { model: AIModel }) {
     {/* Confirm Delete Dialog */}
     {confirmDelete && (
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
-        <div className="bg-[#1e1e1e] border border-border rounded-xl p-6 w-90 shadow-2xl animate-fade-in-up">
+        <div className="bg-[#1e1e1e] border border-border rounded-xl p-6 w-[360px] shadow-2xl animate-fade-in-up">
           <div className="flex items-center gap-3 mb-4">
             <div className="w-9 h-9 rounded-lg bg-destructive/10 flex items-center justify-center">
               <Trash2 size={16} className="text-destructive" />

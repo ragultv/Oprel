@@ -30,7 +30,6 @@ from oprel.server.services.speech import (
     warmup_whisper_model,
     start_model_download,
     start_speech_synthesis_job,
-    synthesize_fish_audio,
     synthesize_kokoro_audio,
     transcribe_audio_whisper,
 )
@@ -39,7 +38,7 @@ router = APIRouter(tags=["Audio"])
 
 
 class SpeechRequest(BaseModel):
-    model: str = Field(default="fish-s1-mini", description="Speech model ID ('fish-s1-mini' or 'kokoro-82m')")
+    model: str = Field(default="kokoro-82m", description="Speech model ID ('kokoro-82m')")
     input: str = Field(..., description="Text content to speak")
     voice: Optional[str] = Field(default=None, description="Voice identifier")
     speed: Optional[float] = Field(default=1.0, description="Speech rate multiplier")
@@ -47,7 +46,7 @@ class SpeechRequest(BaseModel):
 
 
 class DownloadModelRequest(BaseModel):
-    model: str = Field(..., description="Model ID to download ('fish-s1-mini', 'kokoro-82m', 'whisper-base')")
+    model: str = Field(..., description="Model ID to download ('kokoro-82m', 'whisper-base')")
 
 
 def _save_and_record_audio(
@@ -75,7 +74,7 @@ def _save_and_record_audio(
         pass
 
     model_lower = (model or "").lower()
-    model_name = "Kokoro-82M" if "kokoro" in model_lower else "Fish Audio S1-mini"
+    model_name = "Kokoro-82M"
     voice_id = voice or ("af_heart" if "kokoro" in model_lower else "default")
     voice_name = voice_id.replace("_", " ").title()
 
@@ -104,7 +103,7 @@ async def list_speech_models():
 @router.get("/v1/audio/tags")
 async def list_speech_tags(model: Optional[str] = None):
     """
-    Returns the supported expressive tags for Fish Audio S1-mini.
+    Returns supported expressive tags for speech synthesis.
     """
     return {"tags": AVAILABLE_TAGS}
 
@@ -136,42 +135,21 @@ async def get_speech_model_job_status(job_id: str):
 @router.post("/v1/audio/speech")
 async def create_speech(req: SpeechRequest):
     """
-    OpenAI-compatible text-to-speech synthesis endpoint.
-    Routes to Fish Audio S1-mini (CUDA GPU, max 3,000 chars)
-    or Kokoro-82M (CUDA GPU accelerated up to 100,000 chars).
+    OpenAI-compatible text-to-speech synthesis endpoint using Kokoro-82M.
     """
     print(f"\n[OPREL] [Speech] >>> Received direct synthesis request: model={req.model}, chars={len(req.input)}, voice={req.voice}")
     try:
-        model_id = (req.model or "fish-s1-mini").lower()
-
-        if "fish" in model_id or "s1" in model_id:
-            if len(req.input) > 3000:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Fish Audio S1-mini input exceeds the safe limit of 3,000 characters (received {len(req.input):,}). Please use Kokoro-82M for large texts up to 100,000 characters.",
-                )
-            audio_bytes = synthesize_fish_audio(req.input)
-        elif "kokoro" in model_id:
-            if len(req.input) > 100000:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Kokoro-82M input exceeds the maximum supported limit of 100,000 characters (received {len(req.input):,}).",
-                )
-            audio_bytes = synthesize_kokoro_audio(req.input, voice=req.voice or "af_heart", speed=req.speed or 1.0)
-        else:
-            # Fallback to fish audio if installed, otherwise kokoro
-            try:
-                if len(req.input) > 3000:
-                    audio_bytes = synthesize_kokoro_audio(req.input, voice=req.voice or "af_heart", speed=req.speed or 1.0)
-                else:
-                    audio_bytes = synthesize_fish_audio(req.input)
-            except Exception:
-                audio_bytes = synthesize_kokoro_audio(req.input, voice=req.voice or "af_heart", speed=req.speed or 1.0)
+        if len(req.input) > 100000:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Kokoro-82M input exceeds the maximum supported limit of 100,000 characters (received {len(req.input):,}).",
+            )
+        audio_bytes = synthesize_kokoro_audio(req.input, voice=req.voice or "af_heart", speed=req.speed or 1.0)
 
         # Save to database and persistent disk
         rec = _save_and_record_audio(
             audio_bytes=audio_bytes,
-            model=req.model or "fish-s1-mini",
+            model=req.model or "kokoro-82m",
             voice=req.voice,
             text=req.input,
             speed=req.speed or 1.0,
@@ -222,19 +200,11 @@ async def create_speech_job_endpoint(req: SpeechRequest):
     Enables long-form text synthesis up to 100,000 characters with live chunk-by-chunk progress tracking.
     """
     print(f"\n[OPREL] [Speech] >>> Received speech job request: model={req.model}, chars={len(req.input)}, voice={req.voice}")
-    model_id = (req.model or "kokoro-82m").lower()
-    if "fish" in model_id or "s1" in model_id:
-        if len(req.input) > 3000:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Fish Audio S1-mini input exceeds the safe limit of 3,000 characters (received {len(req.input):,}). Please use Kokoro-82M for large texts up to 100,000 characters.",
-            )
-    elif "kokoro" in model_id:
-        if len(req.input) > 100000:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Kokoro-82M input exceeds the maximum supported limit of 100,000 characters (received {len(req.input):,}).",
-            )
+    if len(req.input) > 100000:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Kokoro-82M input exceeds the maximum supported limit of 100,000 characters (received {len(req.input):,}).",
+        )
 
     job_id = start_speech_synthesis_job(
         model=req.model,

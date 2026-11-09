@@ -4,8 +4,10 @@ Configuration for Oprel Knowledge Infrastructure (RAG).
 import os
 from pathlib import Path
 
+from oprel.downloader.cache import get_storage_root
+
 # Base paths
-OPREL_HOME = Path(os.environ.get("OPREL_HOME", Path.home() / ".cache" / "oprel"))
+OPREL_HOME = get_storage_root()
 KNOWLEDGE_DIR = OPREL_HOME / "knowledge"
  
 # ── Oprel connection ──────────────────────────────────

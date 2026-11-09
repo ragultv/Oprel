@@ -16,8 +16,10 @@ from huggingface_hub.utils import HfHubHTTPError
 from oprel.core.config import Config
 from oprel.downloader.aliases import MODEL_ALIASES, resolve_model_id
 from oprel.downloader.hub import (
+    get_active_hf_token,
     _enable_fast_transfer,
     _socket_timeout,
+    _create_progress_class,
     DEFAULT_TIMEOUT,
     MAX_RETRIES,
     BACKOFF_FACTOR,
@@ -47,6 +49,15 @@ _LIKELY_LLM_ARCHITECTURES = {
     "bert",
     "gptneox",
     "rwkv",
+    "deepseek",
+    "starcoder",
+    "bloom",
+    "falcon",
+    "mpt",
+    "baichuan",
+    "internlm",
+    "chatglm",
+    "minicpm",
 }
 
 
@@ -83,16 +94,19 @@ def _is_local_model_path(model_id: str) -> bool:
 
 def _download_file(repo_id: str, filename: str, cache_dir: Path, force_download: bool) -> Path:
     _enable_fast_transfer()
+    token = get_active_hf_token()
     last_error = None
     for attempt in range(MAX_RETRIES):
         try:
             with _socket_timeout(DEFAULT_TIMEOUT[1]):
+                progress_class = _create_progress_class(show_cli_bar=True)
                 path = hf_hub_download(
                     repo_id=repo_id,
                     filename=filename,
                     cache_dir=str(cache_dir),
-                    resume_download=True,
                     force_download=force_download,
+                    token=token,
+                    tqdm_class=progress_class,
                 )
             return Path(path)
         except (requests.exceptions.RequestException, TimeoutError, ConnectionError, socket.timeout) as e:
@@ -185,10 +199,11 @@ def validate_image_gguf_compatibility(file_path: Path) -> tuple[bool, str | None
     except Exception as exc:
         return False, f"Could not parse GGUF metadata: {exc}"
 
-    if architecture in _LIKELY_LLM_ARCHITECTURES:
+    arch_lower = architecture.lower().strip()
+    if any(arch_lower.startswith(prefix) for prefix in _LIKELY_LLM_ARCHITECTURES):
         return (
             False,
-            "This GGUF appears to be a text LLM model, not an image diffusion model.",
+            f"This GGUF is a text LLM ({architecture}), not an image diffusion model. It should be used in Chat with llama.cpp, not stable-diffusion.cpp.",
         )
 
     # stable-diffusion.cpp requires SD metadata for SD family GGUF models.
@@ -229,11 +244,30 @@ _COMPONENT_SPECS = {
         llm_repo="unsloth/Qwen3-4B-Instruct-2507-GGUF",
         llm_filename="Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
     ),
+    "flux": ComponentSpec(
+        vae_repo="second-state/FLUX.1-dev-GGUF",
+        vae_filename="ae.safetensors",
+        vae_fallback_repos=(
+            "camenduru/FLUX.1-dev",
+            "SicariusSicariiStuff/FLUX.1-dev",
+            "ffxvs/vae-flux",
+            "black-forest-labs/FLUX.1-schnell",
+        ),
+        clip_l_repo="comfyanonymous/flux_text_encoders",
+        clip_l_filename="clip_l.safetensors",
+        t5xxl_repo="city96/t5-v1_1-xxl-encoder-gguf",
+        t5xxl_filename="t5-v1_1-xxl-encoder-Q4_K_M.gguf",
+    ),
 }
 
 _COMPONENT_REPO_OVERRIDES: dict[str, str] = {
     "unsloth/z-image-turbo-gguf": "lumina2",
     "leejet/z-image-turbo-gguf": "lumina2",
+    "unsloth/flux.2-klein-4b-gguf": "flux",
+    "black-forest-labs/flux.1-schnell": "flux",
+    "black-forest-labs/flux.1-dev": "flux",
+    "city96/flux.1-schnell-gguf": "flux",
+    "city96/flux.1-dev-gguf": "flux",
 }
 
 
@@ -385,6 +419,8 @@ def resolve_image_model_assets(
             if spec:
                 logger.info("Local image model '%s' uses component architecture '%s', resolving companion assets", local_path.name, arch)
                 return _resolve_component_assets(local_path, spec, cache_dir, force_download, repo_id=None)
+            if arch.lower() in ("flux", "lumina", "lumina2", "sana", "wan", "dit") or not arch.lower().startswith("sd"):
+                return ImageModelAssets(repo_id=None, diffusion_model_path=local_path)
             return ImageModelAssets(repo_id=None, model_path=local_path)
 
         if local_path.is_dir():
@@ -400,6 +436,8 @@ def resolve_image_model_assets(
             if spec:
                 logger.info("Local image model directory uses component architecture '%s', resolving companion assets", arch)
                 return _resolve_component_assets(main_gguf, spec, cache_dir, force_download, repo_id=None)
+            if arch.lower() in ("flux", "lumina", "lumina2", "sana", "wan", "dit") or not arch.lower().startswith("sd"):
+                return ImageModelAssets(repo_id=None, diffusion_model_path=main_gguf)
             return ImageModelAssets(repo_id=None, model_path=main_gguf)
 
         raise ValueError("Unsupported local image model path. Expected a .gguf file or directory containing one.")
@@ -439,6 +477,8 @@ def resolve_image_model_assets(
                         resolved_id,
                         cached_model.name,
                     )
+                    if arch.lower() in ("flux", "lumina", "lumina2", "sana", "wan", "dit") or not arch.lower().startswith("sd"):
+                        return ImageModelAssets(repo_id=resolved_id, diffusion_model_path=cached_model)
                     return ImageModelAssets(repo_id=resolved_id, model_path=cached_model)
 
                 logger.info(

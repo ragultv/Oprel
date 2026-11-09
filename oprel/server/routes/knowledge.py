@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, UploadFile, File
+from fastapi.responses import FileResponse
 
 from oprel.server.schemas.common import IngestRequest, DocumentInfo
 from oprel.server.services import knowledge as knowledge_service
@@ -71,9 +72,34 @@ async def delete_all_indexed_documents():
     return await knowledge_service.delete_all_documents()
 
 
+import mimetypes
+
 @router.get("/index/documents/{filename}/preview")
 async def preview_document(filename: str):
     res = knowledge_service.get_document_content(filename)
     if not res.get("success"):
         raise HTTPException(status_code=404, detail=res.get("message"))
     return res
+
+
+@router.get("/index/documents/{filename}/raw")
+async def get_raw_document(filename: str):
+    file_path = knowledge_service.get_document_raw_path(filename)
+    if not file_path or not file_path.exists():
+        raise HTTPException(status_code=404, detail="Raw document file not found")
+    
+    mime_type, _ = mimetypes.guess_type(str(file_path))
+    if not mime_type:
+        mime_type = "application/pdf" if filename.lower().endswith(".pdf") else "application/octet-stream"
+
+    return FileResponse(
+        file_path,
+        media_type=mime_type,
+        content_disposition_type="inline",
+        filename=filename,
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )

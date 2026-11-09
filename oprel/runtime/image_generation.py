@@ -85,12 +85,31 @@ class StableDiffusionCppRunner:
         if params.sampler:
             cmd.extend(["--sampling-method", params.sampler])
 
-        if assets.model_path:
-            cmd.extend(["--model", str(assets.model_path)])
-        else:
-            if not assets.diffusion_model_path:
-                raise ValueError("No model assets available for stable-diffusion.cpp")
-            cmd.extend(["--diffusion-model", str(assets.diffusion_model_path)])
+        target_path = assets.model_path or assets.diffusion_model_path
+        if not target_path:
+            raise ValueError("No model assets available for stable-diffusion.cpp")
+
+        use_diffusion_flag = bool(assets.diffusion_model_path)
+        if assets.model_path and not use_diffusion_flag:
+            try:
+                from oprel.downloader.image_hub import _read_gguf_metadata_keys, _LIKELY_LLM_ARCHITECTURES
+                arch, keys = _read_gguf_metadata_keys(assets.model_path)
+                arch_lower = arch.lower().strip()
+                if any(arch_lower.startswith(prefix) for prefix in _LIKELY_LLM_ARCHITECTURES):
+                    raise ValueError(
+                        f"The selected file '{assets.model_path.name}' is a text LLM ({arch}), not an image generation model. "
+                        "Please select a valid Stable Diffusion or FLUX model."
+                    )
+                if arch_lower in ("flux", "lumina", "lumina2", "sana", "wan", "dit") or not arch_lower.startswith("sd"):
+                    use_diffusion_flag = True
+            except Exception as exc:
+                if "is a text LLM" in str(exc):
+                    raise
+                logger.debug("Could not inspect architecture of %s: %s", assets.model_path, exc)
+
+        if use_diffusion_flag:
+            diff_path = assets.diffusion_model_path or assets.model_path
+            cmd.extend(["--diffusion-model", str(diff_path)])
             if assets.vae_path:
                 cmd.extend(["--vae", str(assets.vae_path)])
             if assets.clip_l_path:
@@ -103,6 +122,8 @@ class StableDiffusionCppRunner:
                 cmd.extend(["--llm", str(assets.llm_path)])
             if assets.llm_vision_path:
                 cmd.extend(["--llm_vision", str(assets.llm_vision_path)])
+        else:
+            cmd.extend(["--model", str(assets.model_path)])
 
         return cmd
 

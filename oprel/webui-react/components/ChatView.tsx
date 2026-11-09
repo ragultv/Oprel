@@ -49,7 +49,7 @@ import { ArtifactCard, ArtifactPanel, type Artifact } from "@/components/Artifac
 import { SkillPicker } from "@/components/SkillPicker"
 import { SkillChip } from "@/components/SkillChip"
 import { Skill, recordSkillUsage, ALL_SKILLS } from "@/services/skills"
-import { CanvasPanel, type CanvasDocument } from "@/components/CanvasPanel"
+import { CanvasPanel, cleanCanvasHtml, type CanvasDocument } from "@/components/CanvasPanel"
 
 function TypingIndicator() {
   return (
@@ -273,7 +273,6 @@ function isSpeechModel(model: AIModel | undefined): boolean {
     cat === 'text-to-speech' ||
     cat === 'audio' ||
     arch === 'kokoro' ||
-    arch === 'fishaudio' ||
     id.includes('kokoro') ||
     name.includes('kokoro')
   );
@@ -368,6 +367,65 @@ function looksLikeCanvasHtml(content: string): boolean {
   return innerText.length > 300 && /^<(h[123]|p|ul|ol|div|section)[ >]/i.test(innerText)
 }
 
+const CHARS_PER_TOKEN = 3.8;
+
+function estimateTextTokens(text: string): number {
+  if (!text || !text.trim()) return 0;
+  return Math.max(1, Math.ceil(text.trim().length / CHARS_PER_TOKEN));
+}
+
+function estimateMessageTokens(msg: ChatMessage): number {
+  const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
+  return 4 + estimateTextTokens(content);
+}
+
+function CompactedContextCard({ content }: { content: string }) {
+  const [expanded, setExpanded] = useState(false);
+  
+  let summary = content;
+  const startTag = "[CONVERSATION COMPACTED (CONTEXT > 32K TOKENS)]";
+  const endTag = "[END COMPACTED CONTEXT]";
+  if (content.includes(startTag)) {
+    const sIdx = content.indexOf(startTag) + startTag.length;
+    const eIdx = content.includes(endTag) ? content.indexOf(endTag) : content.length;
+    summary = content.slice(sIdx, eIdx).trim();
+  }
+
+  return (
+    <div className="my-4 rounded-2xl border border-primary/25 bg-gradient-to-r from-primary/[0.08] via-primary/[0.03] to-transparent p-3.5 text-xs text-foreground transition-all shadow-sm">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <div className="w-6 h-6 rounded-lg bg-primary/20 text-primary flex items-center justify-center border border-primary/30">
+            <Brain size={13} />
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="font-semibold text-primary text-[12.5px]">Context Compacted (32k Token Window)</span>
+              <span className="text-[10px] text-muted-foreground bg-white/5 border border-white/10 px-1.5 py-0.5 rounded-full font-mono">SuperMemory</span>
+            </div>
+            <p className="text-[11px] text-muted-foreground mt-0.5">
+              Earlier dialogue turns were summarized and archived to preserve fast inference.
+            </p>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={() => setExpanded(!expanded)}
+          className="px-2.5 py-1 rounded-lg text-[11px] font-medium bg-white/5 hover:bg-white/10 text-foreground transition-colors flex items-center gap-1 shrink-0 ml-3"
+        >
+          {expanded ? "Hide Details" : "View Memory"}
+          <ChevronDown size={12} className={cn("transition-transform duration-200", expanded && "rotate-180")} />
+        </button>
+      </div>
+      {expanded && (
+        <div className="mt-3 pt-2.5 border-t border-primary/10 text-[11.5px] font-mono text-muted-foreground leading-relaxed whitespace-pre-wrap bg-black/30 p-3 rounded-xl border border-white/5">
+          {summary}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function MessageBubble({
   message,
   isStreaming = false,
@@ -380,6 +438,11 @@ function MessageBubble({
   onOpenCanvas?: () => void
 }) {
   const { skills } = useApp()
+  const rawText = getContentText(message.content);
+  if (rawText.includes('[CONVERSATION COMPACTED (CONTEXT > 32K TOKENS)]')) {
+    return <CompactedContextCard content={rawText} />;
+  }
+
   const isUser = message.role === "user"
   const [copied, setCopied] = useState(false)
 
@@ -807,6 +870,80 @@ export function ChatView({
   const [selectedImageName, setSelectedImageName] = useState<string | null>(null)
   const [activeArtifact, setActiveArtifact] = useState<Artifact | null>(null)
   const panelRef = useRef<HTMLDivElement>(null)
+
+  // ── Resizable side panel state (Artifacts & Canvas) ─────────────────────
+  const [artifactWidth, setArtifactWidth] = useState<number>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('oprel_artifact_panel_width');
+      if (saved) {
+        const parsed = parseInt(saved, 10);
+        if (!isNaN(parsed) && parsed >= 320 && parsed <= 1800) return parsed;
+      }
+      return Math.min(640, Math.max(460, Math.round(window.innerWidth * 0.45)));
+    }
+    return 520;
+  });
+
+  const [canvasWidth, setCanvasWidth] = useState<number>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('oprel_canvas_panel_width');
+      if (saved) {
+        const parsed = parseInt(saved, 10);
+        if (!isNaN(parsed) && parsed >= 360 && parsed <= 1800) return parsed;
+      }
+      return Math.min(740, Math.max(500, Math.round(window.innerWidth * 0.52)));
+    }
+    return 620;
+  });
+
+  const [resizingPanel, setResizingPanel] = useState<'artifact' | 'canvas' | null>(null);
+
+  const handleStartResize = (panelType: 'artifact' | 'canvas', e: React.MouseEvent) => {
+    e.preventDefault();
+    setResizingPanel(panelType);
+
+    const startX = e.clientX;
+    const initialWidth = panelType === 'artifact' ? artifactWidth : canvasWidth;
+
+    const onMouseMove = (ev: MouseEvent) => {
+      ev.preventDefault();
+      const delta = startX - ev.clientX; // Drag left -> wider
+      const minW = panelType === 'artifact' ? 340 : 380;
+      const maxW = Math.max(minW, window.innerWidth - 360);
+      const newWidth = Math.max(minW, Math.min(maxW, initialWidth + delta));
+
+      if (panelType === 'artifact') {
+        setArtifactWidth(newWidth);
+      } else {
+        setCanvasWidth(newWidth);
+      }
+    };
+
+    const onMouseUp = () => {
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      setResizingPanel(null);
+
+      if (panelType === 'artifact') {
+        setArtifactWidth((curr) => {
+          try { localStorage.setItem('oprel_artifact_panel_width', String(curr)); } catch {}
+          return curr;
+        });
+      } else {
+        setCanvasWidth((curr) => {
+          try { localStorage.setItem('oprel_canvas_panel_width', String(curr)); } catch {}
+          return curr;
+        });
+      }
+    };
+
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+  };
   // Canvas state
   const [canvasMode, setCanvasMode] = useState(false)
   const [canvasStreamingContent, setCanvasStreamingContent] = useState("")
@@ -849,6 +986,9 @@ export function ChatView({
 
   // ── Restore canvas when the active conversation changes ───────────────────
   useEffect(() => {
+    // Close any open artifact preview when switching conversations
+    setActiveArtifact(null)
+
     if (!activeConversationId) {
       setCanvasMode(false)
       return
@@ -874,7 +1014,7 @@ export function ChatView({
         setCanvasDoc({
           id: `canvas-${activeConversationId}`,
           title: saved.title,
-          content: saved.content,
+          content: cleanCanvasHtml(saved.content),
           createdAt: new Date(saved.updated_at),
           updatedAt: new Date(saved.updated_at),
         })
@@ -918,6 +1058,47 @@ export function ChatView({
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   const activeConv = useMemo(() => conversations.find((c) => c.id === activeConversationId), [conversations, activeConversationId]);
+
+  // ── Context Window & 32k Compaction State ────────────────────────────────
+  const [isContextPopoverOpen, setIsContextPopoverOpen] = useState(false);
+  const [isCompacting, setIsCompacting] = useState(false);
+
+  const handleCompactContext = useCallback(async () => {
+    if (!activeConversationId || isCompacting) return;
+    setIsCompacting(true);
+    try {
+      const res = await API.compactConversation(activeConversationId);
+      if (res.compacted) {
+        toast({
+          title: "Context Compacted",
+          description: `Archived ${res.evicted_turns} earlier turns to SuperMemory. Current context is now ~${res.estimated_tokens?.toLocaleString()} tokens.`,
+        });
+        const updated = await API.getConversation(activeConversationId);
+        const msgs = Array.isArray(updated) ? updated : (updated as any).history || [];
+        const normalized: ChatMessage[] = msgs.map((m: any, i: number) => ({
+          id: `${activeConversationId}-${i}`,
+          role: m.role,
+          content: m.content,
+          timestamp: new Date(),
+        }));
+        setConversationMessages(activeConversationId, normalized);
+      } else {
+        toast({
+          title: "Compaction Skipped",
+          description: res.message || "Conversation is already compact.",
+        });
+      }
+    } catch (err: any) {
+      toast({
+        title: "Compaction Failed",
+        description: err.message || "Could not compact conversation.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsCompacting(false);
+    }
+  }, [activeConversationId, isCompacting, setConversationMessages, toast]);
+
   const chatLocalModels = useMemo(
     () => localModels.filter((m) => isChatModel(m)),
     [localModels]
@@ -970,6 +1151,57 @@ export function ChatView({
     // Fall back to any loaded model
     return chatModels.find(m => m.status === 'loaded')
   }, [chatLocalModels, chatModels, activeModelId]);
+
+  const contextMetrics = useMemo(() => {
+    // Determine maximum context window dynamically from active model if available, else 32,768 (32k)
+    const modelCtx = (activeModel as any)?.contextLength || (activeModel as any)?.context_length;
+    const maxContextTokens = modelCtx && modelCtx > 0 ? modelCtx : 32768;
+
+    const rawSys = (settings.systemPrompt || '').trim();
+    const systemPromptTokens = rawSys ? estimateTextTokens(rawSys) + 10 : 25;
+
+    // Tools tokens: skill prompt + tool directives
+    const rawTools = (activeSkill?.systemPrompt || '').trim();
+    const toolsTokens = rawTools ? estimateTextTokens(rawTools) + 15 : 0;
+
+    // Attached files tokens (files uploaded/injected)
+    const attachedFilesTokens = attachments.reduce(
+      (acc, a) => acc + (a.type === 'text' ? estimateTextTokens(a.content) : 256),
+      0
+    );
+
+    // Conversation dialogue history tokens
+    const messages = activeConv?.messages || [];
+    const conversationTokens = messages.reduce((acc, m) => acc + estimateMessageTokens(m), 0);
+
+    // Active draft prompt input tokens
+    const draftTokens = input.trim() ? estimateTextTokens(input) + 4 : 0;
+
+    // Total active usage
+    const totalUsed = systemPromptTokens + toolsTokens + attachedFilesTokens + conversationTokens + draftTokens;
+
+    // Headroom remaining
+    const headroomTokens = Math.max(0, maxContextTokens - totalUsed);
+    const percentUsed = Math.min(100, Math.round((totalUsed / maxContextTokens) * 1000) / 10);
+
+    const hasCompactedTurns = messages.some(m => 
+      typeof m.content === 'string' && m.content.includes('[CONVERSATION COMPACTED')
+    );
+
+    return {
+      maxContextTokens,
+      systemPromptTokens,
+      toolsTokens,
+      attachedFilesTokens,
+      conversationTokens,
+      draftTokens,
+      totalUsed,
+      headroomTokens,
+      percentUsed,
+      messageCount: messages.length,
+      hasCompactedTurns,
+    };
+  }, [activeConv?.messages, attachments, input, settings.systemPrompt, activeSkill, activeModel]);
   // Use a ref so sendMessage always has latest conversation without being in deps
   const activeConvRef = useRef(activeConv);
   useEffect(() => { activeConvRef.current = activeConv; }, [activeConv]);
@@ -1268,13 +1500,14 @@ export function ChatView({
               const sepIdx = currentResponse.indexOf('<!--CHAT-->');
               if (sepIdx === -1) {
                 // All content goes to canvas while streaming
-                setCanvasStreamingContent(currentResponse);
-                setCanvasDoc(prev => ({ ...prev, content: currentResponse, updatedAt: new Date() }));
+                const cleanedLive = cleanCanvasHtml(currentResponse);
+                setCanvasStreamingContent(cleanedLive);
+                setCanvasDoc(prev => ({ ...prev, content: cleanedLive, updatedAt: new Date() }));
                 setStreamingMessage(null);
                 // Keep canvas panel open while streaming
                 setCanvasMode(true);
               } else {
-                const canvasPart = currentResponse.slice(0, sepIdx).trim();
+                const canvasPart = cleanCanvasHtml(currentResponse.slice(0, sepIdx).trim());
                 const chatPart = currentResponse.slice(sepIdx + '<!--CHAT-->'.length).trim();
                 setCanvasDoc(prev => ({ ...prev, content: canvasPart, updatedAt: new Date() }));
                 setCanvasStreamingContent('');
@@ -1319,13 +1552,14 @@ export function ChatView({
             if (wasCanvasMode) {
               const sepIdx = currentResponse.indexOf('<!--CHAT-->');
               if (sepIdx === -1) {
-                setCanvasStreamingContent(currentResponse);
-                setCanvasDoc(prev => ({ ...prev, content: currentResponse, updatedAt: new Date() }));
+                const cleanedLive = cleanCanvasHtml(currentResponse);
+                setCanvasStreamingContent(cleanedLive);
+                setCanvasDoc(prev => ({ ...prev, content: cleanedLive, updatedAt: new Date() }));
                 setStreamingMessage(null);
                 // Keep canvas panel open while streaming
                 setCanvasMode(true);
               } else {
-                const canvasPart = currentResponse.slice(0, sepIdx).trim();
+                const canvasPart = cleanCanvasHtml(currentResponse.slice(0, sepIdx).trim());
                 const chatPart = currentResponse.slice(sepIdx + '<!--CHAT-->'.length).trim();
                 setCanvasDoc(prev => ({ ...prev, content: canvasPart, updatedAt: new Date() }));
                 setCanvasStreamingContent('');
@@ -1355,9 +1589,10 @@ export function ChatView({
         if (wasCanvasMode) {
           const sepIdx = currentResponse.indexOf('<!--CHAT-->');
           const canvasTitle = currentInput.trim().slice(0, 60) || 'Canvas';
-          const htmlPart = sepIdx !== -1
+          const rawHtml = sepIdx !== -1
             ? currentResponse.slice(0, sepIdx).trim()
             : currentResponse.trim();
+          const htmlPart = cleanCanvasHtml(rawHtml);
           const chatPart = sepIdx !== -1
             ? currentResponse.slice(sepIdx + '<!--CHAT-->'.length).trim()
             : '';
@@ -1392,9 +1627,10 @@ export function ChatView({
           // Save canvas to DB immediately so it's available on page refresh
           if (wasCanvasMode) {
             const sepIdx = currentResponse.indexOf('<!--CHAT-->');
-            const htmlPart = sepIdx !== -1
+            const rawHtml = sepIdx !== -1
               ? currentResponse.slice(0, sepIdx).trim()
               : currentResponse.trim();
+            const htmlPart = cleanCanvasHtml(rawHtml);
             const canvasTitle = currentInput.trim().slice(0, 60) || 'Canvas';
             // Extract timestamp from chatContent (which has the card token with embedded ts)
             const tsFromCard = chatContent.startsWith(CANVAS_CARD_PREFIX) && chatContent.includes('||')
@@ -1527,15 +1763,18 @@ export function ChatView({
     }
   }
 
-  const tokenCount = Math.ceil(input.length / 4)
-
   return (
-    <div className="flex h-full bg-background overflow-hidden">
-      {/* Left: chat column — narrows when canvas is open */}
-      <div className={cn(
-        "flex flex-col overflow-hidden transition-all duration-300 ease-in-out",
-        canvasMode ? "w-[360px] shrink-0" : "flex-1 min-w-0"
-      )}>
+    <div className="flex h-full bg-background overflow-hidden relative">
+      {/* ── Global Resize Drag Shield (blocks iframe mouse absorption) ───────── */}
+      {resizingPanel && (
+        <div
+          className="fixed inset-0 z-[9999] cursor-col-resize select-none bg-transparent"
+          style={{ pointerEvents: 'auto' }}
+        />
+      )}
+
+      {/* Left: chat column — takes remaining space */}
+      <div className="flex-1 min-w-[340px] flex flex-col h-full overflow-hidden">
       {/* Header */}
       <header className="h-14 border-b border-border flex items-center justify-between px-5 shrink-0 bg-background/95 backdrop-blur-sm sticky top-0 z-20">
         <div className="flex items-center gap-3">
@@ -2004,7 +2243,195 @@ export function ChatView({
                 </div>
 
                 <div className="h-4 w-px bg-border mx-1" />
-                <span className="text-[10px] font-mono text-muted-foreground">{tokenCount} / {settings.maxTokens}</span>
+
+                {/* Interactive 32k Context Window Meter & Breakdown Popover */}
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setIsContextPopoverOpen(!isContextPopoverOpen)}
+                    className={cn(
+                      "h-6 px-2.5 rounded-full border bg-muted/30 hover:bg-muted/70 transition-all flex items-center gap-1.5 text-[10.5px] font-mono select-none cursor-pointer group/ctx",
+                      contextMetrics.percentUsed >= 85
+                        ? "border-rose-500/40 text-rose-300 hover:bg-rose-500/10"
+                        : contextMetrics.percentUsed >= 60
+                        ? "border-amber-500/40 text-amber-300 hover:bg-amber-500/10"
+                        : "border-border/60 text-muted-foreground hover:text-foreground"
+                    )}
+                    title="Click to inspect model context breakdown & compact dialogue"
+                  >
+                    <div
+                      className="w-1.5 h-1.5 rounded-full shrink-0"
+                      style={{
+                        backgroundColor:
+                          contextMetrics.percentUsed >= 85
+                            ? '#f43f5e'
+                            : contextMetrics.percentUsed >= 60
+                            ? '#f59e0b'
+                            : '#10b981',
+                      }}
+                    />
+                    <span>
+                      {contextMetrics.totalUsed.toLocaleString()} /{" "}
+                      {contextMetrics.maxContextTokens >= 1000
+                        ? `${Math.round((contextMetrics.maxContextTokens / 1024) * 10) / 10}k`
+                        : contextMetrics.maxContextTokens}
+                    </span>
+                    <span className="text-[9px] opacity-75">({contextMetrics.percentUsed}%)</span>
+                    <ChevronDown
+                      size={10}
+                      className={cn(
+                        "opacity-60 group-hover/ctx:opacity-100 transition-transform duration-200",
+                        isContextPopoverOpen && "rotate-180"
+                      )}
+                    />
+                  </button>
+
+                  {isContextPopoverOpen && (
+                    <>
+                      <div
+                        className="fixed inset-0 z-40 bg-transparent"
+                        onClick={() => setIsContextPopoverOpen(false)}
+                      />
+                      {/* Context breakdown card matching exact user-provided design */}
+                      <div className="absolute bottom-full right-0 mb-3 w-[360px] sm:w-[400px] max-w-[calc(100vw-2rem)] bg-[#19191c] border border-white/10 rounded-2xl shadow-2xl p-5 text-foreground z-50 animate-in fade-in zoom-in-95 duration-150 text-left">
+                        {/* Header: Context + 112,900 / 128,000 */}
+                        <div className="flex items-center justify-between mb-3">
+                          <span className="text-sm font-bold text-white tracking-tight">Context</span>
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-mono font-medium text-[#f59e0b]">
+                              {contextMetrics.totalUsed.toLocaleString()} / {contextMetrics.maxContextTokens.toLocaleString()}
+                            </span>
+                            <button
+                              onClick={() => setIsContextPopoverOpen(false)}
+                              className="text-muted-foreground hover:text-white transition-colors ml-1"
+                              title="Close"
+                            >
+                              <X size={13} />
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Segmented Stacked Progress Bar */}
+                        <div className="h-2 w-full bg-[#2a2a2e] rounded-full overflow-hidden flex mb-4">
+                          {/* System prompt */}
+                          <div
+                            style={{ width: `${Math.min(100, (contextMetrics.systemPromptTokens / contextMetrics.maxContextTokens) * 100)}%` }}
+                            className="bg-[#9ca3af] h-full transition-all duration-300"
+                            title={`System prompt: ${contextMetrics.systemPromptTokens.toLocaleString()}`}
+                          />
+                          {/* Tools */}
+                          <div
+                            style={{ width: `${Math.min(100, (contextMetrics.toolsTokens / contextMetrics.maxContextTokens) * 100)}%` }}
+                            className="bg-[#4b5563] h-full transition-all duration-300"
+                            title={`Tools: ${contextMetrics.toolsTokens.toLocaleString()}`}
+                          />
+                          {/* Attached files */}
+                          <div
+                            style={{ width: `${Math.min(100, (contextMetrics.attachedFilesTokens / contextMetrics.maxContextTokens) * 100)}%` }}
+                            className="bg-[#2563eb] h-full transition-all duration-300"
+                            title={`Attached files: ${contextMetrics.attachedFilesTokens.toLocaleString()}`}
+                          />
+                          {/* Conversation */}
+                          <div
+                            style={{ width: `${Math.min(100, ((contextMetrics.conversationTokens + contextMetrics.draftTokens) / contextMetrics.maxContextTokens) * 100)}%` }}
+                            className="bg-[#38bdf8] h-full transition-all duration-300"
+                            title={`Conversation: ${contextMetrics.conversationTokens.toLocaleString()}`}
+                          />
+                        </div>
+
+                        {/* Breakdown Rows (Matching Reference Screenshot) */}
+                        <div className="space-y-3 text-xs">
+                          {/* System prompt */}
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2.5 text-[#d1d5db]">
+                              <span className="w-2 h-2 rounded-full bg-[#9ca3af] inline-block shrink-0" />
+                              <span>System prompt</span>
+                            </div>
+                            <span className="font-mono text-[#e5e7eb] text-right">
+                              {contextMetrics.systemPromptTokens.toLocaleString()}
+                            </span>
+                          </div>
+
+                          {/* Tools */}
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2.5 text-[#9ca3af]">
+                              <span className="w-2 h-2 rounded-full bg-[#4b5563] inline-block shrink-0" />
+                              <span>Tools</span>
+                            </div>
+                            <span className="font-mono text-[#e5e7eb] text-right">
+                              {contextMetrics.toolsTokens.toLocaleString()}
+                            </span>
+                          </div>
+
+                          {/* Attached files */}
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2.5 text-[#93c5fd]">
+                              <span className="w-2 h-2 rounded-full bg-[#2563eb] inline-block shrink-0" />
+                              <span>Attached files</span>
+                            </div>
+                            <span className="font-mono text-[#e5e7eb] text-right">
+                              {contextMetrics.attachedFilesTokens.toLocaleString()}
+                            </span>
+                          </div>
+
+                          {/* Conversation */}
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2.5 text-[#bae6fd]">
+                              <span className="w-2 h-2 rounded-full bg-[#38bdf8] inline-block shrink-0" />
+                              <span>Conversation</span>
+                            </div>
+                            <span className="font-mono text-[#e5e7eb] text-right">
+                              {contextMetrics.conversationTokens.toLocaleString()}
+                            </span>
+                          </div>
+
+                          {/* Headroom */}
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2.5 text-[#9ca3af]">
+                              <span className="w-2 h-2 rounded-full border border-[#6b7280] inline-block shrink-0" />
+                              <span>Headroom</span>
+                            </div>
+                            <span className="font-mono text-[#9ca3af] text-right">
+                              {contextMetrics.headroomTokens.toLocaleString()}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Footer Controls */}
+                        <div className="pt-3.5 mt-3.5 border-t border-white/[0.08] flex items-center justify-between">
+                          <span className="text-[10px] text-muted-foreground font-mono">
+                            {contextMetrics.hasCompactedTurns ? "✓ SuperMemory active" : "Auto-compaction ready"}
+                          </span>
+
+                          <button
+                            type="button"
+                            onClick={handleCompactContext}
+                            disabled={isCompacting || contextMetrics.messageCount <= 4}
+                            className={cn(
+                              "px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all flex items-center gap-1.5 border shadow-sm",
+                              contextMetrics.messageCount > 4
+                                ? "bg-primary text-primary-foreground hover:bg-primary/90 border-primary/30 cursor-pointer"
+                                : "bg-muted/40 text-muted-foreground border-transparent cursor-not-allowed opacity-50"
+                            )}
+                            title={contextMetrics.messageCount <= 4 ? "Requires at least 5 dialogue turns to compact" : "Compact older messages into memory now"}
+                          >
+                            {isCompacting ? (
+                              <>
+                                <div className="w-2.5 h-2.5 border-2 border-primary-foreground border-t-transparent rounded-full animate-spin" />
+                                <span>Compacting...</span>
+                              </>
+                            ) : (
+                              <>
+                                <Sparkles size={11} />
+                                <span>Compact Context</span>
+                              </>
+                            )}
+                          </button>
+                        </div>
+                      </div>
+                    </>
+                  )}
+                </div>
               </div>
 
               {/* Send / Stop button */}
@@ -2047,33 +2474,96 @@ export function ChatView({
       {/* END left column */}
       </div>
 
-      {/* Right: Canvas Panel — fills all remaining space, rounded design */}
+      {/* ── Right: Canvas Panel with interactive Resizer ───────────────── */}
       {canvasMode && (
-        <div className="flex-1 min-w-0 p-3 flex flex-col overflow-hidden animate-in slide-in-from-right-4 duration-300">
-          <div className="flex-1 rounded-2xl border border-border/50 overflow-hidden shadow-2xl flex flex-col bg-[#141414]">
-            <CanvasPanel
-              document={canvasDoc}
-              onClose={() => setCanvasMode(false)}
-              onChange={(partial) => setCanvasDoc(prev => ({ ...prev, ...partial } as CanvasDocument))}
-              isStreaming={isGenerating}
+        <>
+          {/* Vertical Resizer Divider */}
+          <div
+            onMouseDown={(e) => handleStartResize('canvas', e)}
+            className="w-3 shrink-0 cursor-col-resize select-none relative group/resizer flex items-center justify-center transition-colors hover:bg-primary/20 z-10"
+            title="Drag to resize Canvas"
+          >
+            <div
+              className={cn(
+                "w-[2px] h-full transition-colors",
+                resizingPanel === 'canvas'
+                  ? "bg-primary shadow-[0_0_8px_rgba(var(--primary),0.6)]"
+                  : "bg-border/60 group-hover/resizer:bg-primary/70"
+              )}
             />
+            <div
+              className={cn(
+                "absolute w-1.5 h-8 rounded-full transition-colors flex flex-col items-center justify-center gap-1",
+                resizingPanel === 'canvas'
+                  ? "bg-primary"
+                  : "bg-muted-foreground/30 group-hover/resizer:bg-primary"
+              )}
+            >
+              <div className="w-0.5 h-0.5 rounded-full bg-white/70" />
+              <div className="w-0.5 h-0.5 rounded-full bg-white/70" />
+              <div className="w-0.5 h-0.5 rounded-full bg-white/70" />
+            </div>
           </div>
-        </div>
+
+          <div
+            style={{ width: canvasWidth }}
+            className="shrink-0 max-w-[calc(100vw-360px)] p-3 flex flex-col overflow-hidden animate-in slide-in-from-right-4 duration-200"
+          >
+            <div className="flex-1 rounded-2xl border border-border/50 overflow-hidden shadow-2xl flex flex-col bg-[#141414]">
+              <CanvasPanel
+                document={canvasDoc}
+                onClose={() => setCanvasMode(false)}
+                onChange={(partial) => setCanvasDoc(prev => ({ ...prev, ...partial } as CanvasDocument))}
+                isStreaming={isGenerating}
+              />
+            </div>
+          </div>
+        </>
       )}
 
-      {/* Right: Artifact Panel (only when canvas is not active) */}
+      {/* ── Right: Artifact Panel (HTML & Mermaid Preview) with Resizer ─── */}
       {!canvasMode && activeArtifact && (
-        <div
-          ref={panelRef}
-          style={{ width: 480 }}
-          className="shrink-0 border-l border-border/60 flex flex-col overflow-hidden animate-in slide-in-from-right-4 duration-300"
-        >
-          <ArtifactPanel
-            artifact={activeArtifact}
-            onClose={() => setActiveArtifact(null)}
-            panelRef={panelRef as React.RefObject<HTMLDivElement>}
-          />
-        </div>
+        <>
+          {/* Vertical Resizer Divider */}
+          <div
+            onMouseDown={(e) => handleStartResize('artifact', e)}
+            className="w-3 shrink-0 cursor-col-resize select-none relative group/resizer flex items-center justify-center transition-colors hover:bg-primary/20 z-10"
+            title="Drag to resize Preview"
+          >
+            <div
+              className={cn(
+                "w-[2px] h-full transition-colors",
+                resizingPanel === 'artifact'
+                  ? "bg-primary shadow-[0_0_8px_rgba(var(--primary),0.6)]"
+                  : "bg-border/60 group-hover/resizer:bg-primary/70"
+              )}
+            />
+            <div
+              className={cn(
+                "absolute w-1.5 h-8 rounded-full transition-colors flex flex-col items-center justify-center gap-1",
+                resizingPanel === 'artifact'
+                  ? "bg-primary"
+                  : "bg-muted-foreground/30 group-hover/resizer:bg-primary"
+              )}
+            >
+              <div className="w-0.5 h-0.5 rounded-full bg-white/70" />
+              <div className="w-0.5 h-0.5 rounded-full bg-white/70" />
+              <div className="w-0.5 h-0.5 rounded-full bg-white/70" />
+            </div>
+          </div>
+
+          <div
+            ref={panelRef}
+            style={{ width: artifactWidth }}
+            className="shrink-0 max-w-[calc(100vw-360px)] flex flex-col overflow-hidden animate-in slide-in-from-right-4 duration-200 bg-[#0d0d0d]"
+          >
+            <ArtifactPanel
+              artifact={activeArtifact}
+              onClose={() => setActiveArtifact(null)}
+              panelRef={panelRef as React.RefObject<HTMLDivElement>}
+            />
+          </div>
+        </>
       )}
     </div>
   )

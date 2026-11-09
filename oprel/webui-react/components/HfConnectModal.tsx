@@ -10,7 +10,6 @@ import {
   CheckCircle2,
   AlertCircle,
   ShieldCheck,
-  Download,
   KeyRound,
   Eye,
   EyeOff,
@@ -23,7 +22,7 @@ interface HfConnectModalProps {
   onClose: () => void
   onConnected?: (status: HfAuthStatus) => void
   onSkip?: () => void
-  variant?: "welcome" | "download_nudge" | "general"
+  variant?: "welcome" | "download_nudge" | "general" | "expired" | "missing"
 }
 
 export function HfConnectModal({
@@ -73,6 +72,8 @@ export function HfConnectModal({
 
   const isDownloadNudge = variant === "download_nudge"
   const isWelcome = variant === "welcome"
+  const isExpired = variant === "expired"
+  const isMissing = variant === "missing"
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-md p-4 animate-fade-in">
@@ -97,15 +98,24 @@ export function HfConnectModal({
               🤗
             </div>
             <div className="space-y-1">
-              <h2 className="text-xl font-bold tracking-tight text-foreground">
-                {isDownloadNudge
+              <h2 className="text-xl font-bold tracking-tight text-foreground flex items-center gap-2">
+                {isExpired
+                  ? "Hugging Face Token Expired"
+                  : isDownloadNudge
                   ? "Download Faster with Hugging Face"
-                  : isWelcome
+                  : isWelcome || isMissing
                   ? "Welcome to Oprel Studio"
                   : "Connect Hugging Face Account"}
+                {isExpired && (
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-destructive/15 text-destructive border border-destructive/25">
+                    Expired
+                  </span>
+                )}
               </h2>
               <p className="text-sm text-muted-foreground leading-relaxed">
-                {isDownloadNudge
+                {isExpired
+                  ? "Your Hugging Face token has expired or is unauthorized. Please update it with a new access token to avoid download timeouts and stalls."
+                  : isDownloadNudge
                   ? "Sign in with your Hugging Face token for accelerated multi-stream downloads and access to gated models."
                   : "Connect your personal HF token to unlock high-speed downloads, gated models, and higher rate limits."}
               </p>
@@ -137,6 +147,13 @@ export function HfConnectModal({
           {/* Token Form */}
           {!success ? (
             <form onSubmit={handleConnect} className="space-y-4">
+              {isExpired && (
+                <div className="flex items-center gap-2.5 rounded-xl border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">
+                  <AlertCircle size={15} className="shrink-0" />
+                  <span>Your Hugging Face credentials expired. Paste a renewed token below to reactivate accelerated transfers.</span>
+                </div>
+              )}
+
               <div className="space-y-2">
                 <div className="flex items-center justify-between text-xs">
                   <label className="font-semibold text-foreground flex items-center gap-1.5">
@@ -178,13 +195,12 @@ export function HfConnectModal({
               </div>
 
               {error && (
-                <div className="flex items-start gap-2 rounded-xl border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">
-                  <AlertCircle size={15} className="shrink-0 mt-0.5" />
+                <div className="flex items-center gap-2 rounded-xl border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive">
+                  <AlertCircle size={14} className="shrink-0" />
                   <span>{error}</span>
                 </div>
               )}
 
-              {/* Actions */}
               <div className="flex items-center gap-3 pt-2">
                 <button
                   type="submit"
@@ -197,7 +213,7 @@ export function HfConnectModal({
                   )}
                 >
                   {loading && <Loader2 size={16} className="animate-spin" />}
-                  <span>{loading ? "Verifying Token…" : "Connect Account"}</span>
+                  <span>{loading ? "Verifying Token…" : isExpired ? "Update Hugging Face Token" : "Connect Account"}</span>
                 </button>
 
                 <button

@@ -8,11 +8,11 @@ import {
   Plus, Trash2, RefreshCw, Eye, EyeOff, Check, X,
   Loader2, Zap, ChevronDown, ChevronUp, RotateCcw,
   Globe, KeyRound, Server, BookOpen, Save, Sparkles, Lock,
-  ExternalLink, ShieldCheck,
+  ExternalLink, ShieldCheck, AlertCircle,
 } from 'lucide-react'
 import { useApp } from '@/services/context'
 import { type Skill } from '@/services/skills'
-import { HF, type HfAuthStatus } from '@/services/api'
+import { API, HF, type HfAuthStatus } from '@/services/api'
 import {
   type ProviderConfig, type ProviderType,
   PROVIDER_PRESETS, fetchProviderModels,
@@ -52,6 +52,7 @@ const emptySkill: Skill = {
 
 const TABS = [
   { id: 'config', label: 'Generation', icon: SlidersHorizontal },
+  { id: 'storage', label: 'Storage', icon: Icons.HardDrive },
   { id: 'providers', label: 'AI Providers', icon: Globe },
   { id: 'skills', label: 'Skills', icon: Sparkles },
   { id: 'connectors', label: 'Connectors', icon: Icons.Plug },
@@ -508,6 +509,48 @@ export default function SettingsPage() {
   const [hfError, setHfError] = useState<string | null>(null)
   const [hfSuccessMsg, setHfSuccessMsg] = useState<string | null>(null)
 
+  // Storage State
+  const [storageInfo, setStorageInfo] = useState<{ storage_path: string; free_space_gb: number; total_space_gb: number } | null>(null)
+  const [newStoragePath, setNewStoragePath] = useState('')
+  const [storageMigrate, setStorageMigrate] = useState(false)
+  const [savingStorage, setSavingStorage] = useState(false)
+  const [storageMsg, setStorageMsg] = useState<{ text: string; error?: boolean } | null>(null)
+
+  const fetchStorageInfo = useCallback(async () => {
+    try {
+      const data = await API.getStorage()
+      setStorageInfo(data)
+      setNewStoragePath(data.storage_path)
+    } catch (e) {
+      console.warn("Could not fetch storage info", e)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (activeTab === 'storage') {
+      fetchStorageInfo()
+    }
+  }, [activeTab, fetchStorageInfo])
+
+  const handleSaveStorage = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!newStoragePath.trim()) return
+    setSavingStorage(true)
+    setStorageMsg(null)
+    try {
+      const res = await API.setStorage(newStoragePath.trim(), storageMigrate)
+      if (res.info) {
+        setStorageInfo(res.info)
+        setNewStoragePath(res.info.storage_path)
+      }
+      setStorageMsg({ text: 'Storage directory updated successfully!' })
+    } catch (e: any) {
+      setStorageMsg({ text: e?.message || 'Failed to update storage directory', error: true })
+    } finally {
+      setSavingStorage(false)
+    }
+  }
+
   const fetchHfStatus = useCallback(async () => {
     try {
       const status = await HF.getStatus()
@@ -547,7 +590,7 @@ export default function SettingsPage() {
     setHfLoading(true)
     try {
       await HF.disconnect()
-      setHfStatus({ connected: false, username: null, display_name: null, avatar_url: null, email: null, masked_token: null, connected_at: null })
+      setHfStatus({ connected: false, status: 'missing', username: null, display_name: null, avatar_url: null, email: null, masked_token: null, connected_at: null })
       setHfSuccessMsg("Disconnected Hugging Face account")
       window.dispatchEvent(new Event('userProfileUpdated'))
     } catch (err: any) {
@@ -803,6 +846,102 @@ export default function SettingsPage() {
             </>
           )}
 
+          {/* ── Storage Settings ── */}
+          {activeTab === 'storage' && (
+            <div className="space-y-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h1 className="text-xl font-bold text-foreground">Storage & Cache Location</h1>
+                  <p className="text-sm text-muted-foreground mt-0.5">
+                    Choose the directory where downloaded models, binaries, and local indexes are stored.
+                  </p>
+                </div>
+              </div>
+
+              {storageInfo && (
+                <div className="bg-card/50 border border-border rounded-xl p-5 space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div className="space-y-0.5">
+                      <span className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">Active Directory</span>
+                      <p className="text-sm font-mono text-foreground">{storageInfo.storage_path}</p>
+                    </div>
+                    <div className="text-right">
+                      <span className="text-xs uppercase tracking-wider text-muted-foreground font-semibold">Disk Space</span>
+                      <p className="text-sm font-mono text-emerald-400">
+                        {storageInfo.free_space_gb} GB free / {storageInfo.total_space_gb} GB total
+                      </p>
+                    </div>
+                  </div>
+
+                  {storageInfo.total_space_gb > 0 && (
+                    <div className="w-full bg-secondary h-2 rounded-full overflow-hidden">
+                      <div
+                        className="bg-emerald-500 h-full rounded-full transition-all"
+                        style={{
+                          width: `${Math.min(100, Math.max(5, Math.round(((storageInfo.total_space_gb - storageInfo.free_space_gb) / storageInfo.total_space_gb) * 100)))}%`
+                        }}
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <form onSubmit={handleSaveStorage} className="bg-card/50 border border-border rounded-xl p-5 space-y-4">
+                <div className="space-y-1.5">
+                  <label className="text-sm font-medium text-foreground">Change Storage Location</label>
+                  <p className="text-xs text-muted-foreground">
+                    Enter an absolute folder path on your device (e.g. D:\oprel or /data/oprel).
+                  </p>
+                  <input
+                    type="text"
+                    value={newStoragePath}
+                    onChange={(e) => setNewStoragePath(e.target.value)}
+                    placeholder="e.g. D:/oprel"
+                    className="w-full px-3 py-2 bg-background border border-border rounded-lg text-sm font-mono text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                  />
+                </div>
+
+                <div className="flex items-center gap-2 pt-1">
+                  <input
+                    type="checkbox"
+                    id="migrate-checkbox"
+                    checked={storageMigrate}
+                    onChange={(e) => setStorageMigrate(e.target.checked)}
+                    className="rounded border-border"
+                  />
+                  <label htmlFor="migrate-checkbox" className="text-xs text-muted-foreground select-none cursor-pointer">
+                    Migrate existing models and cache files to the new location
+                  </label>
+                </div>
+
+                {storageMsg && (
+                  <div className={cn(
+                    "text-xs px-3 py-2 rounded-lg border",
+                    storageMsg.error ? "bg-red-500/10 border-red-500/20 text-red-400" : "bg-emerald-500/10 border-emerald-500/20 text-emerald-400"
+                  )}>
+                    {storageMsg.text}
+                  </div>
+                )}
+
+                <div className="pt-2">
+                  <button
+                    type="submit"
+                    disabled={savingStorage || !newStoragePath.trim()}
+                    className={cn(
+                      "flex items-center gap-1.5 px-4 py-2 text-sm rounded-lg transition-all font-medium",
+                      savingStorage || !newStoragePath.trim()
+                        ? "bg-secondary text-muted-foreground cursor-not-allowed"
+                        : "bg-primary text-primary-foreground hover:bg-primary/90"
+                    )}
+                  >
+                    {savingStorage ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
+                    {savingStorage ? "Moving & Saving..." : "Update Storage Location"}
+                  </button>
+                </div>
+              </form>
+            </div>
+          )}
+
           {/* ── AI Providers ── */}
           {activeTab === 'providers' && (
             <>
@@ -1010,9 +1149,15 @@ export default function SettingsPage() {
                             <h2 className="text-lg font-bold text-foreground">
                               {hfStatus.display_name || hfStatus.username}
                             </h2>
-                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/20">
-                              Connected ✓
-                            </span>
+                            {hfStatus.status === "expired" ? (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-destructive/15 text-destructive border border-destructive/25 flex items-center gap-1">
+                                <AlertCircle size={10} /> Expired ⚠
+                              </span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/20">
+                                Active & Valid ✓
+                              </span>
+                            )}
                           </div>
                           <p className="text-xs text-muted-foreground font-mono">
                             @{hfStatus.username}

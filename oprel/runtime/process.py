@@ -20,6 +20,7 @@ import os
 import platform
 import socket
 import subprocess
+import tempfile
 import threading
 import time
 import weakref
@@ -238,6 +239,7 @@ class ModelProcess:
         self._vram_monitor: Optional[VRAMMonitor] = None
         # Track whether we've already attempted a CPU fallback to avoid loops
         self._attempted_cpu_fallback: bool = False
+        self._stderr_file = None
         
         # Register for cleanup
         _register_process(self)
@@ -361,10 +363,19 @@ class ModelProcess:
                     CREATE_NEW_PROCESS_GROUP = 0x00000200
                     creation_flags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
 
+                self._stderr_file = tempfile.NamedTemporaryFile(
+                    mode="w+",
+                    prefix="oprel_backend_stderr_",
+                    suffix=".log",
+                    delete=False,
+                    encoding="utf-8",
+                    errors="replace",
+                )
+
                 self.process = subprocess.Popen(
                     cmd,
                     stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
+                    stderr=self._stderr_file,
                     stdin=subprocess.DEVNULL,
                     env=env,
                     creationflags=creation_flags,
@@ -401,8 +412,22 @@ class ModelProcess:
                 return
 
             # Not ready: process may have exited or health check timed out
-            exit_code = self.process.returncode if self.process else -1
+            exit_code = self.process.poll() if self.process else -1
             self._stop_vram_monitor()
+
+            stderr_text = ""
+            if getattr(self, "_stderr_file", None):
+                try:
+                    self._stderr_file.flush()
+                    self._stderr_file.close()
+                    stderr_path = Path(self._stderr_file.name)
+                    if stderr_path.exists():
+                        stderr_text = stderr_path.read_text(encoding="utf-8", errors="replace")
+                        stderr_path.unlink(missing_ok=True)
+                except Exception as e:
+                    logger.debug(f"Failed to read backend stderr log: {e}")
+                finally:
+                    self._stderr_file = None
 
             # Ensure any partially-started process is stopped before retrying
             try:
@@ -410,28 +435,31 @@ class ModelProcess:
             except Exception:
                 pass
 
-            # If we detect a CUDA-related failure and haven't yet attempted CPU fallback,
+            # If we detect a CUDA-related failure or startup timeout and haven't yet attempted CPU fallback,
             # try once more with CPU-only configuration.
             try:
-                # Use CudaErrorHandler heuristics to detect busy/oom issues
-                stderr_text = ""
-                if CudaErrorHandler.is_cuda_device_busy_error(exit_code, stderr_text) or CudaErrorHandler.is_oom_error(exit_code, stderr_text):
-                    if not self._attempted_cpu_fallback and self.backend_name == "llama.cpp":
-                        logger.warning("GPU initialization failed; attempting CPU fallback (disabling GPU layers)")
-                        # Disable GPU layers and retry once
-                        try:
-                            self._attempted_cpu_fallback = True
-                            self.config.n_gpu_layers = 0
-                            # Recreate backend so build_command reflects new config
-                            self._backend = LlamaCppBackend(
-                                binary_path=binary_path,
-                                model_path=self.model_path,
-                                config=self.config,
-                            )
-                            # Continue loop to attempt restart
-                            continue
-                        except Exception as e:
-                            last_exception = BackendError(f"CPU fallback attempt failed: {e}")
+                is_timeout = (exit_code is None)
+                is_cuda_issue = (
+                    is_timeout
+                    or CudaErrorHandler.is_cuda_device_busy_error(exit_code, stderr_text)
+                    or CudaErrorHandler.is_oom_error(exit_code, stderr_text)
+                )
+                if is_cuda_issue and not self._attempted_cpu_fallback and self.backend_name == "llama.cpp":
+                    logger.warning("GPU backend failed or timed out; attempting CPU fallback (disabling GPU layers)")
+                    # Disable GPU layers and retry once
+                    try:
+                        self._attempted_cpu_fallback = True
+                        self.config.n_gpu_layers = 0
+                        # Recreate backend so build_command reflects new config
+                        self._backend = LlamaCppBackend(
+                            binary_path=binary_path,
+                            model_path=self.model_path,
+                            config=self.config,
+                        )
+                        # Continue loop to attempt restart
+                        continue
+                    except Exception as e:
+                        last_exception = BackendError(f"CPU fallback attempt failed: {e}")
                 # Otherwise, prepare to raise an error
             except Exception as e:
                 last_exception = BackendError(f"Error inspecting failure: {e}")
@@ -443,7 +471,10 @@ class ModelProcess:
         if last_exception:
             raise last_exception
         else:
-            error_msg = CudaErrorHandler.handle_process_exit(exit_code if 'exit_code' in locals() else -1)
+            error_msg = CudaErrorHandler.handle_process_exit(
+                exit_code if 'exit_code' in locals() else -1,
+                stderr_output=stderr_text if 'stderr_text' in locals() else "",
+            )
             raise BackendError(f"Process failed to start:\n{error_msg}")
 
         # llama-server only supports HTTP, not Unix sockets
@@ -456,6 +487,13 @@ class ModelProcess:
         if self._vram_monitor:
             self._vram_monitor.stop()
             self._vram_monitor = None
+
+    @property
+    def ctx_size(self) -> int:
+        """Configured context size of the underlying backend."""
+        if self._backend and hasattr(self._backend, "ctx_size"):
+            return getattr(self._backend, "ctx_size", 32768)
+        return getattr(self.config, "ctx_size", 32768)
 
     def is_running(self) -> bool:
         """Check if the backend process is still running."""
@@ -545,6 +583,13 @@ class ModelProcess:
         self.process = None
         self._started = False
         self._stopping = False
+        if getattr(self, "_stderr_file", None):
+            try:
+                self._stderr_file.close()
+                Path(self._stderr_file.name).unlink(missing_ok=True)
+            except Exception:
+                pass
+            self._stderr_file = None
         
         # After stopping, if a CUDA-capable GPU is present, attempt a device reset
         try:

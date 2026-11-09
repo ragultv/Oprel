@@ -16,7 +16,7 @@ from oprel.runtime.layer_calculator import calculate_optimal_gpu_layers
 # llama.cpp compute buffers and the CUDA context sit on top of weights + KV cache.
 COMPUTE_OVERHEAD_GB = 0.5
 CUDA_CONTEXT_GB = 0.3
-CONTEXT_CANDIDATES = (16384, 8192, 4096, 2048, 1024)
+CONTEXT_CANDIDATES = (32768, 16384, 8192, 4096, 2048, 1024)
 RAM_RESERVE_FRACTION = 0.15  # leave room for the OS and the UI
 
 _RANK = {"gpu": 3, "hybrid": 2, "cpu": 1, "insufficient": 0}
@@ -95,7 +95,7 @@ def check_fit(
     free_vram_gb: Optional[float],
     free_ram_gb: float,
     context_length: int = 4096,
-    kv_cache_type: str = "f16",
+    kv_cache_type: str = "q4_0",
     mmproj_size_gb: float = 0.0,
 ) -> PreflightResult:
     """Decide whether `meta` (a GGUFMetadata) fits and which settings to use."""

@@ -31,6 +31,14 @@ def _get_default_memory_limit() -> int:
         return 8192
 
 
+def _get_default_prompt_cache_dir() -> Path:
+    from oprel.downloader.cache import get_storage_root
+    root = get_storage_root()
+    p = (root.parent if root.name == "models" else root) / "prompt_cache"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
 class Config(BaseModel):
     """
     Global configuration for Oprel SDK.
@@ -39,9 +47,9 @@ class Config(BaseModel):
     """
 
     # Paths
-    cache_dir: Path = Field(default_factory=lambda: Path.home() / ".cache" / "oprel" / "models")
-    binary_dir: Path = Field(default_factory=lambda: Path.home() / ".cache" / "oprel" / "bin")
-    prompt_cache_dir: Path = Field(default_factory=lambda: Path.home() / ".cache" / "oprel" / "prompt_cache")
+    cache_dir: Path = Field(default_factory=lambda: __import__("oprel.downloader.cache", fromlist=["get_cache_path"]).get_cache_path())
+    binary_dir: Path = Field(default_factory=lambda: __import__("oprel.downloader.cache", fromlist=["get_binary_cache_path"]).get_binary_cache_path())
+    prompt_cache_dir: Path = Field(default_factory=_get_default_prompt_cache_dir)
 
     # Memory limits
     default_max_memory_mb: int = Field(
@@ -55,13 +63,17 @@ class Config(BaseModel):
     )
     n_threads: Optional[int] = Field(default=None, description="CPU threads (None for auto-detect)")
     n_gpu_layers: int = Field(default=-1, description="GPU layers to offload (-1 for auto)")
-    ctx_size: int = Field(default=8192, description="Context size in tokens")
+    ctx_size: int = Field(default=32768, description="Context size in tokens (max 32k)")
     batch_size: int = Field(default=512, description="Batch size for processing")
     
-    # Memory Optimization (key differentiator from Ollama)
+    # Memory Optimization (Tiered SSD/RAM/VRAM & 4-bit KV Cache)
     kv_cache_type: str = Field(
-        default="auto", 
-        description="KV cache precision: auto (match model), turboquant (extreme 4-bit compression), iq4_nl, q4_0, q8_0, f16"
+        default="q4_0", 
+        description="KV cache precision: q4_0 (default 4-bit live KV cache), iq4_nl, q4_1 (strictly 4-bit or less)"
+    )
+    vram_reserve_mb: int = Field(
+        default=400,
+        description="Minimum VRAM headroom in MB strictly reserved for CUDA overhead and context page buffers"
     )
     flash_attention: bool = Field(
         default=True, 
@@ -112,7 +124,7 @@ class Config(BaseModel):
         default=120.0, description="Per-chunk timeout for streaming responses"
     )
     startup_timeout_sec: int = Field(
-        default=60, description="Maximum seconds to wait for backend startup"
+        default=180, description="Maximum seconds to wait for backend startup"
     )
 
     # Monitoring
@@ -154,7 +166,7 @@ class Config(BaseModel):
     auto_install_binaries: bool = Field(
         default=True, description="Automatically download backend binaries"
     )
-    binary_version: str = Field(default="b9616", description="llama.cpp binary version to use")
+    binary_version: str = Field(default="b12189", description="llama.cpp binary version to use")
     image_binary_version: str = Field(
         default="latest",
         description="stable-diffusion.cpp binary version to use for image generation",
