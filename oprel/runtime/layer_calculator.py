@@ -33,7 +33,7 @@ def calculate_optimal_gpu_layers(
     hidden_dim: int = 4096,
     num_kv_heads: Optional[int] = None,
     num_attention_heads: Optional[int] = None,
-    kv_cache_type: str = "f16",
+    kv_cache_type: str = "q4_0",
     safety_margin: float = 0.15
 ) -> LayerCalculation:
     """
@@ -54,9 +54,14 @@ def calculate_optimal_gpu_layers(
     Returns:
         LayerCalculation with optimal GPU layer count
     """
-    # Reserve safety margin
-    usable_vram = available_vram_gb * (1 - safety_margin)
-    
+    # Reserve safety margin: at least 400MB for CUDA context & activations
+    vram_headroom_gb = max(0.40, available_vram_gb * safety_margin)
+    usable_vram = max(0.0, available_vram_gb - vram_headroom_gb)
+
+    # Strictly reserve dedicated 600MB VRAM budget for KV cache/context
+    kv_cache_budget_gb = 0.60
+    usable_vram_for_weights = max(0.0, usable_vram - kv_cache_budget_gb)
+
     # Estimate KV cache for full model
     kv_cache = estimate_kv_cache_size(
         batch_size=batch_size,
@@ -67,15 +72,15 @@ def calculate_optimal_gpu_layers(
         num_attention_heads=num_attention_heads,
         kv_cache_type=kv_cache_type
     )
-    
-    # Check if full model + KV cache fits
-    total_needed = model_size_gb + kv_cache.size_gb
-    
+
+    # Check if full model + 600MB KV cache fits
+    total_needed = model_size_gb + kv_cache_budget_gb
+
     if total_needed <= usable_vram:
         # Full model fits!
         logger.info(
             f"Full model fits: {model_size_gb:.1f}GB + "
-            f"{kv_cache.size_gb:.1f}GB KV = {total_needed:.1f}GB "
+            f"{kv_cache_budget_gb:.1f}GB KV = {total_needed:.1f}GB "
             f"(available: {usable_vram:.1f}GB)"
         )
         return LayerCalculation(
@@ -87,24 +92,18 @@ def calculate_optimal_gpu_layers(
             gpu_percentage=100.0,
             recommendation="Full GPU - all layers fit"
         )
-    
-    # Model doesn't fit - calculate partial offload
-    # Weight size per layer (assume uniform distribution)
+
+    # Model doesn't fit - calculate partial offload preserving the 600MB KV cache budget
     weight_per_layer = model_size_gb / total_layers
-    
-    # KV cache size per layer
     kv_per_layer = kv_cache.size_gb / total_layers
-    
-    # Memory per layer (weights + KV)
-    mem_per_layer = weight_per_layer + kv_per_layer
-    
-    # Calculate max layers that fit
-    max_layers = int(usable_vram / mem_per_layer)
+
+    # Calculate max layers that fit in the weight budget
+    max_layers = int(usable_vram_for_weights / weight_per_layer) if weight_per_layer > 0 else 0
     max_layers = min(max_layers, total_layers)
     max_layers = max(max_layers, 0)
-    
+
     # Actual VRAM usage
-    actual_vram = max_layers * mem_per_layer
+    actual_vram = (max_layers * weight_per_layer) + kv_cache_budget_gb
     gpu_pct = (max_layers / total_layers) * 100
     
     if max_layers == 0:
@@ -151,21 +150,13 @@ def calculate_from_metadata(
     """
     ctx_len = context_length or gguf_metadata.context_length
     
-    # Auto-resolve KV cache type if requested
-    if kv_cache_type == "auto":
-        if is_vision:
-            # Vision models need F16 for stability
-            resolved_type = "f16"
-        else:
-            model_quant = (gguf_metadata.quantization or "").upper()
-            if any(q in model_quant for q in ["Q2", "Q3", "Q4"]):
-                resolved_type = "q4_0"
-            elif any(q in model_quant for q in ["Q5", "Q6", "Q8"]):
-                resolved_type = "q8_0"
-            else:
-                resolved_type = "f16"
+    # Auto-resolve KV cache type: strictly q4_0 or lower across the entire application
+    req = str(kv_cache_type or "auto").lower()
+    if req in ("q4_0", "iq4_nl", "q4_1", "turboquant", "turbo", "extreme"):
+        resolved_type = "q4_0" if req in ("turboquant", "turbo", "extreme") else req
     else:
-        resolved_type = kv_cache_type
+        # Eradicate f16/q8_0 fallbacks (including vision models)
+        resolved_type = "q4_0"
 
     return calculate_optimal_gpu_layers(
         model_size_gb=gguf_metadata.file_size_bytes / (1024 ** 3),

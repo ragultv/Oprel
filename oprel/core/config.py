@@ -31,6 +31,14 @@ def _get_default_memory_limit() -> int:
         return 8192
 
 
+def _get_default_prompt_cache_dir() -> Path:
+    from oprel.downloader.cache import get_storage_root
+    root = get_storage_root()
+    p = (root.parent if root.name == "models" else root) / "prompt_cache"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
 class Config(BaseModel):
     """
     Global configuration for Oprel SDK.
@@ -39,8 +47,9 @@ class Config(BaseModel):
     """
 
     # Paths
-    cache_dir: Path = Field(default_factory=lambda: Path.home() / ".cache" / "oprel" / "models")
-    binary_dir: Path = Field(default_factory=lambda: Path.home() / ".cache" / "oprel" / "bin")
+    cache_dir: Path = Field(default_factory=lambda: __import__("oprel.downloader.cache", fromlist=["get_cache_path"]).get_cache_path())
+    binary_dir: Path = Field(default_factory=lambda: __import__("oprel.downloader.cache", fromlist=["get_binary_cache_path"]).get_binary_cache_path())
+    prompt_cache_dir: Path = Field(default_factory=_get_default_prompt_cache_dir)
 
     # Memory limits
     default_max_memory_mb: int = Field(
@@ -54,13 +63,17 @@ class Config(BaseModel):
     )
     n_threads: Optional[int] = Field(default=None, description="CPU threads (None for auto-detect)")
     n_gpu_layers: int = Field(default=-1, description="GPU layers to offload (-1 for auto)")
-    ctx_size: int = Field(default=8192, description="Context size in tokens")
+    ctx_size: int = Field(default=32768, description="Context size in tokens (max 32k)")
     batch_size: int = Field(default=512, description="Batch size for processing")
     
-    # Memory Optimization (key differentiator from Ollama)
+    # Memory Optimization (Tiered SSD/RAM/VRAM & 4-bit KV Cache)
     kv_cache_type: str = Field(
-        default="auto", 
-        description="KV cache precision: auto (match model), f16, q8_0, q4_0"
+        default="q4_0", 
+        description="KV cache precision: q4_0 (default 4-bit live KV cache), iq4_nl, q4_1 (strictly 4-bit or less)"
+    )
+    vram_reserve_mb: int = Field(
+        default=400,
+        description="Minimum VRAM headroom in MB strictly reserved for CUDA overhead and context page buffers"
     )
     flash_attention: bool = Field(
         default=True, 
@@ -69,6 +82,30 @@ class Config(BaseModel):
     mmap: bool = Field(
         default=True, 
         description="Use memory-mapped model loading for faster startup"
+    )
+
+    # Prompt Caching & KV Cache Reuse
+    prompt_cache_enabled: bool = Field(
+        default=True,
+        description="Enable prompt/prefix caching to reuse KV cache across requests"
+    )
+    cache_reuse_tokens: int = Field(
+        default=256,
+        description="Minimum chunk size for KV cache prefix reuse in llama-server"
+    )
+
+    # Supermemory (Semantic Long-Term Conversation Memory)
+    supermemory_enabled: bool = Field(
+        default=True,
+        description="Enable semantic long-term memory for chat conversations"
+    )
+    supermemory_recency_window: int = Field(
+        default=10,
+        description="Number of recent messages to preserve in active prompt context"
+    )
+    supermemory_top_k: int = Field(
+        default=3,
+        description="Number of historical memories to retrieve per query"
     )
 
     # Networking
@@ -87,7 +124,7 @@ class Config(BaseModel):
         default=120.0, description="Per-chunk timeout for streaming responses"
     )
     startup_timeout_sec: int = Field(
-        default=60, description="Maximum seconds to wait for backend startup"
+        default=180, description="Maximum seconds to wait for backend startup"
     )
 
     # Monitoring
@@ -129,7 +166,7 @@ class Config(BaseModel):
     auto_install_binaries: bool = Field(
         default=True, description="Automatically download backend binaries"
     )
-    binary_version: str = Field(default="b9616", description="llama.cpp binary version to use")
+    binary_version: str = Field(default="b12189", description="llama.cpp binary version to use")
     image_binary_version: str = Field(
         default="latest",
         description="stable-diffusion.cpp binary version to use for image generation",
@@ -165,6 +202,16 @@ class Config(BaseModel):
         description="JPEG quality (1–100) used when re-encoding preprocessed vision images",
     )
 
+    # OCR VLM Settings
+    ocr_model_id: str = Field(
+        default="glm-ocr",
+        description="Default GGUF VLM model ID or alias used for OCR text extraction",
+    )
+    ocr_model_quant: str = Field(
+        default="Q8_0",
+        description="Default quantization for OCR VLM model",
+    )
+
     class Config:
         arbitrary_types_allowed = True
 
@@ -172,6 +219,7 @@ class Config(BaseModel):
         """Create necessary directories if they don't exist"""
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.binary_dir.mkdir(parents=True, exist_ok=True)
+        self.prompt_cache_dir.mkdir(parents=True, exist_ok=True)
 
 
 

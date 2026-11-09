@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "oprel"
-version = "0.7.1"
+version = "0.7.2"
 description = "Oprel is a high-performance Python library for running large language models locally. It provides a production-ready runtime with advanced memory management, hybrid offloading, and full multimodal support."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -105,6 +105,7 @@ dependencies = [
     "google-genai>=2.0.0",
     "groq>=0.9.0",
     "Pillow>=10.0.0",
+    "keyring>=24.0.0",  # OS credential store for API keys and tokens
 ]
 
 [project.optional-dependencies]
@@ -151,6 +152,7 @@ Homepage = "https://github.com/ragultv/Oprel"
 Documentation = "https://oprel.dev/docs"
 Repository = "https://github.com/ragultv/Oprel"
 Issues = "https://github.com/ragultv/Oprel/issues"
+Changelog = "https://github.com/ragultv/Oprel/blob/main/CHANGELOG.md"
 
 [project.scripts]
 oprel = "oprel.cli.main:main"
@@ -158,6 +160,8 @@ oprel = "oprel.cli.main:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["oprel*"]
+# The MCP connectors are parked (see docs/internal/mcp_connectors.md) and are not shipped yet.
+exclude = ["oprel.mcp*"]
 
 [tool.setuptools]
 include-package-data = true

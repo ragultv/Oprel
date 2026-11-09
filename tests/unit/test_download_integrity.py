@@ -337,8 +337,8 @@ class TestVerifyDownloadIntegritySize:
 class TestResolveVersion:
     def test_latest_resolves_to_concrete_version(self):
         """The 'latest' alias should resolve to the current concrete build."""
-        assert resolve_version("llama.cpp", "latest") == "b9616"
-        assert resolve_version("stable-diffusion.cpp", "latest") == "master-647-72e512a"
+        assert resolve_version("llama.cpp", "latest") == "b12189"
+        assert resolve_version("stable-diffusion.cpp", "latest") == "master-1056-9234ad8"
 
     def test_concrete_version_unchanged(self):
         """Concrete versions pass through unchanged."""

@@ -79,6 +79,7 @@ def cmd_setup_runtimes(args: argparse.Namespace) -> int:
     """Download llama.cpp and stable-diffusion.cpp binaries for this machine."""
     try:
         config = Config()
+        force = getattr(args, "force", False)
         targets = [
             ("llama.cpp", config.binary_version),
             ("stable-diffusion.cpp", config.image_binary_version),
@@ -90,6 +91,7 @@ def cmd_setup_runtimes(args: argparse.Namespace) -> int:
                 backend=backend,
                 version=version,
                 binary_dir=config.binary_dir,
+                force_download=force,
                 config=config,
             )
             print(f"{backend} is ready: {binary_path}")
@@ -97,4 +99,43 @@ def cmd_setup_runtimes(args: argparse.Namespace) -> int:
     except Exception as exc:
         logger.error("Runtime setup failed: %s", exc, exc_info=True)
         print(f"Error: {exc}")
+        return 1
+
+
+def cmd_update(args: argparse.Namespace) -> int:
+    """
+    Check and update inference runtime binaries (llama.cpp and stable-diffusion.cpp).
+    Re-downloads and replaces binaries if an update is available or if --force is passed.
+    """
+    try:
+        config = Config()
+        force = getattr(args, "force", False)
+        target = getattr(args, "target", "all")
+
+        print("Checking for Oprel inference runtime updates...")
+
+        targets = []
+        if target in ("all", "llama", "llama.cpp", "runtime"):
+            targets.append(("llama.cpp", config.binary_version))
+        if target in ("all", "sd", "image", "stable-diffusion.cpp"):
+            targets.append(("stable-diffusion.cpp", config.image_binary_version))
+
+        updated_count = 0
+        for backend, version in targets:
+            print(f"Ensuring {backend} is up-to-date (target: {version})...")
+            binary_path = ensure_binary(
+                backend=backend,
+                version=version,
+                binary_dir=config.binary_dir,
+                force_download=force,
+                config=config,
+            )
+            print(f"✓ {backend} ({version}) is installed and verified: {binary_path}")
+            updated_count += 1
+
+        print(f"Successfully verified/updated {updated_count} inference backend(s).")
+        return 0
+    except Exception as exc:
+        logger.error("Update failed: %s", exc, exc_info=True)
+        print(f"Error during update: {exc}")
         return 1

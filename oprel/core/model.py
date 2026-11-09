@@ -7,6 +7,7 @@ import time
 from typing import Any, Iterator, Optional
 
 import requests
+from oprel.utils.auth import local_http
 
 from oprel.client.http import HTTPClient
 from oprel.client.socket import UnixSocketClient
@@ -85,7 +86,7 @@ class Model:
             backend: Backend engine. Only ``llama.cpp`` is supported.
             config: Custom configuration object
             use_server: Whether to use persistent server mode (default=True)
-            server_url: URL of the oprel daemon server (default="http://127.0.0.1:11434")
+            server_url: URL of the oprel daemon server (default="http://127.0.0.1:11435")
             allow_low_quality: Allow low-quality quantizations (Q2_K) if needed
         """
         self.model_id = resolve_model_id(model_id)  # Resolve aliases like 'llama3' to full path
@@ -144,7 +145,7 @@ class Model:
     def _is_server_running(self) -> bool:
         """Check if the oprel daemon server is running."""
         try:
-            response = requests.get(f"{self.server_url}/health", timeout=2)
+            response = local_http.get(f"{self.server_url}/health", timeout=2)
             return response.status_code == 200
         except requests.RequestException:
             return False
@@ -214,7 +215,7 @@ class Model:
         }
         
         try:
-            response = requests.post(
+            response = local_http.post(
                 f"{self.server_url}/load",
                 json=payload,
                 timeout=600,  # Model loading can take several minutes
@@ -261,7 +262,7 @@ class Model:
             if stream:
                 return self._server_stream_generate(payload)
             else:
-                response = requests.post(
+                response = local_http.post(
                     f"{self.server_url}/generate",
                     json=payload,
                     timeout=300,
@@ -276,7 +277,7 @@ class Model:
     def _server_stream_generate(self, payload: dict) -> Iterator[str]:
         """Stream generation via server API."""
         try:
-            response = requests.post(
+            response = local_http.post(
                 f"{self.server_url}/generate",
                 json=payload,
                 stream=True,
@@ -303,7 +304,7 @@ class Model:
         """Unload model via server API."""
         try:
             # Use POST with JSON body to handle model IDs with special characters
-            response = requests.post(
+            response = local_http.post(
                 f"{self.server_url}/unload",
                 json={"model_id": self.model_id},
                 timeout=30,
@@ -363,6 +364,7 @@ class Model:
             self.model_id,
             quantization=self.quantization,
             cache_dir=self.config.cache_dir,
+            show_cli_progress=True,
         )
         self._model_path = model_path
 
@@ -398,6 +400,13 @@ class Model:
 
         self._loaded = True
         logger.info(f"Model loaded successfully on port {self._process.port}")
+
+    @property
+    def ctx_size(self) -> int:
+        """Active context size of the underlying running backend process."""
+        if hasattr(self, "_process") and self._process:
+            return getattr(self._process, "ctx_size", 32768)
+        return getattr(self.config, "ctx_size", 32768)
 
     def generate(
         self,

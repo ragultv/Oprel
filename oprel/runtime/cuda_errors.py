@@ -360,16 +360,23 @@ LLAMA_CPP_EXIT_CODES = {
 }
 
 
-def translate_exit_code(exit_code: int) -> Tuple[str, str]:
+def translate_exit_code(exit_code: Optional[int]) -> Tuple[str, str]:
     """
     Translate a process exit code to a human-readable message.
     
     Args:
-        exit_code: The exit code from subprocess
+        exit_code: The exit code from subprocess (or None if timed out)
         
     Returns:
         Tuple of (title, detailed_message)
     """
+    if exit_code is None:
+        return (
+            "Startup Timeout",
+            "The backend server did not become ready within the configured timeout period.\n"
+            "This can happen on large models, high context allocations, or when compiling CUDA kernels."
+        )
+
     # Check for Windows NTSTATUS codes (negative when returned from subprocess)
     # Python subprocess returns them as negative signed integers
     if exit_code < 0:
@@ -487,12 +494,12 @@ class CudaErrorHandler:
     """
     
     @staticmethod
-    def handle_process_exit(exit_code: int, stderr_output: str = "") -> str:
+    def handle_process_exit(exit_code: Optional[int], stderr_output: str = "") -> str:
         """
         Handle a process exit with CUDA context.
         
         Args:
-            exit_code: Process exit code
+            exit_code: Process exit code (or None if timed out)
             stderr_output: Optional stderr from the process
             
         Returns:
@@ -522,17 +529,25 @@ class CudaErrorHandler:
             for hint in cuda_hints:
                 result += f"  • {hint}\n"
         
-        result += f"\nExit Code: {exit_code} (0x{exit_code & 0xFFFFFFFF:08X})\n"
+        if stderr_output and stderr_output.strip():
+            trimmed = "\n".join(stderr_output.strip().splitlines()[-15:])
+            result += f"\nBackend Output:\n{trimmed}\n"
+
+        if exit_code is None:
+            result += f"\nExit Code: None (Server timed out waiting for ready state)\n"
+        else:
+            result += f"\nExit Code: {exit_code} (0x{exit_code & 0xFFFFFFFF:08X})\n"
         
         return result
     
     @staticmethod
-    def is_cuda_device_busy_error(exit_code: int, stderr: str = "") -> bool:
+    def is_cuda_device_busy_error(exit_code: Optional[int], stderr: str = "") -> bool:
         """Check if this is a CUDA device busy error."""
-        # Windows stack buffer overrun often indicates CUDA context issue
-        unsigned = exit_code & 0xFFFFFFFF
-        if unsigned == 0xC0000409:
-            return True
+        if exit_code is not None:
+            # Windows stack buffer overrun often indicates CUDA context issue
+            unsigned = exit_code & 0xFFFFFFFF
+            if unsigned == 0xC0000409:
+                return True
         
         if "busy" in stderr.lower() and "cuda" in stderr.lower():
             return True
@@ -540,10 +555,11 @@ class CudaErrorHandler:
         return False
     
     @staticmethod
-    def is_oom_error(exit_code: int, stderr: str = "") -> bool:
+    def is_oom_error(exit_code: Optional[int], stderr: str = "") -> bool:
         """Check if this is an out-of-memory error."""
-        if exit_code == 2:  # CUDA MemoryAllocation
-            return True
+        if exit_code is not None:
+            if exit_code in (2, 0xC0000005):
+                return True
         if "out of memory" in stderr.lower():
             return True
         if "oom" in stderr.lower():

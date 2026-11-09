@@ -6,7 +6,7 @@ Determines if a model is text-generation, image-generation, video-generation, or
 from typing import Optional, Literal
 from oprel.downloader.aliases import get_model_category
 
-ModelType = Literal["text-generation", "vision", "text-to-image", "text-to-video", "embeddings", "unknown"]
+ModelType = Literal["text-generation", "vision", "text-to-image", "text-to-video", "embeddings", "speech", "unknown"]
 
 
 def detect_model_type(model_id: str) -> ModelType:
@@ -34,10 +34,16 @@ def detect_model_type(model_id: str) -> ModelType:
             return "text-to-video"
         elif category == "embeddings":
             return "embeddings"
+        elif category == "speech":
+            return "speech"
     
     # Fallback: detect from model name
     model_lower = model_id.lower()
     
+    # Speech models
+    if any(x in model_lower for x in ['kokoro', 'whisper', 'speech', 'tts', 'stt']):
+        return "speech"
+
     # Vision models
     if any(x in model_lower for x in ['vl', 'vision', 'llava','surya', 'minicpm-v', 'moondream', 'internvl']):
         return "vision"
@@ -77,7 +83,7 @@ def is_supported_model_type(model_type: ModelType) -> bool:
     Returns:
         True if supported, False otherwise
     """
-    supported_types = {"text-generation", "vision", "text-to-image", "embeddings"}
+    supported_types = {"text-generation", "vision", "text-to-image", "embeddings", "speech"}
     return model_type in supported_types
 
 
@@ -100,6 +106,14 @@ def get_unsupported_message(model_type: ModelType) -> str:
             "\n"
             "Browse available aliases with:\n"
             "See: oprel list-models --category text-to-image"
+        ),
+        "speech": (
+            "Speech synthesis models are supported through the Kokoro ONNX audio engine.\n"
+            "\n"
+            "Use the Audio Studio in WebUI or `/v1/audio/speech` to synthesize speech.\n"
+            "\n"
+            "Browse speech models with:\n"
+            "See: oprel list-models --category speech"
         ),
         "text-to-video": (
             "Video generation models are not yet supported in this version.\n"

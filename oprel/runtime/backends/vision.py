@@ -31,18 +31,40 @@ def is_vision_model(model_id: str) -> bool:
     Check if a model is a vision model (VLM).
     
     Args:
-        model_id: Model identifier
+        model_id: Model identifier or filename
         
     Returns:
         True if vision model
     """
-    model_lower = model_id.lower()
-    vision_keywords = [
-        'llava', 'vl', 'minicpm-v', 
-        'moondream', 'internvl', 'cogvlm', 'vision',
-        'gemma-3', 'gemma-4', 'gemma3', 'gemma4'
-    ]
-    return any(keyword in model_lower for keyword in vision_keywords)
+    # 1. Check official category from registry if known
+    try:
+        from oprel.downloader.aliases import get_model_category, REPO_TO_ALIAS
+        from oprel.downloader.metadata import load_model_metadata
+        from oprel.core.config import Config
+
+        alias = REPO_TO_ALIAS.get(model_id, model_id)
+        category = get_model_category(alias)
+        if category in ["Text + Vision", "OCR"]:
+            return True
+        if category in ["text-generation", "coding", "reasoning", "embeddings", "text-to-image"]:
+            return False
+
+        # 2. Check metadata if model_id is a file name or path
+        cache_dir = Config.from_env().cache_dir
+        clean_name = Path(model_id).name
+        metadata = load_model_metadata(cache_dir, clean_name)
+        if metadata and metadata.get("repo_id"):
+            repo_id = metadata["repo_id"]
+            repo_alias = REPO_TO_ALIAS.get(repo_id, repo_id)
+            meta_cat = get_model_category(repo_alias)
+            if meta_cat in ["Text + Vision", "OCR"]:
+                return True
+            if meta_cat:
+                return False
+    except Exception:
+        pass
+
+    return False
 
 
 def detect_mmproj_file(model_dir: Path) -> Optional[Path]:

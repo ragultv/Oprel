@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, HTTPException
 
 from oprel.server.schemas.common import LoadRequest, LoadResponse, ModelInfo, UnloadRequest, UnloadResponse
@@ -37,7 +39,9 @@ async def get_local_quantizations(model_id: str):
 @router.post("/load", response_model=LoadResponse)
 async def load_model(request: LoadRequest):
     try:
-        result = model_service.load_model(
+        # Loading takes seconds to minutes: keep the event loop free for other requests.
+        result = await asyncio.to_thread(
+            model_service.load_model,
             request.model_id,
             quantization=request.quantization,
             max_memory_mb=request.max_memory_mb,

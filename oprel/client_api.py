@@ -12,6 +12,7 @@ from typing import Dict, List, Any, Optional, Iterator, Union
 from pathlib import Path
 
 import requests
+from oprel.utils.auth import local_http
 
 from oprel.core.model import Model
 from oprel.core.config import Config
@@ -35,7 +36,7 @@ class Client:
     Example:
         from oprel import Client
         
-        client = Client(host='http://localhost:11434')
+        client = Client(host='http://localhost:11435')
         response = client.chat(
             model='qwencoder',
             messages=[{'role': 'user', 'content': 'Hello!'}]
@@ -282,7 +283,7 @@ class Client:
             payload["sampler"] = sampler
 
         if self._server_is_running():
-            res = requests.post(
+            res = local_http.post(
                 f"{self.host}/api/images/generate",
                 json=payload,
                 timeout=self.timeout,
@@ -312,7 +313,7 @@ class Client:
 
     def _server_is_running(self) -> bool:
         try:
-            response = requests.get(f"{self.host}/health", timeout=2)
+            response = local_http.get(f"{self.host}/health", timeout=2)
             return response.status_code == 200
         except requests.RequestException:
             return False
@@ -367,7 +368,7 @@ class Client:
         """
         try:
             # Try to get from server
-            response = requests.get(f"{self.host}/models", timeout=5)
+            response = local_http.get(f"{self.host}/models", timeout=5)
             if response.status_code == 200:
                 server_models = response.json()
                 
@@ -567,7 +568,7 @@ class Client:
 
         # ── Step 2: send all texts to the daemon's /embedding endpoint in one call ──
         try:
-            resp = requests.post(
+            resp = local_http.post(
                 f"{server_url}/embedding",
                 json={"input": text_list, "model": model},
                 timeout=1200,
@@ -592,7 +593,7 @@ class Client:
                 embed_model._server_unload()  # unload embedding model from daemon
                 # Gracefully shut down the server we started
                 try:
-                    requests.post(f"{server_url}/shutdown", timeout=5)
+                    local_http.post(f"{server_url}/shutdown", timeout=5)
                 except Exception:
                     pass
 

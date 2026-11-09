@@ -98,3 +98,95 @@ async def v1_images_models_pull(payload: dict):
         return download_service.start_image_download(model_id, quantization=quantization)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to start image download: {str(exc)}")
+
+
+# ── Image Chat History Endpoints ──────────────────────────────────────────
+
+@router.get("/v1/images/chats")
+async def list_image_chats():
+    try:
+        from oprel.server import db
+        return db.get_image_chats()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/v1/images/chats")
+async def create_new_image_chat(payload: dict = None):
+    try:
+        from oprel.server import db
+        title = (payload or {}).get("title") or "New Image Chat"
+        chat_id = (payload or {}).get("id")
+        return db.create_image_chat(title=title, chat_id=chat_id)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/v1/images/chats/{chat_id}")
+async def get_single_image_chat(chat_id: str):
+    try:
+        from oprel.server import db
+        chat = db.get_image_chat(chat_id)
+        if not chat:
+            raise HTTPException(status_code=404, detail="Image chat not found")
+        return chat
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/v1/images/chats/{chat_id}/messages")
+async def add_message_to_image_chat(chat_id: str, payload: dict):
+    try:
+        from oprel.server import db
+        prompt = str(payload.get("prompt") or "").strip()
+        image_url = str(payload.get("image_url") or "").strip()
+        model = str(payload.get("model") or "").strip()
+        size = str(payload.get("size") or "1024x1024").strip()
+        negative_prompt = str(payload.get("negative_prompt") or "").strip()
+        steps = int(payload.get("steps") or 15)
+        cfg_scale = float(payload.get("cfg_scale") or 7.0)
+        seed = int(payload.get("seed") or -1)
+        sampler = str(payload.get("sampler") or "euler").strip()
+
+        if not prompt or not image_url:
+            raise HTTPException(status_code=400, detail="prompt and image_url are required")
+
+        return db.add_image_message(
+            chat_id=chat_id,
+            prompt=prompt,
+            image_url=image_url,
+            model=model,
+            size=size,
+            negative_prompt=negative_prompt,
+            steps=steps,
+            cfg_scale=cfg_scale,
+            seed=seed,
+            sampler=sampler,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.delete("/v1/images/chats/{chat_id}")
+async def remove_image_chat(chat_id: str):
+    try:
+        from oprel.server import db
+        db.delete_image_chat(chat_id)
+        return {"status": "ok", "deleted": chat_id}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.delete("/v1/images/chats")
+async def clear_all_image_chats():
+    try:
+        from oprel.server import db
+        db.clear_image_chats()
+        return {"status": "ok", "cleared": True}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+

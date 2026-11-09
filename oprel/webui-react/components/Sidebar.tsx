@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useRef } from "react"
+import { useState, useEffect, useRef, useCallback, useMemo, memo } from "react"
 import {
   MessageSquarePlus,
   Box,
@@ -16,6 +16,7 @@ import {
   Image,
   RefreshCw,
   ScanText,
+  AudioLines,
 } from "lucide-react"
 import { usePathname, useRouter } from "next/navigation"
 import Link from "next/link"
@@ -98,7 +99,74 @@ function BackgroundTasksIndicator({ tasks }: { tasks: Array<{ id: string; label:
   );
 }
 
-export function Sidebar() {
+interface ConvGroupProps {
+  label: string
+  items: Conversation[]
+  activeConversationId: string | null
+  isChatRoute: boolean
+  onSelect: (id: string) => void
+  onDelete: (id: string) => void
+}
+
+const ConvGroup = memo(function ConvGroup({
+  label,
+  items,
+  activeConversationId,
+  isChatRoute,
+  onSelect,
+  onDelete,
+}: ConvGroupProps) {
+  if (!items.length) return null
+  return (
+    <div>
+      <div className="px-3 mb-1 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+        {label}
+      </div>
+      <div className="space-y-0.5">
+        {items.map((conv) => {
+          const isActive = activeConversationId === conv.id && isChatRoute
+          return (
+            <div
+              key={conv.id}
+              onClick={() => onSelect(conv.id)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault()
+                  onSelect(conv.id)
+                }
+              }}
+              role="button"
+              tabIndex={0}
+              className={cn(
+                "group flex w-full items-center gap-2 px-3 py-2 rounded-lg transition-colors duration-150 text-sm text-left cursor-pointer",
+                isActive
+                  ? "bg-secondary text-foreground"
+                  : "text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
+              )}
+            >
+              <MessageSquarePlus size={13} className="shrink-0 opacity-60" />
+              <span className="flex-1 truncate text-xs select-none">{conv.title}</span>
+              <button
+                type="button"
+                aria-label={`Delete chat ${conv.title}`}
+                onClick={(e) => {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  onDelete(conv.id)
+                }}
+                className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:text-destructive shrink-0 transition-opacity duration-150"
+              >
+                <Trash2 size={12} />
+              </button>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+})
+
+export function Sidebar({ width, style }: { width?: number; style?: React.CSSProperties } = {}) {
   const {
     conversations,
     activeConversationId,
@@ -117,115 +185,83 @@ export function Sidebar() {
   const pathname = usePathname()
   const router = useRouter()
   const isChatRoute = pathname.startsWith("/chat") || pathname === "/new-chat" || pathname === "/"
-  const canUpdateChatUrlInPlace = pathname.startsWith("/chat")
   const isModelsRoute = pathname.startsWith("/models")
   const isImagesRoute = pathname.startsWith("/images")
   const isOcrRoute = pathname.startsWith("/ocr")
   const isKnowledgeRoute = pathname.startsWith("/knowledge")
+  const isAudioRoute = pathname.startsWith("/audio")
   const isDevRoute = pathname.startsWith("/dev")
 
   const [search, setSearch] = useState("")
   const [deleteId, setDeleteId] = useState<string | null>(null)
 
   const activeModel = models.find((m) => m.id === activeModelId)
-  const filtered = conversations.filter((c) =>
-    c.title.toLowerCase().includes(search.toLowerCase())
+  const filtered = useMemo(
+    () => conversations.filter((c) => c.title.toLowerCase().includes(search.toLowerCase())),
+    [conversations, search]
   )
-  const groups = groupConversations(filtered)
+  const groups = useMemo(() => groupConversations(filtered), [filtered])
 
-  const openConversation = (conversationId: string) => {
+  const openConversation = useCallback((conversationId: string) => {
     setActiveConversationId(conversationId)
 
-    if (canUpdateChatUrlInPlace) {
+    if (pathname.startsWith("/chat")) {
       const basePath = window.location.pathname.startsWith('/gui') ? '/gui' : ''
       window.history.pushState(null, "", `${basePath}/chat/?conversationId=${conversationId}`)
       return
     }
 
     router.push(`/chat/?conversationId=${conversationId}`)
-  }
+  }, [pathname, setActiveConversationId, router])
 
-  const startConversation = async () => {
+  const startConversation = useCallback(async () => {
     const newId = await createConversation()
     setActiveConversationId(newId)
 
-    if (canUpdateChatUrlInPlace) {
+    if (pathname.startsWith("/chat")) {
       const basePath = window.location.pathname.startsWith('/gui') ? '/gui' : ''
       window.history.pushState(null, "", `${basePath}/chat/?conversationId=${newId}`)
       return
     }
 
     router.push(`/chat/?conversationId=${newId}`)
-  }
+  }, [pathname, createConversation, setActiveConversationId, router])
 
-  function ConvGroup({ label, items }: { label: string; items: Conversation[] }) {
-    if (!items.length) return null
-    return (
-      <div>
-        <div className="px-3 mb-1 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
-          {label}
-        </div>
-        <div className="space-y-0.5">
-          {items.map((conv) => (
-            <div
-              key={conv.id}
-              onClick={() => openConversation(conv.id)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault()
-                  openConversation(conv.id)
-                }
-              }}
-              role="button"
-              tabIndex={0}
-              className={cn(
-                "group flex w-full items-center gap-2 px-3 py-2 rounded-lg transition-all text-sm text-left",
-                activeConversationId === conv.id && pathname.startsWith("/chat")
-                  ? "bg-secondary text-foreground"
-                  : "text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
-              )}
-            >
-              <MessageSquarePlus size={13} className="shrink-0 opacity-60" />
-              <span className="flex-1 truncate text-xs">{conv.title}</span>
-              <button
-                onClick={(e) => {
-                  e.preventDefault()
-                  e.stopPropagation()
-                  setDeleteId(conv.id)
-                }}
-                className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:text-destructive transition-all"
-              >
-                <Trash2 size={12} />
-              </button>
-            </div>
-          ))}
-        </div>
-      </div>
-    )
-  }
-
-  const [user, setUser] = useState<{ name: string; role: string; initials: string }>({
+  const [user, setUser] = useState<{ name: string; role: string; initials: string; avatarUrl?: string }>({
     name: "User",
     role: "Developer",
     initials: "U",
   })
 
   useEffect(() => {
-    API.fetchUser()
-      .then((data) => {
-        const initials = data.name
-          .split(" ")
-          .map((n) => n[0])
-          .join("")
-          .toUpperCase()
-        setUser({ ...data, initials })
-      })
-      .catch((err) => console.error("Failed to fetch user:", err))
+    const fetchUser = () => {
+      API.fetchUser()
+        .then((data) => {
+          const initials = data.name
+            .split(" ")
+            .map((n) => n[0])
+            .join("")
+            .toUpperCase()
+          setUser({ ...data, initials, avatarUrl: (data as any).avatar_url })
+        })
+        .catch((err) => console.error("Failed to fetch user:", err))
+    }
+    
+    fetchUser()
+    window.addEventListener("userProfileUpdated", fetchUser)
+    return () => window.removeEventListener("userProfileUpdated", fetchUser)
   }, [])
 
   return (
     <>
-      <aside className="w-65 shrink-0 flex flex-col h-full bg-[#171717] border-r border-border overflow-hidden transition-all duration-300">
+      <aside
+        style={{
+          width: width || 260,
+          minWidth: width || 260,
+          ...style,
+        }}
+        className="shrink-0 flex flex-col h-full bg-[#171717] border-r border-border overflow-hidden select-none transition-none"
+      >
         {/* Logo */}
         <div className="p-4 pb-3 flex items-center gap-3">
           <div className="w-8 h-8 rounded-lg overflow-hidden shrink-0">
@@ -282,6 +318,18 @@ export function Sidebar() {
               <ScanText size={18} />
               <span className="text-[10px]">OCR</span>
             </Link>
+                        <Link
+              href="/audio/"
+              className={cn(
+                "flex flex-col items-center gap-1.5 py-3 rounded-lg border border-border text-xs font-semibold transition-all text-center",
+                isAudioRoute
+                  ? "bg-secondary text-foreground border-border"
+                  : "text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
+              )}
+            >
+              <AudioLines size={18} />
+              <span className="text-[10px]">Audio</span>
+            </Link>
             <Link
               href="/knowledge/"
               className={cn(
@@ -297,7 +345,7 @@ export function Sidebar() {
             <Link
               href="/dev/"
               className={cn(
-                "flex flex-col items-center gap-1.5 py-3 rounded-lg border border-border text-xs font-semibold transition-all col-span-2 text-center",
+                "flex flex-col items-center gap-1.5 py-3 rounded-lg border border-border text-xs font-semibold transition-all  text-center",
                 isDevRoute
                   ? "bg-secondary text-foreground border-border"
                   : "text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
@@ -311,9 +359,30 @@ export function Sidebar() {
 
         {/* Conversation List */}
         <div className="flex-1 overflow-y-auto px-2 py-2 space-y-4">
-          <ConvGroup label="Today" items={groups.today} />
-          <ConvGroup label="Yesterday" items={groups.yesterday} />
-          <ConvGroup label="Older" items={groups.older} />
+          <ConvGroup
+            label="Today"
+            items={groups.today}
+            activeConversationId={activeConversationId}
+            isChatRoute={isChatRoute}
+            onSelect={openConversation}
+            onDelete={setDeleteId}
+          />
+          <ConvGroup
+            label="Yesterday"
+            items={groups.yesterday}
+            activeConversationId={activeConversationId}
+            isChatRoute={isChatRoute}
+            onSelect={openConversation}
+            onDelete={setDeleteId}
+          />
+          <ConvGroup
+            label="Older"
+            items={groups.older}
+            activeConversationId={activeConversationId}
+            isChatRoute={isChatRoute}
+            onSelect={openConversation}
+            onDelete={setDeleteId}
+          />
           {filtered.length === 0 && (
             <div className="text-center py-8 text-muted-foreground text-xs">No chats found</div>
           )}
@@ -354,9 +423,13 @@ export function Sidebar() {
 
           {/* User / Settings */}
           <div className="flex items-center gap-2 px-1">
-            <div className="w-7 h-7 rounded-lg bg-primary/20 flex items-center justify-center text-[10px] font-bold text-primary shrink-0">
-              {user.initials}
-            </div>
+            {user.avatarUrl ? (
+              <img src={user.avatarUrl} alt={user.name} className="w-7 h-7 rounded-lg object-cover shrink-0" />
+            ) : (
+              <div className="w-7 h-7 rounded-lg bg-primary/20 flex items-center justify-center text-[10px] font-bold text-primary shrink-0">
+                {user.initials}
+              </div>
+            )}
             <div className="flex-1 min-w-0">
               <div className="text-[11px] font-semibold text-foreground">{user.name}</div>
               <div className="text-[10px] text-muted-foreground">{user.role}</div>
@@ -385,7 +458,7 @@ export function Sidebar() {
       {/* Delete confirm dialog */}
       {deleteId && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-          <div className="bg-[#1e1e1e] border border-border rounded-xl p-6 w-90 shadow-2xl animate-fade-in-up">
+          <div className="bg-[#1e1e1e] border border-border rounded-xl p-6 w-[360px] shadow-2xl animate-fade-in-up">
             <div className="flex items-center gap-3 mb-4">
               <div className="w-9 h-9 rounded-lg bg-destructive/10 flex items-center justify-center">
                 <Trash2 size={16} className="text-destructive" />

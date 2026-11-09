@@ -59,6 +59,7 @@ class ModelInfo(BaseModel):
     loaded: bool = False
     status: str = "cached"
     category: str | None = None
+    context_length: int = 32768
 
 
 class RenameConversationRequest(BaseModel):
@@ -74,6 +75,7 @@ class UserProfile(BaseModel):
     name: str
     role: str
     initials: str | None = None
+    avatar_url: str | None = None
 
 
 class UserSettings(BaseModel):

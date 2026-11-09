@@ -94,7 +94,7 @@ def _create_ssl_context(config: Optional[Config] = None) -> Optional[ssl.SSLCont
 
 def _safe_download(url: str, dest_path: Path, config: Optional[Config] = None) -> None:
     """
-    Download a file with proper SSL handling and error reporting.
+    Download a file with proper SSL handling, timeout, retries, and error reporting.
     
     Args:
         url: URL to download from
@@ -104,39 +104,64 @@ def _safe_download(url: str, dest_path: Path, config: Optional[Config] = None) -
     Raises:
         BinaryNotFoundError: On download failure with helpful error message
     """
-    try:
-        ssl_context = _create_ssl_context(config)
-        # urlretrieve does not accept an SSL context on all Python versions.
-        # Use urlopen with the context and stream to the destination file instead.
-        req = urllib.request.Request(url)
-        if ssl_context is not None:
-            resp = urllib.request.urlopen(req, context=ssl_context)
-        else:
-            resp = urllib.request.urlopen(req)
+    max_retries = 3
+    last_error = None
+    ssl_context = _create_ssl_context(config)
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
-        with resp as response, dest_path.open("wb") as out_file:
-            shutil.copyfileobj(response, out_file)
-    except ssl.SSLError as e:
-        error_msg = (
-            f"SSL certificate verification failed: {e}\n\n"
-            "This usually happens due to:\n"
-            "  1. Corporate proxy/firewall with custom certificates\n"
-            "  2. Outdated system certificates\n"
-            "  3. Antivirus software intercepting SSL connections\n\n"
-            "Solutions:\n"
-            "  • Quick fix (insecure): Set environment variable OPREL_SSL_NO_VERIFY=1\n"
-            "  • Better fix: Install your corporate CA certificate and use config.ssl_cert_file\n"
-            "  • Windows: Update certificates via Windows Update\n"
-            "  • Contact your IT department for the proper CA certificate bundle\n"
-        )
-        raise BinaryNotFoundError(error_msg) from e
-    except urllib.error.URLError as e:
-        raise BinaryNotFoundError(
-            f"Failed to download from {url}: {e}\n"
-            "Check your internet connection and firewall settings."
-        ) from e
-    except Exception as e:
-        raise BinaryNotFoundError(f"Download failed: {e}") from e
+    for attempt in range(max_retries):
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            if ssl_context is not None:
+                resp = urllib.request.urlopen(req, context=ssl_context, timeout=60)
+            else:
+                resp = urllib.request.urlopen(req, timeout=60)
+
+            with resp as response, dest_path.open("wb") as out_file:
+                shutil.copyfileobj(response, out_file)
+            return
+        except ssl.SSLError as e:
+            error_msg = (
+                f"SSL certificate verification failed: {e}\n\n"
+                "This usually happens due to:\n"
+                "  1. Corporate proxy/firewall with custom certificates\n"
+                "  2. Outdated system certificates\n"
+                "  3. Antivirus software intercepting SSL connections\n\n"
+                "Solutions:\n"
+                "  • Quick fix (insecure): Set environment variable OPREL_SSL_NO_VERIFY=1\n"
+                "  • Better fix: Install your corporate CA certificate and use config.ssl_cert_file\n"
+                "  • Windows: Update certificates via Windows Update\n"
+                "  • Contact your IT department for the proper CA certificate bundle\n"
+            )
+            raise BinaryNotFoundError(error_msg) from e
+        except urllib.error.HTTPError as e:
+            last_error = e
+            if e.code in (502, 503, 504) and attempt < max_retries - 1:
+                wait_time = 2 * (attempt + 1)
+                logger.warning(f"Download attempt {attempt + 1} failed with HTTP {e.code}. Retrying in {wait_time}s...")
+                time.sleep(wait_time)
+                continue
+            raise BinaryNotFoundError(
+                f"Failed to download from {url}: {e}\n"
+                "Check your internet connection and firewall settings."
+            ) from e
+        except urllib.error.URLError as e:
+            last_error = e
+            if attempt < max_retries - 1:
+                wait_time = 2 * (attempt + 1)
+                logger.warning(f"Download attempt {attempt + 1} failed: {e}. Retrying in {wait_time}s...")
+                time.sleep(wait_time)
+                continue
+            raise BinaryNotFoundError(
+                f"Failed to download from {url}: {e}\n"
+                "Check your internet connection and firewall settings."
+            ) from e
+        except Exception as e:
+            last_error = e
+            if attempt < max_retries - 1:
+                time.sleep(2)
+                continue
+            raise BinaryNotFoundError(f"Download failed: {e}") from e
 
 
 def _verify_download_integrity(
@@ -194,6 +219,26 @@ def _verify_download_integrity(
         verify_size(archive_path, entry.size)
     if entry.sha256:
         verify_sha256(archive_path, entry.sha256)
+
+
+def _try_recover_cuda_dlls_locally(target_dir: Path, binary_root: Path) -> None:
+    """Attempt to recover missing cublas and cudart DLLs from sibling local directories."""
+    candidate_dirs = [
+        binary_root / "cuda",
+        binary_root / "llama_cpp" / "cuda",
+        binary_root / "stable_diffusion_cpp" / "cuda",
+        binary_root / "stable_diffusion_cpp" / "latest" / "cuda",
+    ]
+    for d in candidate_dirs:
+        try:
+            if d.is_dir() and d.resolve() != target_dir.resolve():
+                for dll in list(d.glob("cublas*.dll")) + list(d.glob("cudart*.dll")):
+                    dest = target_dir / dll.name
+                    if not dest.exists():
+                        shutil.copy2(dll, dest)
+                        logger.info(f"Recovered CUDA runtime DLL locally: {dll.name} -> {dest}")
+        except Exception as e:
+            logger.debug(f"Failed to check/copy DLLs from {d}: {e}")
 
 
 def ensure_binary(
@@ -291,12 +336,25 @@ def ensure_binary(
     if oprel_binary_path.exists() and not force_download:
         # Check for CUDA-specific libraries if this is a CUDA binary
         if gpu_type == "cuda":
-            cuda_dll = list(actual_binary_dir.glob("*cuda*.dll")) + list(actual_binary_dir.glob("*cuda*.so*"))
-            if not cuda_dll:
-                logger.info(f"CUDA binary exists but CUDA libraries missing, re-downloading...")
+            if system == "Windows":
+                has_cublas = any(actual_binary_dir.glob("cublas64_*.dll"))
+                has_cudart = any(actual_binary_dir.glob("cudart64_*.dll"))
+                if not (has_cublas and has_cudart):
+                    _try_recover_cuda_dlls_locally(actual_binary_dir, binary_dir)
+                    has_cublas = any(actual_binary_dir.glob("cublas64_*.dll"))
+                    has_cudart = any(actual_binary_dir.glob("cudart64_*.dll"))
+                if not (has_cublas and has_cudart):
+                    logger.info("CUDA binary exists but cublas/cudart runtime libraries missing, re-downloading...")
+                else:
+                    logger.info(f"CUDA binary already exists: {oprel_binary_path}")
+                    return oprel_binary_path
             else:
-                logger.info(f"CUDA binary already exists: {oprel_binary_path}")
-                return oprel_binary_path
+                cuda_dll = list(actual_binary_dir.glob("*cuda*.so*"))
+                if not cuda_dll:
+                    logger.info(f"CUDA binary exists but CUDA libraries missing, re-downloading...")
+                else:
+                    logger.info(f"CUDA binary already exists: {oprel_binary_path}")
+                    return oprel_binary_path
         elif system == "Linux":
             # Check for any .so files in the binary directory
             so_files = list(actual_binary_dir.glob("*.so*"))
@@ -312,11 +370,21 @@ def ensure_binary(
     # If the original backend binary exists but the oprel-branded copy is missing,
     # recreate the copy locally instead of re-downloading archives.
     if binary_path.exists() and not oprel_binary_path.exists() and not force_download:
-        shutil.copy2(binary_path, oprel_binary_path)
-        if system != "Windows":
-            oprel_binary_path.chmod(0o755)
-        logger.info(f"Re-created oprel-branded binary: {oprel_binary_path}")
-        return oprel_binary_path
+        if gpu_type == "cuda" and system == "Windows":
+            _try_recover_cuda_dlls_locally(actual_binary_dir, binary_dir)
+            has_cublas = any(actual_binary_dir.glob("cublas64_*.dll"))
+            has_cudart = any(actual_binary_dir.glob("cudart64_*.dll"))
+            if has_cublas and has_cudart:
+                shutil.copy2(binary_path, oprel_binary_path)
+                logger.info(f"Re-created oprel-branded binary: {oprel_binary_path}")
+                return oprel_binary_path
+            logger.info("Base binary exists but cublas/cudart runtime missing, proceeding to download...")
+        else:
+            shutil.copy2(binary_path, oprel_binary_path)
+            if system != "Windows":
+                oprel_binary_path.chmod(0o755)
+            logger.info(f"Re-created oprel-branded binary: {oprel_binary_path}")
+            return oprel_binary_path
 
     # Download and extract binary
     logger.info(f"Downloading {backend} ({gpu_type.upper()}) binary from {url}")
@@ -357,27 +425,34 @@ def ensure_binary(
         # Check for separate DLL download (Windows CUDA)
         dll_url = binary_info.get("dll_url")
         if dll_url:
-            logger.info(f"Downloading required DLLs from {dll_url}")
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as tmp_dll:
-                tmp_dll_path = Path(tmp_dll.name)
-            
-            _safe_download(dll_url, tmp_dll_path, config)
+            if gpu_type == "cuda" and system == "Windows":
+                _try_recover_cuda_dlls_locally(actual_binary_dir, binary_dir)
+            has_cublas = any(actual_binary_dir.glob("cublas64_*.dll"))
+            has_cudart = any(actual_binary_dir.glob("cudart64_*.dll"))
+            if not (has_cublas and has_cudart):
+                logger.info(f"Downloading required DLLs from {dll_url}")
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as tmp_dll:
+                    tmp_dll_path = Path(tmp_dll.name)
+                
+                _safe_download(dll_url, tmp_dll_path, config)
 
-            # Optionally verify the separate DLL archive checksum before extraction.
-            _verify_download_integrity(
-                tmp_dll_path,
-                backend,
-                resolved_version,
-                base_platform_key,
-                gpu_type,
-                artifact="dll",
-            )
+                # Optionally verify the separate DLL archive checksum before extraction.
+                _verify_download_integrity(
+                    tmp_dll_path,
+                    backend,
+                    resolved_version,
+                    base_platform_key,
+                    gpu_type,
+                    artifact="dll",
+                )
 
-            # DLL zip usually has libs in specific folder, extract flat
-            _extract_zip(tmp_dll_path, actual_binary_dir, "non-existent-file-to-force-extract-all")
-            
-            if tmp_dll_path.exists():
-                tmp_dll_path.unlink()
+                # DLL zip usually has libs in specific folder, extract flat
+                _extract_zip(tmp_dll_path, actual_binary_dir, "non-existent-file-to-force-extract-all")
+                
+                if tmp_dll_path.exists():
+                    tmp_dll_path.unlink()
+            else:
+                logger.info("CUDA runtime libraries already available, skipping separate DLL download.")
 
         # Make executable on Unix
         if system != "Windows":

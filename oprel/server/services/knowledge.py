@@ -22,17 +22,29 @@ def ingest_text_or_file(text: str | None, file_path: str | None, metadata: dict[
 
 
 async def search_knowledge(query: str, top_k: int = 5) -> list[dict[str, Any]]:
-    from oprel.knowledge.knowledge_store import KnowledgeStore
+    from oprel.knowledge.orchestration.knowledge_service import KnowledgeService
 
-    async def internal_embed(text: str, model: str | None = None) -> list[float]:
+    async def internal_embed(text: str | list[str], model: str | None = None) -> list[float] | list[list[float]]:
         from oprel.downloader.aliases import resolve_model_id
         from oprel.server.services.generation import get_embeddings, EmbeddingParams
 
+        if isinstance(text, list):
+            res = await get_embeddings(EmbeddingParams(input=text, model=resolve_model_id(model or "nomic-embed-text")))
+            return res.embeddings or []
         res = await get_embeddings(EmbeddingParams(input=text, model=resolve_model_id(model or "nomic-embed-text")))
         return res.embedding or []
 
-    store = KnowledgeStore(embed_func=internal_embed)
-    return await store.search(query, top_k=top_k)
+    service = KnowledgeService(embed_func=internal_embed)
+    result = await service.search(query, top_k=top_k)
+    return [
+        {
+            "id": ev.chunk_id,
+            "text": ev.text,
+            "score": ev.score,
+            "metadata": {"filename": ev.filename, **ev.metadata},
+        }
+        for ev in result.evidence
+    ]
 
 
 def reset_knowledge() -> dict[str, Any]:
@@ -46,8 +58,8 @@ def reset_knowledge() -> dict[str, Any]:
 
 
 async def upload_document(filename: str, file_obj: BinaryIO) -> dict[str, Any]:
-    from oprel.knowledge.sync_engine import SyncEngine
-    from oprel.knowledge.knowledge_store import KnowledgeStore
+    from oprel.knowledge.orchestration.knowledge_service import KnowledgeService
+    from oprel.utils.file_parser import extract_text
     import shutil
 
     knowledge_dir = CONFIG.cache_dir / "knowledge_files"
@@ -56,33 +68,39 @@ async def upload_document(filename: str, file_obj: BinaryIO) -> dict[str, Any]:
     file_path = knowledge_dir / filename
 
     try:
-        content = file_obj.read().decode("utf-8")
-    except UnicodeDecodeError:
-        content = "Binary file content not previewable."
-    
-    file_obj.seek(0)
-    
-    from oprel.server.db import save_knowledge_document
-    try:
-        save_knowledge_document(filename, content, len(content))
-    except Exception as e:
-        logger.error(f"Failed to save document to DB: {e}")
-
-    try:
         with file_path.open("wb") as buffer:
             shutil.copyfileobj(file_obj, buffer)
 
-        async def internal_embed(text: str, model: str | None = None) -> list[float]:
+        # Extract text using multi-format extractor (PDF, DOCX, MD, Code, TXT, etc.)
+        try:
+            content = extract_text(file_path)
+            if not content:
+                content = file_path.read_text(encoding="utf-8", errors="ignore")
+        except Exception as e:
+            logger.warning(f"Text extraction fallback for {filename}: {e}")
+            try:
+                content = file_path.read_text(encoding="utf-8", errors="ignore")
+            except Exception:
+                content = "[Binary document - preview unavailable]"
+
+        from oprel.server.db import save_knowledge_document
+        try:
+            save_knowledge_document(filename, content, len(content))
+        except Exception as e:
+            logger.error(f"Failed to save document to DB: {e}")
+
+        async def internal_embed(text: str | list[str], model: str | None = None) -> list[float] | list[list[float]]:
             from oprel.downloader.aliases import resolve_model_id
             from oprel.server.services.generation import get_embeddings, EmbeddingParams
 
+            if isinstance(text, list):
+                res = await get_embeddings(EmbeddingParams(input=text, model=resolve_model_id(model or "nomic-embed-text")))
+                return res.embeddings or []
             res = await get_embeddings(EmbeddingParams(input=text, model=resolve_model_id(model or "nomic-embed-text")))
             return res.embedding or []
 
-        store = KnowledgeStore(embed_func=internal_embed)
-        engine = SyncEngine(store)
-
-        await engine.ingest_file(file_path)
+        service = KnowledgeService(embed_func=internal_embed)
+        await service.ingest_file(file_path)
 
         return {
             "success": True,
@@ -195,55 +213,217 @@ async def chat_extract_file(filename: str, file_obj: BinaryIO, model_id: str | N
 
 
 def list_documents() -> list[dict[str, Any]]:
-    from oprel.knowledge.knowledge_store import KnowledgeStore
-
-    store = KnowledgeStore()
+    from oprel.knowledge.storage.sqlite_catalog import SqliteCatalog
+    from oprel.knowledge.config import KNOWLEDGE_DIR
+    import json
 
     docs_map: dict[str, dict[str, Any]] = {}
-    for doc in store.bm25_docs:
-        meta = doc.get("metadata", {})
-        fname = meta.get("filename", "Unknown")
-        if fname not in docs_map:
-            docs_map[fname] = {
-                "id": doc["id"],
-                "filename": fname,
-                "size_bytes": 0,
-                "indexed_at": meta.get("timestamp", ""),
-                "chunks": 0,
-            }
-        docs_map[fname]["chunks"] += 1
+
+    # 1. Read from new SQLite catalog
+    catalog_path = KNOWLEDGE_DIR / "catalog.db"
+    if catalog_path.exists():
+        try:
+            catalog = SqliteCatalog(catalog_path)
+            for doc in catalog.list_documents():
+                with catalog._get_connection() as conn:
+                    chunk_cnt = conn.execute(
+                        "SELECT count(*) FROM chunks WHERE document_id = ?", (doc.id,)
+                    ).fetchone()[0]
+                docs_map[doc.metadata.filename] = {
+                    "id": doc.id,
+                    "filename": doc.metadata.filename,
+                    "size_bytes": doc.metadata.size_bytes,
+                    "indexed_at": doc.updated_at,
+                    "chunks": chunk_cnt,
+                }
+        except Exception as e:
+            logger.debug(f"Catalog query fallback: {e}")
+
+    # 2. Check legacy bm25_docs.json for un-migrated items
+    bm25_path = KNOWLEDGE_DIR / "bm25_docs.json"
+    if bm25_path.exists():
+        try:
+            with open(bm25_path, "r", encoding="utf-8") as f:
+                legacy_docs = json.load(f)
+            for doc in legacy_docs:
+                meta = doc.get("metadata", {})
+                fname = meta.get("filename", "Unknown")
+                if fname not in docs_map:
+                    docs_map[fname] = {
+                        "id": doc.get("id", fname),
+                        "filename": fname,
+                        "size_bytes": 0,
+                        "indexed_at": meta.get("timestamp", ""),
+                        "chunks": 0,
+                    }
+                    docs_map[fname]["chunks"] += 1
+        except Exception:
+            pass
+
+    # 3. Check storage directory so all uploaded files are listed
+    knowledge_dir = CONFIG.cache_dir / "knowledge_files"
+    if knowledge_dir.exists():
+        try:
+            for f in knowledge_dir.iterdir():
+                if f.is_file() and f.name not in docs_map and not f.name.startswith("."):
+                    docs_map[f.name] = {
+                        "id": f.name,
+                        "filename": f.name,
+                        "size_bytes": f.stat().st_size,
+                        "indexed_at": "",
+                        "chunks": 1,
+                    }
+        except Exception as e:
+            logger.debug(f"Knowledge directory scan error: {e}")
 
     return list(docs_map.values())
 
 
-def delete_document(filename: str) -> dict[str, Any]:
-    return {"success": False, "message": "Deletion via API not yet implemented"}
+async def delete_document(filename: str) -> dict[str, Any]:
+    from oprel.knowledge.storage.repository import UnifiedKnowledgeRepository
+    from oprel.knowledge.config import KNOWLEDGE_DIR
+    import json
+    import urllib.parse
+
+    safe_filename = urllib.parse.unquote(filename)
+    repo = UnifiedKnowledgeRepository(base_dir=KNOWLEDGE_DIR)
+
+    # 1. Delete from catalog + FTS5 + Chroma
+    deleted = await repo.delete_document(safe_filename)
+
+    # 2. Delete from SQLite chat_history.db table knowledge_documents
+    try:
+        from oprel.server.db import delete_knowledge_document
+        delete_knowledge_document(safe_filename)
+    except Exception as e:
+        logger.debug(f"DB delete_knowledge_document: {e}")
+
+    # 3. Clean up legacy bm25_docs.json if present
+    bm25_path = KNOWLEDGE_DIR / "bm25_docs.json"
+    if bm25_path.exists():
+        try:
+            with open(bm25_path, "r", encoding="utf-8") as f:
+                docs = json.load(f)
+            new_docs = [
+                d for d in docs
+                if d.get("metadata", {}).get("filename") != safe_filename
+                and d.get("id") != safe_filename
+            ]
+            if len(new_docs) != len(docs):
+                with open(bm25_path, "w", encoding="utf-8") as f:
+                    json.dump(new_docs, f, indent=2)
+                deleted = True
+        except Exception as e:
+            logger.debug(f"BM25 cache cleanup: {e}")
+
+    # 4. Remove physical uploaded file if exists
+    cached_file = CONFIG.cache_dir / "knowledge_files" / safe_filename
+    if cached_file.exists():
+        try:
+            cached_file.unlink()
+            deleted = True
+        except Exception:
+            pass
+
+    return {"success": True, "message": f"Deleted document '{safe_filename}'"}
+
+
+async def delete_all_documents() -> dict[str, Any]:
+    from oprel.knowledge.storage.repository import UnifiedKnowledgeRepository
+    from oprel.knowledge.config import KNOWLEDGE_DIR
+
+    repo = UnifiedKnowledgeRepository(base_dir=KNOWLEDGE_DIR)
+
+    # 1. Clear catalog, FTS5, Chroma
+    await repo.delete_all()
+
+    # 2. Clear server DB knowledge_documents
+    try:
+        from oprel.server.db import get_db
+        conn = get_db()
+        conn.execute("DELETE FROM knowledge_documents;")
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.debug(f"Failed clearing knowledge_documents table: {e}")
+
+    # 3. Clear bm25_docs.json, dedup_store.json, ingestion_jobs.json
+    for filename in ["bm25_docs.json", "dedup_store.json", "ingestion_jobs.json"]:
+        fpath = KNOWLEDGE_DIR / filename
+        if fpath.exists():
+            try:
+                fpath.unlink()
+            except Exception:
+                pass
+
+    # 4. Clear physical uploaded files
+    kfiles_dir = CONFIG.cache_dir / "knowledge_files"
+    if kfiles_dir.exists():
+        try:
+            for item in kfiles_dir.iterdir():
+                if item.is_file():
+                    item.unlink()
+        except Exception as e:
+            logger.debug(f"Failed clearing uploaded files: {e}")
+
+    return {"success": True, "message": "All documents deleted from knowledge base"}
+
+
+def get_document_raw_path(filename: str):
+    from oprel.server.services.context import CONFIG
+    from oprel.knowledge.config import KNOWLEDGE_DIR
+    import urllib.parse
+    from pathlib import Path
+    safe_filename = urllib.parse.unquote(filename)
+    
+    # Check primary knowledge_files dir
+    file_path = CONFIG.cache_dir / "knowledge_files" / safe_filename
+    if file_path.exists() and file_path.is_file():
+        return file_path
+
+    # Check KNOWLEDGE_DIR / "my_docs"
+    my_docs_path = KNOWLEDGE_DIR / "my_docs" / safe_filename
+    if my_docs_path.exists() and my_docs_path.is_file():
+        return my_docs_path
+
+    # Check tmp_uploads
+    tmp_path = CONFIG.cache_dir / "tmp_uploads" / safe_filename
+    if tmp_path.exists() and tmp_path.is_file():
+        return tmp_path
+
+    return None
 
 
 def get_document_content(filename: str) -> dict[str, Any]:
-    from oprel.server.services.context import CONFIG
+    from oprel.server.services.context import CONFIG, logger
+    from oprel.utils.file_parser import extract_text
     import urllib.parse
     import json
     
     # URL unquote in case filename comes url-encoded
     safe_filename = urllib.parse.unquote(filename)
     
-    # 1. Try to fetch from SQLite DB
+    # 1. Try to fetch from SQLite DB if valid content exists
     from oprel.server.db import get_knowledge_document
     doc = get_knowledge_document(safe_filename)
-    if doc:
-        return {"success": True, "content": doc["content"]}
+    if doc and doc.get("content") and doc["content"] not in ("Binary file content not previewable.", "[Binary document - preview unavailable]"):
+        return {"success": True, "content": doc["content"], "filename": safe_filename}
 
-    # 2. Try to fetch original file from cache
-    file_path = CONFIG.cache_dir / "knowledge_files" / safe_filename
-    if file_path.exists():
+    # 2. Try to fetch original file from cache / my_docs / tmp_uploads and extract via unified extractor
+    file_path = get_document_raw_path(safe_filename)
+    if file_path and file_path.exists():
         try:
-            content = file_path.read_text(encoding="utf-8")
-            return {"success": True, "content": content}
-        except Exception:
-            return {"success": False, "message": "Preview not available for this file type (binary or unsupported encoding)"}
+            content = extract_text(file_path)
+            if not content:
+                content = file_path.read_text(encoding="utf-8", errors="ignore")
+            if content:
+                from oprel.server.db import save_knowledge_document
+                save_knowledge_document(safe_filename, content, len(content))
+                return {"success": True, "content": content, "filename": safe_filename}
+        except Exception as e:
+            logger.error(f"Failed to extract preview from {file_path}: {e}")
             
-    # 3. If not found in DB or cache, reconstruct from indexed chunks in DB
+    # 3. If not found in DB or cache, reconstruct from indexed chunks in DB / BM25
     try:
         from oprel.knowledge.config import KNOWLEDGE_DIR
         bm25_cache_path = KNOWLEDGE_DIR / "bm25_docs.json"
@@ -253,17 +433,16 @@ def get_document_content(filename: str) -> dict[str, Any]:
             
             # Find all chunks matching this filename
             chunks = []
-            for doc in docs:
-                meta = doc.get("metadata", {})
+            for doc_item in docs:
+                meta = doc_item.get("metadata", {})
                 if meta.get("filename") == safe_filename:
-                    chunks.append(doc.get("text", ""))
+                    chunks.append(doc_item.get("text", ""))
                     
             if chunks:
                 reconstructed = "\n\n... (chunk boundary) ...\n\n".join(chunks)
-                return {"success": True, "content": f"[Reconstructed from {len(chunks)} indexed chunks]\n\n{reconstructed}"}
+                return {"success": True, "content": f"[Reconstructed from {len(chunks)} indexed chunks]\n\n{reconstructed}", "filename": safe_filename}
                 
     except Exception as e:
-        from oprel.server.services.context import logger
         logger.error(f"Failed to reconstruct from db: {e}")
         
-    return {"success": False, "message": f"File '{safe_filename}' not found in cache or DB"}
+    return {"success": False, "message": f"File '{safe_filename}' not found or could not be previewed"}

@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { useRouter } from "next/navigation"
+import { useRouter, useSearchParams } from "next/navigation"
 import {
   Search,
   Play,
@@ -20,9 +20,10 @@ import { cn } from "@/services/utils"
 import { useApp } from "@/services/context"
 import { useDownloads } from "@/services/downloadContext"
 import { useToast } from "@/hooks/use-toast"
-import { API } from "@/services/api"
+import { API, HF, AudioAPI } from "@/services/api"
 import type { AIModel } from "@/services/data"
 import { QuantizationSelector } from "./QuantizationSelector"
+import { HfConnectModal } from "./HfConnectModal"
 
 function CompatBadge({ compat }: { compat: AIModel["compatibility"] }) {
   const map = {
@@ -117,6 +118,9 @@ function ModelDetailPanel({ model }: { model: AIModel }) {
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   const [hasQuants, setHasQuants] = useState<boolean>(true)
   const isImageModel = model.category === "text-to-image"
+  const isSpeechModel = model.category === "speech"
+  const [showHfDownloadNudge, setShowHfDownloadNudge] = useState(false)
+  const [pendingDownloadFn, setPendingDownloadFn] = useState<(() => Promise<void>) | null>(null)
 
   // Fetch (or re-fetch) local quantizations
   const refreshLocalQuants = async () => {
@@ -147,48 +151,65 @@ function ModelDetailPanel({ model }: { model: AIModel }) {
       return
     }
 
-    setLoading(true)
-    
-    try {
-      const actualModelId = model.modelRepoId || model.id
-      // Start download and get download_id
-      const response = await API.pullModel(actualModelId, selectedQuantization || undefined)
-      const downloadId = response.download_id
-      
-      // Add to download manager with initial state
-      const displayId = selectedQuantization ? `${actualModelId}-${selectedQuantization}` : actualModelId
-      addDownload({
-        modelId: displayId,
-        modelName: model.name,
-        quantization: selectedQuantization || "default",
-        progress: 0,
-        downloaded: 0,
-        total: selectedSize * 1024 * 1024 * 1024, // Convert GB to bytes
-        speed: 0,
-        timeLeft: "Calculating...",
-        status: "ongoing",
-        downloadId: downloadId,
-      })
-      
-      // Open the download dialog
-      setDialogOpen(true)
-      
-      // Show success toast
-      toast({
-        title: "Download Started",
-        description: `${model.name} ${selectedQuantization ? `(${selectedQuantization}) ` : ''}is now downloading`,
-      })
-      
-    } catch (error) {
-      console.error("Failed to start download:", error)
-      toast({
-        title: "Failed to Start Download",
-        description: error instanceof Error ? error.message : "Unknown error",
-        variant: "destructive",
-      })
-    } finally {
-      setLoading(false)
+    const executeDownload = async () => {
+      setLoading(true)
+      try {
+        const actualModelId = model.modelRepoId || model.id
+        // Start download and get download_id
+        const response = await API.pullModel(actualModelId, selectedQuantization || undefined)
+        const downloadId = response.download_id
+        
+        // Add to download manager with initial state
+        const displayId = selectedQuantization ? `${actualModelId}-${selectedQuantization}` : actualModelId
+        addDownload({
+          modelId: displayId,
+          modelName: model.name,
+          quantization: selectedQuantization || "default",
+          progress: 0,
+          downloaded: 0,
+          total: selectedSize * 1024 * 1024 * 1024, // Convert GB to bytes
+          speed: 0,
+          timeLeft: "Calculating...",
+          status: "ongoing",
+          downloadId: downloadId,
+        })
+        
+        // Open the download dialog
+        setDialogOpen(true)
+        
+        // Show success toast
+        toast({
+          title: "Download Started",
+          description: `${model.name} ${selectedQuantization ? `(${selectedQuantization}) ` : ''}is now downloading`,
+        })
+        
+      } catch (error) {
+        console.error("Failed to start download:", error)
+        toast({
+          title: "Failed to Start Download",
+          description: error instanceof Error ? error.message : "Unknown error",
+          variant: "destructive",
+        })
+      } finally {
+        setLoading(false)
+      }
     }
+
+    const skipped = typeof window !== "undefined" ? sessionStorage.getItem("oprel_hf_download_nudge_skipped") : null
+    if (!skipped) {
+      try {
+        const status = await HF.getStatus()
+        if (!status.connected) {
+          setPendingDownloadFn(() => executeDownload)
+          setShowHfDownloadNudge(true)
+          return
+        }
+      } catch {
+        // proceed anonymously on status failure
+      }
+    }
+
+    await executeDownload()
   }
 
   const handleImageDownload = async () => {
@@ -212,6 +233,40 @@ function ModelDetailPanel({ model }: { model: AIModel }) {
         downloadId: response.download_id,
       })
       setDialogOpen(true)
+    } catch (error) {
+      toast({
+        title: "Failed to Start Download",
+        description: error instanceof Error ? error.message : "Unknown error",
+        variant: "destructive",
+      })
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleSpeechDownload = async () => {
+    setLoading(true)
+    try {
+      const actualModelId = model.id === "kokoro-82m" || model.modelRepoId?.includes("Kokoro") ? "kokoro-82m" : model.id
+      const response = await AudioAPI.downloadModel(actualModelId)
+      addDownload({
+        modelId: actualModelId,
+        modelName: model.name || "Kokoro-82M",
+        quantization: "ONNX",
+        progress: 0,
+        downloaded: 0,
+        total: 350 * 1024 * 1024,
+        speed: 0,
+        timeLeft: "Downloading...",
+        status: "ongoing",
+        downloadId: response.job_id,
+      })
+      setDialogOpen(true)
+      toast({
+        title: "Download Started",
+        description: `${model.name} speech synthesis model is downloading`,
+      })
+      await refreshModels()
     } catch (error) {
       toast({
         title: "Failed to Start Download",
@@ -355,6 +410,32 @@ function ModelDetailPanel({ model }: { model: AIModel }) {
                   ) : (
                     <>
                       <Play size={14} /> Download{selectedQuantization ? ` GGUF (${selectedQuantization})` : " GGUF"}
+                    </>
+                  )}
+                </button>
+              )
+            ) : isSpeechModel ? (
+              isDownloaded ? (
+                <button
+                  onClick={() => router.push('/audio')}
+                  className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 transition-all"
+                >
+                  <MessageSquarePlus size={15} /> Open Audio Studio
+                </button>
+              ) : (
+                <button
+                  onClick={handleSpeechDownload}
+                  disabled={loading}
+                  className="flex items-center gap-2 px-4 py-2 rounded-lg bg-green-600 text-white text-sm font-semibold hover:bg-green-700 transition-all disabled:opacity-60"
+                >
+                  {loading ? (
+                    <>
+                      <div className="w-3 h-3 rounded-full border-2 border-white/30 border-t-white animate-spin" />
+                      Downloading...
+                    </>
+                  ) : (
+                    <>
+                      <Play size={14} /> Download Speech Model
                     </>
                   )}
                 </button>
@@ -537,12 +618,33 @@ function ModelDetailPanel({ model }: { model: AIModel }) {
           </div>
         </div>
       )}
+
+      {/* Hugging Face Download Nudge Modal */}
+      <HfConnectModal
+        isOpen={showHfDownloadNudge}
+        onClose={() => setShowHfDownloadNudge(false)}
+        variant="download_nudge"
+        onSkip={() => {
+          if (typeof window !== "undefined") {
+            sessionStorage.setItem("oprel_hf_download_nudge_skipped", "1")
+          }
+          setShowHfDownloadNudge(false)
+          pendingDownloadFn?.()
+        }}
+        onConnected={() => {
+          if (typeof window !== "undefined") {
+            sessionStorage.setItem("oprel_hf_download_nudge_skipped", "1")
+          }
+          setShowHfDownloadNudge(false)
+          pendingDownloadFn?.()
+        }}
+      />
     </div>
 
     {/* Confirm Delete Dialog */}
     {confirmDelete && (
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
-        <div className="bg-[#1e1e1e] border border-border rounded-xl p-6 w-90 shadow-2xl animate-fade-in-up">
+        <div className="bg-[#1e1e1e] border border-border rounded-xl p-6 w-[360px] shadow-2xl animate-fade-in-up">
           <div className="flex items-center gap-3 mb-4">
             <div className="w-9 h-9 rounded-lg bg-destructive/10 flex items-center justify-center">
               <Trash2 size={16} className="text-destructive" />
@@ -576,23 +678,55 @@ function ModelDetailPanel({ model }: { model: AIModel }) {
 
 export function ModelsView() {
   const { models, localModels, selectedModelDetail, setSelectedModelDetail } = useApp()
+  const searchParams = useSearchParams()
+  const categoryParam = searchParams.get("category")
   const [search, setSearch] = useState("")
   const [filterStatus, setFilterStatus] = useState<"all" | "loaded" | "available">("all")
 
-  const filtered = (filterStatus === "available" ? localModels : models).filter((m) => {
-    const matchSearch =
-      m.name.toLowerCase().includes(search.toLowerCase()) ||
-      m.family.toLowerCase().includes(search.toLowerCase())
+  // Auto-select model matching category parameter if provided (e.g. ?category=OCR)
+  useEffect(() => {
+    if (categoryParam && models.length > 0 && !selectedModelDetail) {
+      const match =
+        models.find(
+          (m) =>
+            m.category?.toLowerCase() === categoryParam.toLowerCase() &&
+            (m.downloaded || m.status === "available")
+        ) ||
+        models.find((m) => m.category?.toLowerCase() === categoryParam.toLowerCase())
+      if (match) setSelectedModelDetail(match)
+    }
+  }, [categoryParam, models, selectedModelDetail, setSelectedModelDetail])
 
-    if (filterStatus === "loaded") return m.status === "loaded" && matchSearch
-    return matchSearch
-  })
+  const isEmbeddingCategory = (cat?: string) => {
+    const c = (cat || "").toLowerCase()
+    return c === "embeddings" || c === "embedding"
+  }
 
-  const categories = [...new Set(models.map((m) => m.category || "General LLM"))]
+  const filtered = (filterStatus === "available" ? localModels : models)
+    .filter((m) => !isEmbeddingCategory(m.category))
+    .filter((m) => {
+      const matchSearch =
+        m.name.toLowerCase().includes(search.toLowerCase()) ||
+        m.family.toLowerCase().includes(search.toLowerCase())
+
+      if (filterStatus === "loaded") return m.status === "loaded" && matchSearch
+      return matchSearch
+    })
+
+  const categories = [
+    ...new Set(
+      models
+        .filter((m) => !isEmbeddingCategory(m.category))
+        .map((m) => m.category || "General LLM")
+    ),
+  ]
 
   const categoryLabels: Record<string, string> = {
     "text-generation": "Text LLMs",
     "vision": "Vision models",
+    "Text + Vision": "Vision models",
+    "OCR": "OCR Models",
+    "Ocr": "OCR Models",
     "coding": "Coding specialists",
     "reasoning": "Reasoning / Thinking",
     "text-to-image": "Image Generation",

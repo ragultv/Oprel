@@ -14,6 +14,7 @@ export interface Model {
   tags?: string[];
   category?: string;
   downloaded?: boolean;
+  context_length?: number;
 }
 
 export interface Conversation {
@@ -56,6 +57,17 @@ export interface UserSettings {
   system_instruction: string | null;
 }
 
+export interface ContextBreakdown {
+  conversation_id: string;
+  message_count: number;
+  history_tokens: number;
+  max_context_tokens: number;
+  reserve_tokens: number;
+  headroom_tokens: number;
+  is_compacted: boolean;
+  memory_count: number;
+}
+
 export interface UserProfile {
   name: string;
   role: string;
@@ -94,6 +106,32 @@ export interface ImageGenerationJob {
   result?: ImageGenerationResponse;
 }
 
+export interface ImageChatMessage {
+  id: string;
+  chat_id: string;
+  prompt: string;
+  negative_prompt?: string;
+  model: string;
+  size: string;
+  steps: number;
+  cfg_scale: number;
+  seed: number;
+  sampler?: string;
+  image_url: string;
+  created_at: string;
+}
+
+export interface ImageChat {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  message_count?: number;
+  latest_prompt?: string;
+  latest_image_url?: string;
+  messages?: ImageChatMessage[];
+}
+
 export interface ModelDetailedInfo {
   repo_id: string;
   alias?: string;
@@ -104,7 +142,7 @@ export interface ModelDetailedInfo {
 }
 
 const API_BASE = (typeof window !== 'undefined' && window.location.port === '3000') 
-? 'http://localhost:11435' 
+? 'http://127.0.0.1:11435' 
 : ''; 
 
 export const API = {
@@ -210,6 +248,59 @@ export const API = {
     if (!res.ok) return [];
     const data = await res.json();
     return data.logs || [];
+  },
+
+  async getOnboarding(): Promise<{
+    first_run: boolean;
+    hardware: {
+      os: string | null;
+      cpu_threads: number | null;
+      ram_total_gb: number;
+      ram_available_gb: number;
+      gpu_name: string | null;
+      vram_total_gb: number | null;
+    };
+    storage?: {
+      storage_path: string;
+      free_space_gb: number;
+      total_space_gb: number;
+    };
+    tier: 'A' | 'B' | 'C';
+    recommended: { alias: string; quantization: string; approx_size_gb: number; reason: string };
+  }> {
+    const res = await fetch(`${API_BASE}/system/onboarding`);
+    if (!res.ok) throw new Error('Could not read hardware information');
+    return res.json();
+  },
+
+  async getStorage(): Promise<{
+    storage_path: string;
+    free_space_gb: number;
+    total_space_gb: number;
+  }> {
+    const res = await fetch(`${API_BASE}/system/storage`);
+    if (!res.ok) throw new Error('Could not fetch storage info');
+    return res.json();
+  },
+
+  async setStorage(path: string, migrate: boolean = false): Promise<{
+    success: boolean;
+    info: {
+      storage_path: string;
+      free_space_gb: number;
+      total_space_gb: number;
+    };
+  }> {
+    const res = await fetch(`${API_BASE}/system/storage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path, migrate }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || 'Could not update storage path');
+    }
+    return res.json();
   },
 
   async pullModel(modelId: string, quantization?: string): Promise<{
@@ -377,6 +468,21 @@ export const API = {
     return res.json();
   },
 
+  async compactConversation(id: string): Promise<any> {
+    const res = await fetch(`${API_BASE}/conversations/${id}/compact`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    if (!res.ok) throw new Error('Failed to compact conversation');
+    return res.json();
+  },
+
+  async getConversationContext(id: string): Promise<ContextBreakdown> {
+    const res = await fetch(`${API_BASE}/conversations/${id}/context`);
+    if (!res.ok) throw new Error('Failed to load conversation context');
+    return res.json();
+  },
+
   async getMetrics(): Promise<Metrics> {
     const res = await fetch(`${API_BASE}/system/metrics`);
     if (!res.ok) throw new Error('Failed to fetch metrics');
@@ -504,12 +610,12 @@ export const API = {
     const bodyData = { 
       ...rest, 
       stream: true, 
-      thinking: Boolean(thinking),
-      rag: Boolean(rag),
-      max_tokens: maxTokens,
-      top_p: topP,
-      top_k: topK,
-      repeat_penalty: repeatPenalty,
+      thinking: Boolean(thinking ?? payload.thinking),
+      rag: Boolean(rag ?? payload.rag),
+      max_tokens: maxTokens ?? payload.max_tokens,
+      top_p: topP ?? payload.top_p,
+      top_k: topK ?? payload.top_k,
+      repeat_penalty: repeatPenalty ?? payload.repeat_penalty,
     };
     
     const res = await fetch(`${API_BASE}/v1/chat/completions`, {
@@ -577,8 +683,8 @@ export const API = {
       }
       
       try {
-        const json = JSON.parse(dataStr);
-        const content = json.choices[0]?.delta?.content || '';
+        const parsed = JSON.parse(dataStr);
+        const content = parsed.choices?.[0]?.delta?.content || '';
         if (content) onToken(content);
       } catch (e) {
         if (dataStr !== '[DONE]') {
@@ -630,9 +736,29 @@ export const API = {
     return res.json();
   },
 
+  getDocumentRawUrl(filename: string): string {
+    return `${API_BASE}/index/documents/${encodeURIComponent(filename)}/raw?t=${Date.now()}`;
+  },
+
   async searchKnowledge(q: string, top_k = 5): Promise<any[]> {
     const res = await fetch(`${API_BASE}/index/search?q=${encodeURIComponent(q)}&top_k=${top_k}`);
     if (!res.ok) throw new Error('Failed to search knowledge base');
+    return res.json();
+  },
+
+  async deleteDocument(filename: string): Promise<any> {
+    const res = await fetch(`${API_BASE}/index/documents/${encodeURIComponent(filename)}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) throw new Error('Failed to delete document');
+    return res.json();
+  },
+
+  async deleteAllDocuments(): Promise<any> {
+    const res = await fetch(`${API_BASE}/index/documents`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) throw new Error('Failed to delete all documents');
     return res.json();
   },
 
@@ -772,11 +898,82 @@ export const API = {
 
     return () => eventSource.close();
   },
+
+  async fetchImageChats(): Promise<ImageChat[]> {
+    const res = await fetch(`${API_BASE}/v1/images/chats`);
+    if (!res.ok) throw new Error('Failed to fetch image chats');
+    return res.json();
+  },
+
+  async createImageChat(title?: string): Promise<ImageChat> {
+    const res = await fetch(`${API_BASE}/v1/images/chats`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: title || 'New Image Chat' }),
+    });
+    if (!res.ok) throw new Error('Failed to create image chat');
+    return res.json();
+  },
+
+  async getImageChat(chatId: string): Promise<ImageChat> {
+    const res = await fetch(`${API_BASE}/v1/images/chats/${encodeURIComponent(chatId)}`);
+    if (!res.ok) throw new Error('Failed to fetch image chat');
+    return res.json();
+  },
+
+  async saveImageMessage(chatId: string, payload: {
+    prompt: string;
+    image_url: string;
+    model: string;
+    size?: string;
+    negative_prompt?: string;
+    steps?: number;
+    cfg_scale?: number;
+    seed?: number;
+    sampler?: string;
+  }): Promise<ImageChatMessage> {
+    const res = await fetch(`${API_BASE}/v1/images/chats/${encodeURIComponent(chatId)}/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) throw new Error('Failed to save image message');
+    return res.json();
+  },
+
+  async deleteImageChat(chatId: string): Promise<void> {
+    const res = await fetch(`${API_BASE}/v1/images/chats/${encodeURIComponent(chatId)}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) throw new Error('Failed to delete image chat');
+  },
+
+  async clearImageChats(): Promise<void> {
+    const res = await fetch(`${API_BASE}/v1/images/chats`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) throw new Error('Failed to clear image chats');
+  },
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // OCR Types
 // ─────────────────────────────────────────────────────────────────────────────
+
+export interface OcrModelInfo {
+  id: string;
+  name: string;
+  repo_id: string;
+  architecture: string;
+  params: string;
+  quant: string;
+  description: string;
+  installed: boolean;
+  has_mmproj: boolean;
+  ready: boolean;
+  size_mb: number;
+  file_path?: string | null;
+}
 
 export interface OcrStatus {
   ready: boolean;
@@ -784,6 +981,11 @@ export interface OcrStatus {
   size_mb: number;
   gpu: boolean;
   installed: boolean;
+  model_id?: string;
+  model_name?: string;
+  active_model_id?: string;
+  active_model_name?: string;
+  models?: OcrModelInfo[];
 }
 
 export interface OcrResult {
@@ -796,6 +998,9 @@ export interface OcrResult {
     width: number;
     height: number;
   };
+  category?: string;
+  grounded?: boolean;
+  engine?: string;
 }
 
 export interface OcrJob {
@@ -808,6 +1013,7 @@ export interface OcrJob {
   created_at: string;
   img_width?: number;   // present in fresh /extract response
   img_height?: number;
+  engine?: string;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -815,10 +1021,28 @@ export interface OcrJob {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const OCR = {
-  /** Check whether PaddleOCR models are ready. */
+  /** Check whether Vision OCR models are ready. */
   async fetchStatus(): Promise<OcrStatus> {
     const res = await fetch(`${API_BASE}/v1/ocr/status`);
     if (!res.ok) throw new Error(`OCR status fetch failed: ${res.status}`);
+    return res.json();
+  },
+
+  /** Fetch all OCR models and their status. */
+  async fetchModels(): Promise<OcrModelInfo[]> {
+    const res = await fetch(`${API_BASE}/v1/ocr/models`);
+    if (!res.ok) throw new Error(`OCR models fetch failed: ${res.status}`);
+    return res.json();
+  },
+
+  /** Switch active OCR model. */
+  async selectModel(modelId: string): Promise<OcrStatus> {
+    const res = await fetch(`${API_BASE}/v1/ocr/select-model`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model_id: modelId }),
+    });
+    if (!res.ok) throw new Error(`Failed to select OCR model: ${res.status}`);
     return res.json();
   },
 
@@ -858,9 +1082,12 @@ export const OCR = {
   },
 
   /** Upload an image and extract text. Returns full job result. */
-  async extract(file: File): Promise<OcrJob> {
+  async extract(file: File, modelId?: string): Promise<OcrJob> {
     const form = new FormData();
     form.append('file', file);
+    if (modelId) {
+      form.append('model_id', modelId);
+    }
     const res = await fetch(`${API_BASE}/v1/ocr/extract`, { method: 'POST', body: form });
     if (!res.ok) {
       const err = await res.json().catch(() => ({ detail: 'Unknown error' }));
@@ -880,4 +1107,238 @@ export const OCR = {
   async deleteJob(jobId: string): Promise<void> {
     await fetch(`${API_BASE}/v1/ocr/history/${jobId}`, { method: 'DELETE' });
   },
+
+  /** Clear all OCR history jobs from the DB. */
+  async clearHistory(): Promise<void> {
+    await fetch(`${API_BASE}/v1/ocr/history`, { method: 'DELETE' });
+  },
 };
+
+export interface HfAuthStatus {
+  connected: boolean;
+  status: 'valid' | 'expired' | 'missing';
+  message?: string;
+  username: string | null;
+  display_name: string | null;
+  avatar_url: string | null;
+  email: string | null;
+  masked_token: string | null;
+  connected_at: string | null;
+}
+
+export const HF = {
+  async getStatus(): Promise<HfAuthStatus> {
+    const res = await fetch(`${API_BASE}/v1/auth/hf/status`);
+    if (!res.ok) throw new Error('Failed to fetch Hugging Face auth status');
+    return res.json();
+  },
+
+  async connectToken(token: string): Promise<HfAuthStatus> {
+    const res = await fetch(`${API_BASE}/v1/auth/hf/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Failed to verify token' }));
+      throw new Error(err.detail || 'Failed to verify token with Hugging Face');
+    }
+    return res.json();
+  },
+
+  async disconnect(): Promise<void> {
+    const res = await fetch(`${API_BASE}/v1/auth/hf/token`, { method: 'DELETE' });
+    if (!res.ok) throw new Error('Failed to disconnect Hugging Face account');
+  },
+};
+
+export interface SpeechModel {
+  id: string;
+  name: string;
+  type: 'tts' | 'stt';
+  engine: string;
+  description: string;
+  tags_supported: boolean;
+  acceleration: string;
+  is_downloaded: boolean;
+  size: string;
+  hf_repo: string;
+  voices: Array<{
+    id: string;
+    name: string;
+    gender: string;
+    avatar: string;
+  }>;
+}
+
+export interface SpeechTag {
+  tag: string;
+  label: string;
+  category: string;
+}
+
+export const AudioAPI = {
+  async getModels(): Promise<SpeechModel[]> {
+    const res = await fetch(`${API_BASE}/v1/audio/models`);
+    if (!res.ok) throw new Error('Failed to fetch speech models');
+    const data = await res.json();
+    return data.data;
+  },
+
+  async getTags(model?: string): Promise<SpeechTag[]> {
+    const url = model ? `${API_BASE}/v1/audio/tags?model=${encodeURIComponent(model)}` : `${API_BASE}/v1/audio/tags`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('Failed to fetch speech tags');
+    const data = await res.json();
+    return data.tags;
+  },
+
+  async downloadModel(modelId: string): Promise<{ job_id: string; status: string }> {
+    const res = await fetch(`${API_BASE}/v1/audio/models/download`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: modelId }),
+    });
+    if (!res.ok) throw new Error('Failed to initiate model download');
+    return res.json();
+  },
+
+  async getDownloadJob(jobId: string): Promise<{ job_id: string; status: string; progress: number; message: string; error?: string }> {
+    const res = await fetch(`${API_BASE}/v1/audio/models/jobs/${jobId}`);
+    if (!res.ok) throw new Error('Failed to check download job');
+    return res.json();
+  },
+
+  async generateSpeech(model: string, input: string, voice?: string, speed: number = 1.0): Promise<Blob> {
+    const res = await fetch(`${API_BASE}/v1/audio/speech`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, input, voice, speed, response_format: 'wav' }),
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`Speech synthesis failed: ${err}`);
+    }
+    return res.blob();
+  },
+
+  async startSpeechJob(model: string, input: string, voice?: string, speed: number = 1.0): Promise<{ job_id: string; status: string }> {
+    const res = await fetch(`${API_BASE}/v1/audio/speech/jobs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, input, voice, speed }),
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`Failed to start speech job: ${err}`);
+    }
+    return res.json();
+  },
+
+  async getSpeechJob(jobId: string): Promise<{
+    job_id: string;
+    model_id: string;
+    status: 'queued' | 'processing' | 'completed' | 'failed' | 'cancelled';
+    progress: number;
+    current_chunk: number;
+    total_chunks: number;
+    message: string;
+    error?: string;
+    audio_url?: string;
+  }> {
+    const res = await fetch(`${API_BASE}/v1/audio/speech/jobs/${jobId}`);
+    if (!res.ok) throw new Error('Failed to check speech job status');
+    return res.json();
+  },
+
+  async getSpeechJobResultBlob(jobId: string): Promise<Blob> {
+    const res = await fetch(`${API_BASE}/v1/audio/speech/jobs/${jobId}/result`);
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`Failed to fetch synthesized audio: ${err}`);
+    }
+    return res.blob();
+  },
+
+  async cancelSpeechJob(jobId: string): Promise<{ job_id: string; cancelled: boolean }> {
+    const res = await fetch(`${API_BASE}/v1/audio/speech/jobs/${jobId}/cancel`, {
+      method: 'POST',
+    });
+    if (!res.ok) throw new Error('Failed to cancel speech job');
+    return res.json();
+  },
+
+  async transcribeAudio(audioBlob: Blob, fast: boolean = false): Promise<string> {
+    const formData = new FormData();
+    const mime = audioBlob.type || '';
+    const ext = mime.includes('webm') ? 'webm' : mime.includes('ogg') ? 'ogg' : mime.includes('mp3') ? 'mp3' : 'wav';
+    formData.append('file', audioBlob, `recording.${ext}`);
+    const url = fast ? `${API_BASE}/v1/audio/transcriptions?fast=true` : `${API_BASE}/v1/audio/transcriptions`;
+    const res = await fetch(url, {
+      method: 'POST',
+      body: formData,
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`Speech transcription failed: ${err}`);
+    }
+    const data = await res.json();
+    return data.text;
+  },
+
+  async whisperWarmup(): Promise<{ status: string; message: string }> {
+    const res = await fetch(`${API_BASE}/v1/audio/whisper/warmup`, { method: 'POST' });
+    if (!res.ok) throw new Error('Whisper warmup failed');
+    return res.json();
+  },
+
+  async whisperStatus(): Promise<{ ready: boolean; status: string }> {
+    const res = await fetch(`${API_BASE}/v1/audio/whisper/status`);
+    if (!res.ok) return { ready: false, status: 'loading' };
+    return res.json();
+  },
+
+  async getHistory(days?: number): Promise<AudioHistoryItem[]> {
+    const url = days && days > 0 ? `${API_BASE}/v1/audio/history?days=${days}` : `${API_BASE}/v1/audio/history`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('Failed to fetch audio history');
+    const data = await res.json();
+    return data.data;
+  },
+
+  getHistoryAudioUrl(id: string): string {
+    return `${API_BASE}/v1/audio/history/${id}/audio`;
+  },
+
+  async deleteHistoryItem(id: string): Promise<boolean> {
+    const res = await fetch(`${API_BASE}/v1/audio/history/${id}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) throw new Error('Failed to delete audio history item');
+    const data = await res.json();
+    return data.success;
+  },
+
+  async clearHistory(): Promise<boolean> {
+    const res = await fetch(`${API_BASE}/v1/audio/history`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) throw new Error('Failed to clear audio history');
+    const data = await res.json();
+    return data.success;
+  },
+};
+
+export interface AudioHistoryItem {
+  id: string;
+  model_id: string;
+  model_name: string;
+  voice_id: string;
+  voice_name: string;
+  text: string;
+  audio_path?: string;
+  duration_seconds: number;
+  speed: number;
+  created_at: string;
+}
+

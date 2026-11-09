@@ -666,7 +666,8 @@ def calculate_gpu_layers(
         # ROCm is less mature, be more conservative
         reserve_vram_gb = max(reserve_vram_gb, 0.75)
     
-    # Reserve VRAM for KV cache and GPU context
+    # Reserve VRAM for KV cache, context pages, and GPU context (strictly >= 400MB)
+    reserve_vram_gb = max(reserve_vram_gb, 0.40)
     available_vram = vram_gb - reserve_vram_gb
     
     if available_vram <= 0 or model_size_gb <= 0:

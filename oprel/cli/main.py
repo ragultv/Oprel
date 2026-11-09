@@ -1,6 +1,7 @@
 """
 Main CLI entry point for Oprel SDK.
 """
+from oprel.utils.auth import local_http
 import argparse
 import sys
 import os
@@ -13,7 +14,7 @@ from oprel.utils.logging import set_log_level, get_logger
 
 # Import decoupled command modules
 from .text import cmd_chat, cmd_generate, cmd_run
-from .image import cmd_gen_image, cmd_setup_image, cmd_setup_runtimes
+from .image import cmd_gen_image, cmd_setup_image, cmd_setup_runtimes, cmd_update
 from .vision import cmd_vision
 from .embed import cmd_embed
 from .knowledge import cmd_index, cmd_knowledge_search, cmd_knowledge_sync
@@ -324,9 +325,10 @@ def cmd_pull(args: argparse.Namespace) -> int:
             return 1
 
     target_model = MODEL_ALIASES.get(model_id, model_id)
-    print(f"Downloading model: {target_model}...")
+    quantization = getattr(args, "quantization", None) or "Q4_K_M"
+    print(f"Downloading model: {target_model} (quantization: {quantization})...")
     try:
-        download_gguf(target_model)
+        download_gguf(target_model, quantization=quantization, show_cli_progress=True)
         if model_id in MODEL_ALIASES:
             print(f"Successfully pulled {model_id}")
         return 0
@@ -368,16 +370,34 @@ def cmd_start(args: argparse.Namespace) -> int:
     import webbrowser
     import threading
     import time
+    import urllib.request
     
     port = getattr(args, 'port', 11435)
     host = getattr(args, 'host', '127.0.0.1')
     
-    # Function to open browser after a delay
+    # Function to open browser after the server is actively responding
     def open_browser():
-        time.sleep(2)  # Wait for server to start
         url = f"http://{host}:{port}/gui/"
-        print(f"Opening Oprel Studio at {url}...")
-        webbrowser.open(url)
+        health_url = f"http://{host}:{port}/health"
+        start_wait = time.time()
+        server_ready = False
+        
+        while time.time() - start_wait < 30:
+            try:
+                req = urllib.request.Request(health_url, headers={"User-Agent": "oprel-cli"})
+                with urllib.request.urlopen(req, timeout=1) as response:
+                    if response.status == 200:
+                        server_ready = True
+                        break
+            except Exception:
+                pass
+            time.sleep(0.3)
+            
+        if server_ready:
+            print(f"Opening Oprel Studio at {url}...")
+            webbrowser.open(url)
+        else:
+            print(f"Server took longer than expected to start. Access Oprel Studio at {url}")
         
     # Start browser thread
     threading.Thread(target=open_browser, daemon=True).start()
@@ -402,7 +422,7 @@ def cmd_models(args: argparse.Namespace) -> int:
     server_online = False
     
     try:
-        response = requests.get(f"{server_url}/models", timeout=2)
+        response = local_http.get(f"{server_url}/models", timeout=2)
         if response.status_code == 200:
             server_online = True
             for m in response.json():
@@ -481,7 +501,7 @@ def cmd_stop(args: argparse.Namespace) -> int:
     # Step 1: Try graceful shutdown via API (this will unload all models and exit)
     try:
         print("Requesting graceful shutdown...")
-        response = requests.post(f"{server_url}/shutdown", timeout=5)
+        response = local_http.post(f"{server_url}/shutdown", timeout=5)
         if response.status_code == 200:
             print("  ✓ Shutdown signal sent")
             # Wait a moment for the server to clean up
@@ -500,7 +520,7 @@ def cmd_stop(args: argparse.Namespace) -> int:
     
     # Step 2: If graceful shutdown failed, unload models manually
     try:
-        response = requests.get(f"{server_url}/models", timeout=5)
+        response = local_http.get(f"{server_url}/models", timeout=5)
         if response.status_code == 200:
             models = response.json()
             loaded_models = [m for m in models if m.get("loaded", False)]
@@ -511,7 +531,7 @@ def cmd_stop(args: argparse.Namespace) -> int:
                     import urllib.parse
                     encoded_id = urllib.parse.quote(model_id, safe="")
                     try:
-                        unload_response = requests.delete(f"{server_url}/unload/{encoded_id}", timeout=30)
+                        unload_response = local_http.delete(f"{server_url}/unload/{encoded_id}", timeout=30)
                         if unload_response.status_code == 200:
                             print(f"  ✓ Unloaded: {model_id}")
                         else:
@@ -746,9 +766,9 @@ def main() -> int:
     # Run command
     run_parser = subparsers.add_parser(
         "run",
-        help="Run a model (single-shot or interactive mode)"
+        help="Run a model (single-shot or interactive mode, or omit model to start Oprel Studio)"
     )
-    run_parser.add_argument("model", help="Model ID")
+    run_parser.add_argument("model", nargs="?", default=None, help="Model ID (omit to start Oprel Studio)")
     run_parser.add_argument("prompt", nargs="?", default=None, help="Input prompt (omit for interactive mode)")
     run_parser.add_argument("--quantization", help="Quantization level")
     run_parser.add_argument("--max-memory", type=int, help="Max memory in MB")
@@ -805,8 +825,14 @@ def main() -> int:
     # Setup command
     setup_parser = subparsers.add_parser("setup", help="Setup additional features")
     setup_subparsers = setup_parser.add_subparsers(dest="setup_command")
-    setup_subparsers.add_parser("runtime", help="Download and prepare llama.cpp + stable-diffusion.cpp backends")
+    runtime_setup = setup_subparsers.add_parser("runtime", help="Download and prepare llama.cpp + stable-diffusion.cpp backends")
+    runtime_setup.add_argument("--force", action="store_true", help="Force re-download even if already installed")
     setup_subparsers.add_parser("image", help="Download and prepare the stable-diffusion.cpp backend")
+
+    # Update command
+    update_parser = subparsers.add_parser("update", help="Update inference runtime backends (llama.cpp, stable-diffusion.cpp)")
+    update_parser.add_argument("--force", action="store_true", help="Force re-download even if already installed")
+    update_parser.add_argument("--target", choices=["all", "llama", "image"], default="all", help="Specific runtime to update")
 
     # List-models command
     list_models_parser = subparsers.add_parser("list-models", help="List all available model aliases")
@@ -823,6 +849,12 @@ def main() -> int:
     # Pull command
     pull_parser = subparsers.add_parser("pull", help="Download a model")
     pull_parser.add_argument("model", help="Model ID, alias, or HF repo")
+    pull_parser.add_argument(
+        "-q", "--quant", "--quantization",
+        dest="quantization",
+        default=None,
+        help="Quantization level (e.g. Q4_0, Q4_K_M, Q8_0). Defaults to Q4_K_M."
+    )
 
     # Multimodal commands
     
@@ -1044,6 +1076,9 @@ def main() -> int:
     elif args.command == "start":
         return cmd_start(args)
     elif args.command == "run":
+        if not args.model:
+            print("No model specified. Starting Oprel Studio...")
+            return cmd_start(args)
         return cmd_run(args)
     elif args.command == "models":
         return cmd_models(args)
@@ -1051,6 +1086,8 @@ def main() -> int:
         return cmd_stop(args)
     elif args.command == "info":
         return cmd_info(args)
+    elif args.command == "update":
+        return cmd_update(args)
     elif args.command == "setup":
         if args.setup_command == "runtime":
             return cmd_setup_runtimes(args)

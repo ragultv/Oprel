@@ -11,7 +11,7 @@ from oprel.utils.logging import get_logger
 logger = get_logger(__name__)
 
 # Map KV cache types to bytes per element
-# FP16 = 2, Q8_0 = 1, Q4_0 = 0.5 (approximate)
+# FP16 = 2, Q8_0 = 1, Q4_0 = 0.5, TurboQuant = 0.5 (~4-bit extreme compression)
 KV_CACHE_BYTES = {
     "f32": 4.0,
     "f16": 2.0,
@@ -20,6 +20,8 @@ KV_CACHE_BYTES = {
     "q5_0": 0.625,
     "q4_1": 0.55,
     "q4_0": 0.5,
+    "iq4_nl": 0.5,
+    "turboquant": 0.5,
 }
 
 @dataclass
@@ -39,7 +41,7 @@ def estimate_kv_cache_size(
     num_layers: int,
     num_kv_heads: Optional[int] = None,
     num_attention_heads: Optional[int] = None,
-    kv_cache_type: str = "f16"
+    kv_cache_type: str = "q4_0"
 ) -> KVCacheEstimate:
     """
     Estimate KV cache VRAM usage for transformer model.
@@ -102,7 +104,7 @@ def estimate_kv_cache_from_metadata(
     gguf_metadata,
     batch_size: int = 1,
     context_length: Optional[int] = None,
-    kv_cache_type: str = "f16"
+    kv_cache_type: str = "q4_0"
 ) -> KVCacheEstimate:
     """
     Convenience function: Estimate KV cache from GGUF metadata.
@@ -125,6 +127,47 @@ def estimate_kv_cache_from_metadata(
     )
 
 
+def calculate_context_for_vram_budget(
+    hidden_dim: int,
+    num_layers: int,
+    num_kv_heads: Optional[int] = None,
+    num_attention_heads: Optional[int] = None,
+    kv_cache_type: str = "q4_0",
+    vram_budget_mb: float = 600.0,
+    max_supported_ctx: int = 32768,
+    min_ctx: int = 2048,
+) -> int:
+    """
+    Calculate the exact maximum context length that fits within a dedicated VRAM budget (default 600MB).
+    Calculates per-token KV bytes based on model architecture (layers, GQA heads, hidden_dim, precision)
+    and returns a clean multiple of 512/1024 bounded by model limits.
+    """
+    dtype_bytes = KV_CACHE_BYTES.get(kv_cache_type.lower(), 0.5)
+
+    if num_kv_heads is not None and num_attention_heads is not None and num_attention_heads > 0:
+        head_dim = hidden_dim // num_attention_heads
+        bytes_per_token = 2 * num_layers * num_kv_heads * head_dim * dtype_bytes
+    else:
+        bytes_per_token = 2 * num_layers * hidden_dim * dtype_bytes
+
+    if bytes_per_token <= 0:
+        return min(max_supported_ctx, 32768)
+
+    budget_bytes = vram_budget_mb * 1024 * 1024
+    raw_ctx = int(budget_bytes / bytes_per_token)
+
+    # Round down to clean 512-token boundary for clean memory allocation
+    clean_ctx = (raw_ctx // 512) * 512
+
+    lower_bound = min(min_ctx, max_supported_ctx)
+    result_ctx = max(lower_bound, min(clean_ctx, max_supported_ctx))
+    logger.info(
+        f"KV cache 600MB budget calculation: {bytes_per_token:.1f} bytes/token -> "
+        f"{result_ctx} tokens (model max: {max_supported_ctx})"
+    )
+    return result_ctx
+
+
 def recommend_max_context(
     available_vram_gb: float,
     model_size_gb: float,
@@ -132,50 +175,25 @@ def recommend_max_context(
     num_layers: int,
     num_kv_heads: Optional[int] = None,
     num_attention_heads: Optional[int] = None,
-    kv_cache_type: str = "f16",
-    safety_margin: float = 0.15
+    kv_cache_type: str = "q4_0",
+    safety_margin: float = 0.15,
+    max_supported_ctx: int = 32768,
+    vram_budget_mb: float = 600.0,
 ) -> int:
     """
-    Recommend maximum context length that fits in VRAM.
-    
-    Args:
-        available_vram_gb: Total available VRAM
-        model_size_gb: Model weight size
-        hidden_dim, num_layers, num_kv_heads, num_attention_heads: Model dims
-        safety_margin: Reserve % of VRAM for overhead
-        
-    Returns:
-        Recommended max context length
+    Recommend maximum context length by allocating a dedicated 600MB of VRAM for KV cache.
+    Calculates dynamically per model architecture without arbitrary hardcoding.
     """
-    # Available VRAM for KV cache
-    usable_vram = available_vram_gb * (1 - safety_margin)
-    vram_for_kv = usable_vram - model_size_gb
-    
-    if vram_for_kv <= 0:
-        logger.warning("Model size exceeds VRAM - hybrid offloading needed")
-        return 512  # Minimum context
-    
-    # Binary search for max context length
-    context_options = [512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072]
-    
-    for ctx in context_options:
-        est = estimate_kv_cache_size(
-            batch_size=1,
-            context_length=ctx,
-            hidden_dim=hidden_dim,
-            num_layers=num_layers,
-            num_kv_heads=num_kv_heads,
-            num_attention_heads=num_attention_heads,
-            kv_cache_type=kv_cache_type
-        )
-        
-        if est.size_gb > vram_for_kv:
-            # Too large, return previous
-            idx = context_options.index(ctx)
-            if idx > 0:
-                return context_options[idx - 1]
-            else:
-                return 512
-    
-    # All fit, return max
-    return context_options[-1]
+    if available_vram_gb <= 0:
+        # CPU mode - use model max or user target
+        return min(32768, max_supported_ctx)
+
+    return calculate_context_for_vram_budget(
+        hidden_dim=hidden_dim,
+        num_layers=num_layers,
+        num_kv_heads=num_kv_heads,
+        num_attention_heads=num_attention_heads,
+        kv_cache_type=kv_cache_type,
+        vram_budget_mb=vram_budget_mb,
+        max_supported_ctx=max_supported_ctx,
+    )

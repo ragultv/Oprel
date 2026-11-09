@@ -8,9 +8,9 @@ logger = get_logger(__name__)
 
 def cmd_index(args: argparse.Namespace) -> int:
     """Index files or text into the knowledge store"""
-    from oprel.knowledge.sync_engine import SyncEngine
+    from oprel.knowledge.orchestration.knowledge_service import KnowledgeService
     
-    engine = SyncEngine()
+    service = KnowledgeService()
     path = Path(args.path)
     
     if not path.exists():
@@ -21,15 +21,14 @@ def cmd_index(args: argparse.Namespace) -> int:
     import asyncio
     try:
         if path.is_dir():
-            # Index all supported files in directory
             count = 0
             for file in path.rglob("*"):
-                if file.suffix.lower() in [".txt", ".md", ".pdf"]:
-                    asyncio.run(engine.ingest_file(file))
+                if file.is_file() and file.suffix.lower() in [".txt", ".md", ".pdf", ".docx", ".py", ".json"]:
+                    asyncio.run(service.ingest_file(file))
                     count += 1
             print(f"✓ Indexed {count} files from {path}")
         else:
-            asyncio.run(engine.ingest_file(path))
+            asyncio.run(service.ingest_file(path))
             print(f"✓ Indexed {path}")
         return 0
     except Exception as e:
@@ -37,29 +36,25 @@ def cmd_index(args: argparse.Namespace) -> int:
         return 1
 
 def cmd_knowledge_search(args: argparse.Namespace) -> int:
-    """Search the knowledge store"""
-    from oprel.knowledge.knowledge_store import KnowledgeStore
+    """Search the knowledge store using hybrid search"""
+    from oprel.knowledge.orchestration.knowledge_service import KnowledgeService
     
     import asyncio
-    store = KnowledgeStore()
+    service = KnowledgeService()
     print(f"Searching knowledge for: '{args.query}'...\n")
     
     try:
-        results = asyncio.run(store.search(args.query, top_k=args.top_k))
+        result = asyncio.run(service.search(args.query, top_k=args.top_k))
         
-        if not results:
+        if not result.evidence:
             print("No relevant results found.")
             return 0
             
-        for i, res in enumerate(results):
-            score = res.get('score', 0)
-            source = res.get('metadata', {}).get('filename', 'Unknown')
-            # Handle RRF scores which are small
-            score_text = f"Score: {score:.4f}"
-            
-            print(f"[{i+1}] {source} ({score_text})")
+        for i, ev in enumerate(result.evidence):
+            score_text = f"Score: {ev.score:.4f}"
+            print(f"[{i+1}] {ev.filename} ({score_text})")
             print("-" * 40)
-            print(res['text'].strip())
+            print(ev.text.strip())
             print("-" * 40)
             print()
             

@@ -13,3 +13,4 @@ class ModelInfoData:
     loaded: bool = False
     status: str = "cached"
     category: str | None = None
+    context_length: int = 32768

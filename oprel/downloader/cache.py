@@ -2,9 +2,11 @@
 Cache management utilities
 """
 
+import os
+import json
 import shutil
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from datetime import datetime
 
 from oprel.utils.logging import get_logger
@@ -12,14 +14,127 @@ from oprel.utils.logging import get_logger
 logger = get_logger(__name__)
 
 
-def get_cache_path() -> Path:
+def get_storage_root() -> Path:
     """
-    Get the default cache directory for models.
+    Get the active storage root directory for Oprel using 3-tier resolution:
+    1. Environment variables: OPREL_CACHE_DIR or OPREL_HOME
+    2. Persistent user config: ~/.cache/oprel_storage.json or ~/.oprel/config.json
+    3. Default fallback: D:/oprel if exists, else ~/.cache/oprel
+    """
+    # 1. Environment variable
+    env_dir = os.environ.get("OPREL_CACHE_DIR") or os.environ.get("OPREL_HOME")
+    if env_dir:
+        p = Path(env_dir).expanduser().resolve()
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
+    # 2. Config file
+    for candidate in [
+        Path.home() / ".cache" / "oprel_storage.json",
+        Path.home() / ".oprel" / "config.json",
+    ]:
+        try:
+            if candidate.exists():
+                with open(candidate, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    stored = data.get("storage_path")
+                    if stored:
+                        p = Path(stored).expanduser().resolve()
+                        p.mkdir(parents=True, exist_ok=True)
+                        return p
+        except Exception:
+            pass
+
+    # 3. Default fallback: D:/oprel if available, else ~/.cache/oprel
+    default_d = Path("D:/oprel")
+    try:
+        if default_d.exists():
+            return default_d.resolve()
+    except Exception:
+        pass
+
+    fallback = (Path.home() / ".cache" / "oprel").resolve()
+    fallback.mkdir(parents=True, exist_ok=True)
+    return fallback
+
+
+def set_storage_root(new_path: str | Path, migrate: bool = False) -> Path:
+    """
+    Update the active storage root directory.
+
+    Args:
+        new_path: New directory path chosen by user
+        migrate: Whether to copy existing models/data to new directory
 
     Returns:
-        Path to cache directory (~/.cache/oprel/models)
+        Resolved Path to new storage directory
     """
-    cache_dir = Path.home() / ".cache" / "oprel" / "models"
+    target = Path(new_path).expanduser().resolve()
+    target.mkdir(parents=True, exist_ok=True)
+
+    old_root = None
+    try:
+        old_root = get_storage_root()
+    except Exception:
+        pass
+
+    if migrate and old_root and old_root != target and old_root.exists():
+        for item in old_root.iterdir():
+            dest = target / item.name
+            try:
+                if item.is_dir():
+                    shutil.copytree(item, dest, dirs_exist_ok=True)
+                else:
+                    shutil.copy2(item, dest)
+            except Exception as e:
+                logger.warning(f"Error copying {item} during migration: {e}")
+
+    # Save to persistent config files
+    cfg_data = {"storage_path": str(target)}
+    for candidate in [
+        Path.home() / ".cache" / "oprel_storage.json",
+        Path.home() / ".oprel" / "config.json",
+    ]:
+        try:
+            candidate.parent.mkdir(parents=True, exist_ok=True)
+            with open(candidate, "w", encoding="utf-8") as f:
+                json.dump(cfg_data, f, indent=2)
+        except Exception as e:
+            logger.debug(f"Could not write storage config to {candidate}: {e}")
+
+    return target
+
+
+def get_storage_info() -> Dict[str, Any]:
+    """
+    Get storage path and drive capacity/free space information.
+    """
+    root = get_storage_root()
+    free_gb = 0.0
+    total_gb = 0.0
+    try:
+        usage = shutil.disk_usage(root)
+        free_gb = round(usage.free / (1024 ** 3), 1)
+        total_gb = round(usage.total / (1024 ** 3), 1)
+    except Exception:
+        pass
+
+    return {
+        "storage_path": str(root),
+        "free_space_gb": free_gb,
+        "total_space_gb": total_gb,
+    }
+
+
+def get_cache_path() -> Path:
+    """
+    Get the cache directory for models.
+
+    Returns:
+        Path to model cache directory (<storage_root>/models)
+    """
+    root = get_storage_root()
+    cache_dir = root if root.name == "models" else root / "models"
     cache_dir.mkdir(parents=True, exist_ok=True)
     return cache_dir
 
@@ -29,9 +144,10 @@ def get_binary_cache_path() -> Path:
     Get the cache directory for backend binaries.
 
     Returns:
-        Path to binary cache directory (~/.cache/oprel/bin)
+        Path to binary cache directory (<storage_root>/bin)
     """
-    binary_dir = Path.home() / ".cache" / "oprel" / "bin"
+    root = get_storage_root()
+    binary_dir = root.parent / "bin" if root.name == "models" else root / "bin"
     binary_dir.mkdir(parents=True, exist_ok=True)
     return binary_dir
 
@@ -55,9 +171,15 @@ def list_cached_models() -> List[dict]:
     cache_dir = get_cache_path()
     models = []
 
+    from oprel.downloader.metadata import load_model_metadata
+
     # Find all .gguf files recursively
     for model_file in cache_dir.rglob("*.gguf"):
         try:
+            # Only models downloaded via oprel have metadata
+            if not load_model_metadata(cache_dir, model_file.name):
+                continue
+
             stat = model_file.stat()
             models.append(
                 {
@@ -113,7 +235,7 @@ def clear_cache(confirm: bool = False) -> int:
             "Cache clearing requires explicit confirmation. " "Call with confirm=True to proceed."
         )
 
-    cache_root = Path.home() / ".cache" / "oprel"
+    cache_root = get_storage_root()
 
     if not cache_root.exists():
         logger.info("Cache directory does not exist")
