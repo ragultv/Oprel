@@ -263,29 +263,23 @@ async def _prepare_chat_context(body: Any, raw_messages: list[dict], p_type: str
     config = Config()
 
     if getattr(config, "supermemory_enabled", True) and effective_conv_id and len(messages) > 1:
-        recency_window = getattr(config, "supermemory_recency_window", 6)
+        try:
+            from oprel.knowledge.context_compactor import compact_conversation_context, estimate_messages_tokens
+            from oprel.knowledge.supermemory import SuperMemoryStore
+            from oprel.downloader.aliases import resolve_model_id
+            from oprel.server.services.generation import get_embeddings, EmbeddingParams
 
-        has_system = messages[0].get("role") == "system"
-        system_turn = [messages[0]] if has_system else []
-        dialogue = messages[1:] if has_system else messages
+            has_system = messages[0].get("role") == "system"
+            sys_text = str(messages[0].get("content", "")) if has_system else ""
+            dialogue = messages[1:] if has_system else messages
 
-        if len(dialogue) > recency_window:
-            active_dialogue = dialogue[-recency_window:]
-            messages = system_turn + active_dialogue
-
-            last_user_msg = next((m for m in reversed(active_dialogue) if m.get("role") == "user"), None)
+            last_user_msg = next((m for m in reversed(dialogue) if m.get("role") == "user"), None)
             search_query = _clean_message_text(last_user_msg.get("content", "")) if last_user_msg else ""
 
-            context_hint = None
-            if len(active_dialogue) >= 2:
-                context_hint = _clean_message_text(active_dialogue[-2].get("content", ""))
-
-            if search_query:
+            max_ctx = getattr(config, "ctx_size", 32768)
+            recalled_facts = []
+            if estimate_messages_tokens(dialogue) > max_ctx - 2048 - 1000 and search_query:
                 try:
-                    from oprel.knowledge.supermemory import SuperMemoryStore
-                    from oprel.downloader.aliases import resolve_model_id
-                    from oprel.server.services.generation import get_embeddings, EmbeddingParams
-
                     async def memory_embed(text: str) -> list[float]:
                         try:
                             resolved_model = resolve_model_id("nomic-embed-text")
@@ -295,21 +289,35 @@ async def _prepare_chat_context(body: Any, raw_messages: list[dict], p_type: str
                             return []
 
                     mem_store = SuperMemoryStore(embed_func=memory_embed)
-                    recalled = await mem_store.search_memories(
+                    results = await mem_store.search_memories(
                         conversation_id=effective_conv_id,
                         query=search_query,
                         top_k=getattr(config, "supermemory_top_k", 3),
-                        context_hint=context_hint,
                     )
-                    if recalled:
-                        memory_block = mem_store.format_memory_context(recalled)
-                        if messages and messages[0].get("role") == "system":
-                            messages[0]["content"] = f"{messages[0]['content']}\n\n{memory_block}"
-                        else:
-                            messages.insert(0, {"role": "system", "content": memory_block})
-                        logger.info(f"Provider Supermemory: Injected {len(recalled)} recalled historical turns into context")
+                    if results:
+                        recalled_facts = [m.get("content", "") for m in results]
                 except Exception as mem_exc:
-                    logger.warning(f"Provider Supermemory recall failed: {mem_exc}")
+                    logger.debug(f"Provider Supermemory lookup: {mem_exc}")
+
+            compacted_dialogue, updated_sys, was_compacted = compact_conversation_context(
+                history=dialogue,
+                current_prompt=search_query,
+                system_prompt=sys_text,
+                max_context_tokens=max_ctx,
+                reserve_generation_tokens=2048,
+                min_recent_turns=getattr(config, "supermemory_recency_window", 10),
+                recalled_memories=recalled_facts,
+            )
+
+            if updated_sys:
+                messages = [{"role": "system", "content": updated_sys}] + compacted_dialogue
+            else:
+                messages = compacted_dialogue
+
+            if was_compacted:
+                logger.info(f"Provider: Dialogue compacted within {max_ctx} tokens; earlier turns recalled from memory")
+        except Exception as exc:
+            logger.warning(f"Provider compaction fallback: {exc}")
 
     # 3. Knowledge Grounding (RAG)
     if body.rag and messages:

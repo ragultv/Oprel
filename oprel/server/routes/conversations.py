@@ -52,3 +52,13 @@ async def get_canvas(conversation_id: str):
 @router.post("/conversations/{conversation_id}/canvas")
 async def update_canvas(conversation_id: str, request: CanvasDocumentRequest):
     return conversation_service.upsert_canvas(conversation_id, request.title, request.content, request.card_timestamp)
+
+
+@router.post("/conversations/{conversation_id}/compact")
+async def compact_conversation(conversation_id: str):
+    return conversation_service.compact_conversation(conversation_id)
+
+
+@router.get("/conversations/{conversation_id}/context")
+async def get_conversation_context(conversation_id: str):
+    return conversation_service.get_conversation_context(conversation_id)

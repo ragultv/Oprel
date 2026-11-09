@@ -41,7 +41,7 @@ def detect_model_type(model_id: str) -> ModelType:
     model_lower = model_id.lower()
     
     # Speech models
-    if any(x in model_lower for x in ['kokoro', 'fish-s1', 'whisper', 'speech', 'tts', 'stt']):
+    if any(x in model_lower for x in ['kokoro', 'whisper', 'speech', 'tts', 'stt']):
         return "speech"
 
     # Vision models

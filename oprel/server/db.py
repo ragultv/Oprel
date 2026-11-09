@@ -9,10 +9,15 @@ from oprel.core.config import Config
 from oprel.utils import secrets_store
 
 CONFIG = Config()
-DB_PATH = CONFIG.cache_dir / "chat_history.db"
+
+def get_db_path() -> Path:
+    from oprel.downloader.cache import get_cache_path
+    return get_cache_path() / "chat_history.db"
+
+DB_PATH = get_db_path()
 
 def get_db():
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn = sqlite3.connect(get_db_path(), check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -262,6 +267,40 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_audio_history_created ON audio_history(created_at DESC)
     """)
 
+    # Create image_chats and image_messages tables for conversational image creation
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS image_chats (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_image_chats_updated ON image_chats(updated_at DESC)
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS image_messages (
+            id TEXT PRIMARY KEY,
+            chat_id TEXT NOT NULL,
+            prompt TEXT NOT NULL,
+            negative_prompt TEXT DEFAULT '',
+            model TEXT NOT NULL,
+            size TEXT NOT NULL,
+            steps INTEGER DEFAULT 15,
+            cfg_scale REAL DEFAULT 7.0,
+            seed INTEGER DEFAULT -1,
+            sampler TEXT DEFAULT 'euler',
+            image_url TEXT NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (chat_id) REFERENCES image_chats(id) ON DELETE CASCADE
+        )
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_image_messages_chat ON image_messages(chat_id, created_at ASC)
+    """)
+
     conn.commit()
     conn.close()
 
@@ -331,6 +370,26 @@ def reset_conversation(conversation_id: str):
     cursor.execute("DELETE FROM canvas_documents WHERE conversation_id = ?", (conversation_id,))
     cursor.execute("DELETE FROM messages WHERE conversation_id = ?", (conversation_id,))
     now = datetime.now().isoformat()
+    cursor.execute("UPDATE conversations SET updated_at = ? WHERE id = ?", (now, conversation_id))
+    conn.commit()
+    conn.close()
+
+def replace_conversation_messages(conversation_id: str, messages: list[dict[str, Any]]):
+    """Atomically replace all messages in a conversation with a compacted sequence."""
+    import json
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM messages WHERE conversation_id = ?", (conversation_id,))
+    now = datetime.now().isoformat()
+    for m in messages:
+        msg_id = f"msg_{uuid.uuid4().hex[:12]}"
+        content = m.get("content", "")
+        if not isinstance(content, str):
+            content = json.dumps(content)
+        cursor.execute(
+            "INSERT INTO messages (id, conversation_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)",
+            (msg_id, conversation_id, m.get("role", "user"), content, now)
+        )
     cursor.execute("UPDATE conversations SET updated_at = ? WHERE id = ?", (now, conversation_id))
     conn.commit()
     conn.close()
@@ -1001,8 +1060,13 @@ def delete_hf_auth() -> bool:
     return True
 
 
-AUDIO_HISTORY_DIR = CONFIG.cache_dir / "audio_history"
-AUDIO_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+def get_audio_history_dir() -> Path:
+    from oprel.downloader.cache import get_cache_path
+    d = get_cache_path() / "audio_history"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+AUDIO_HISTORY_DIR = get_audio_history_dir()
 
 
 def save_audio_history(
@@ -1093,5 +1157,142 @@ def clear_audio_history() -> bool:
     conn.commit()
     conn.close()
     return True
+
+
+# ── Image Chat History Operations ──────────────────────────────────────────
+
+def create_image_chat(title: str = "New Image Chat", chat_id: Optional[str] = None) -> dict:
+    conn = get_db()
+    cursor = conn.cursor()
+    c_id = chat_id or f"imgchat-{uuid.uuid4().hex[:10]}"
+    now = datetime.utcnow().isoformat()
+    cursor.execute(
+        "INSERT INTO image_chats (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
+        (c_id, title, now, now),
+    )
+    conn.commit()
+    conn.close()
+    return {"id": c_id, "title": title, "created_at": now, "updated_at": now, "message_count": 0, "messages": []}
+
+
+def get_image_chats() -> List[dict]:
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT c.id, c.title, c.created_at, c.updated_at,
+               COUNT(m.id) as message_count,
+               (SELECT prompt FROM image_messages WHERE chat_id = c.id ORDER BY created_at DESC LIMIT 1) as latest_prompt,
+               (SELECT image_url FROM image_messages WHERE chat_id = c.id ORDER BY created_at DESC LIMIT 1) as latest_image_url
+        FROM image_chats c
+        LEFT JOIN image_messages m ON c.id = m.chat_id
+        GROUP BY c.id
+        ORDER BY c.updated_at DESC
+    """)
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_image_chat(chat_id: str) -> Optional[dict]:
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM image_chats WHERE id = ?", (chat_id,))
+    chat = cursor.fetchone()
+    if not chat:
+        conn.close()
+        return None
+    chat_dict = dict(chat)
+    cursor.execute(
+        "SELECT * FROM image_messages WHERE chat_id = ? ORDER BY created_at ASC",
+        (chat_id,),
+    )
+    messages = cursor.fetchall()
+    conn.close()
+    chat_dict["messages"] = [dict(m) for m in messages]
+    return chat_dict
+
+
+def add_image_message(
+    chat_id: str,
+    prompt: str,
+    image_url: str,
+    model: str,
+    size: str,
+    negative_prompt: str = "",
+    steps: int = 15,
+    cfg_scale: float = 7.0,
+    seed: int = -1,
+    sampler: str = "euler",
+    message_id: Optional[str] = None,
+) -> dict:
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, title FROM image_chats WHERE id = ?", (chat_id,))
+    chat = cursor.fetchone()
+    now = datetime.utcnow().isoformat()
+    if not chat:
+        title = prompt.strip()[:40] or "Image Chat"
+        cursor.execute(
+            "INSERT INTO image_chats (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
+            (chat_id, title, now, now),
+        )
+    else:
+        if chat["title"] in ("New Image Chat", "Untitled", "Image Chat"):
+            title = prompt.strip()[:40] or "Image Chat"
+            cursor.execute(
+                "UPDATE image_chats SET title = ?, updated_at = ? WHERE id = ?",
+                (title, now, chat_id),
+            )
+        else:
+            cursor.execute(
+                "UPDATE image_chats SET updated_at = ? WHERE id = ?",
+                (now, chat_id),
+            )
+
+    m_id = message_id or f"imgmsg-{uuid.uuid4().hex[:10]}"
+    cursor.execute(
+        """
+        INSERT INTO image_messages (id, chat_id, prompt, negative_prompt, model, size, steps, cfg_scale, seed, sampler, image_url, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (m_id, chat_id, prompt, negative_prompt, model, size, steps, cfg_scale, seed, sampler, image_url, now),
+    )
+    conn.commit()
+    conn.close()
+    return {
+        "id": m_id,
+        "chat_id": chat_id,
+        "prompt": prompt,
+        "negative_prompt": negative_prompt,
+        "model": model,
+        "size": size,
+        "steps": steps,
+        "cfg_scale": cfg_scale,
+        "seed": seed,
+        "sampler": sampler,
+        "image_url": image_url,
+        "created_at": now,
+    }
+
+
+def delete_image_chat(chat_id: str) -> bool:
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM image_messages WHERE chat_id = ?", (chat_id,))
+    cursor.execute("DELETE FROM image_chats WHERE id = ?", (chat_id,))
+    conn.commit()
+    conn.close()
+    return True
+
+
+def clear_image_chats() -> bool:
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM image_messages")
+    cursor.execute("DELETE FROM image_chats")
+    conn.commit()
+    conn.close()
+    return True
+
 
 

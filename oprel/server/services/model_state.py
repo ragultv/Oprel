@@ -189,6 +189,9 @@ def scan_cached_models() -> list[ModelInfoData]:
         best_alias = get_best_alias_for_repo(model_id)
         display_name = best_alias or (model_id.split("/")[-1] if "/" in model_id else model_id)
 
+        loaded_model = state.models.get(model_id)
+        active_ctx = getattr(loaded_model, "ctx_size", 32768) if loaded_model else 32768
+
         available.append(
             ModelInfoData(
                 model_id=model_id,
@@ -197,6 +200,7 @@ def scan_cached_models() -> list[ModelInfoData]:
                 loaded=True,
                 name=display_name,
                 category=cat,
+                context_length=active_ctx,
             )
         )
 
@@ -269,6 +273,9 @@ def scan_cached_models() -> list[ModelInfoData]:
             if already_loaded:
                 continue
 
+            loaded_model = state.models.get(repo_id)
+            active_ctx = getattr(loaded_model, "ctx_size", 32768) if loaded_model else 32768
+
             available.append(
                 ModelInfoData(
                     model_id=repo_id,
@@ -278,6 +285,7 @@ def scan_cached_models() -> list[ModelInfoData]:
                     size_gb=round(size_gb, 2),
                     name=display_name,
                     category=cat,
+                    context_length=active_ctx,
                 )
             )
 

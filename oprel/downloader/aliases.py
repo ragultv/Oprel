@@ -130,8 +130,11 @@ OFFICIAL_REPOS = {
 
     # GGUF-only image models for stable-diffusion.cpp backend
     "text-to-image": {
-        "ideation" : "HamSFL/Ideation",
-        "z-image-turbo":"unsloth/Z-Image-Turbo-GGUF"  
+        "ideation": "HamSFL/Ideation",
+        "sdxl-turbo": "calcuis/sdxl-turbo-gguf",
+        "dreamshaper-8": "calcuis/dreamshaper-8-gguf",
+        "z-image-turbo-6b": "unsloth/Z-Image-Turbo-GGUF",
+        "flux-2-4b": "unsloth/FLUX.2-klein-4B-GGUF",
     },
 
     # Speech synthesis models

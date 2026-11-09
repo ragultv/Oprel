@@ -26,6 +26,7 @@ async def onboarding():
     """Hardware summary and one recommended first model, for the first-run screen."""
     import psutil
 
+    from oprel.downloader.cache import get_storage_info
     from oprel.runtime.tiers import detect_tier, recommend_starter
     from oprel.telemetry.hardware import get_hardware_info
 
@@ -42,6 +43,7 @@ async def onboarding():
             "gpu_name": hw.get("gpu_name"),
             "vram_total_gb": vram,
         },
+        "storage": get_storage_info(),
         "tier": detect_tier(vram),
         "recommended": recommend_starter(vram, ram),
     }

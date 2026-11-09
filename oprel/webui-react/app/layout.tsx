@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from 'next'
-import { Inter } from 'next/font/google'
+import localFont from 'next/font/local'
 import './globals.css'
 import { AppProvider } from '@/services/context'
 import { DownloadProvider } from '@/services/downloadContext'
@@ -7,9 +7,15 @@ import { Toaster } from '@/components/ui/toaster'
 import { DownloadDialog } from '@/components/DownloadDialog'
 import { AppShell } from '@/components/AppShell'
 
-const inter = Inter({
-  subsets: ['latin'],
-  variable: '--font-sans',
+const spaceGrotesk = localFont({
+  src: [
+    {
+      path: '../public/fonts/space-grotesk/space-grotesk-latin.woff2',
+      weight: '300 700',
+      style: 'normal',
+    },
+  ],
+  variable: '--font-space-grotesk',
   display: 'swap',
 })
 
@@ -28,7 +34,7 @@ export default function RootLayout({
   children: React.ReactNode
 }>) {
   return (
-    <html lang="en" className={inter.variable}>
+    <html lang="en" className={spaceGrotesk.variable}>
       <body className="font-sans antialiased bg-background text-foreground h-full overflow-hidden">
         <AppProvider>
           <DownloadProvider>

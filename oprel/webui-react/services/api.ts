@@ -14,6 +14,7 @@ export interface Model {
   tags?: string[];
   category?: string;
   downloaded?: boolean;
+  context_length?: number;
 }
 
 export interface Conversation {
@@ -56,6 +57,17 @@ export interface UserSettings {
   system_instruction: string | null;
 }
 
+export interface ContextBreakdown {
+  conversation_id: string;
+  message_count: number;
+  history_tokens: number;
+  max_context_tokens: number;
+  reserve_tokens: number;
+  headroom_tokens: number;
+  is_compacted: boolean;
+  memory_count: number;
+}
+
 export interface UserProfile {
   name: string;
   role: string;
@@ -92,6 +104,32 @@ export interface ImageGenerationJob {
   created: number;
   error?: string | null;
   result?: ImageGenerationResponse;
+}
+
+export interface ImageChatMessage {
+  id: string;
+  chat_id: string;
+  prompt: string;
+  negative_prompt?: string;
+  model: string;
+  size: string;
+  steps: number;
+  cfg_scale: number;
+  seed: number;
+  sampler?: string;
+  image_url: string;
+  created_at: string;
+}
+
+export interface ImageChat {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  message_count?: number;
+  latest_prompt?: string;
+  latest_image_url?: string;
+  messages?: ImageChatMessage[];
 }
 
 export interface ModelDetailedInfo {
@@ -222,11 +260,46 @@ export const API = {
       gpu_name: string | null;
       vram_total_gb: number | null;
     };
+    storage?: {
+      storage_path: string;
+      free_space_gb: number;
+      total_space_gb: number;
+    };
     tier: 'A' | 'B' | 'C';
     recommended: { alias: string; quantization: string; approx_size_gb: number; reason: string };
   }> {
     const res = await fetch(`${API_BASE}/system/onboarding`);
     if (!res.ok) throw new Error('Could not read hardware information');
+    return res.json();
+  },
+
+  async getStorage(): Promise<{
+    storage_path: string;
+    free_space_gb: number;
+    total_space_gb: number;
+  }> {
+    const res = await fetch(`${API_BASE}/system/storage`);
+    if (!res.ok) throw new Error('Could not fetch storage info');
+    return res.json();
+  },
+
+  async setStorage(path: string, migrate: boolean = false): Promise<{
+    success: boolean;
+    info: {
+      storage_path: string;
+      free_space_gb: number;
+      total_space_gb: number;
+    };
+  }> {
+    const res = await fetch(`${API_BASE}/system/storage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path, migrate }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || 'Could not update storage path');
+    }
     return res.json();
   },
 
@@ -395,6 +468,21 @@ export const API = {
     return res.json();
   },
 
+  async compactConversation(id: string): Promise<any> {
+    const res = await fetch(`${API_BASE}/conversations/${id}/compact`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    if (!res.ok) throw new Error('Failed to compact conversation');
+    return res.json();
+  },
+
+  async getConversationContext(id: string): Promise<ContextBreakdown> {
+    const res = await fetch(`${API_BASE}/conversations/${id}/context`);
+    if (!res.ok) throw new Error('Failed to load conversation context');
+    return res.json();
+  },
+
   async getMetrics(): Promise<Metrics> {
     const res = await fetch(`${API_BASE}/system/metrics`);
     if (!res.ok) throw new Error('Failed to fetch metrics');
@@ -522,12 +610,12 @@ export const API = {
     const bodyData = { 
       ...rest, 
       stream: true, 
-      thinking: Boolean(thinking),
-      rag: Boolean(rag),
-      max_tokens: maxTokens,
-      top_p: topP,
-      top_k: topK,
-      repeat_penalty: repeatPenalty,
+      thinking: Boolean(thinking ?? payload.thinking),
+      rag: Boolean(rag ?? payload.rag),
+      max_tokens: maxTokens ?? payload.max_tokens,
+      top_p: topP ?? payload.top_p,
+      top_k: topK ?? payload.top_k,
+      repeat_penalty: repeatPenalty ?? payload.repeat_penalty,
     };
     
     const res = await fetch(`${API_BASE}/v1/chat/completions`, {
@@ -646,6 +734,10 @@ export const API = {
         throw new Error(err.detail || 'Failed to fetch preview');
     }
     return res.json();
+  },
+
+  getDocumentRawUrl(filename: string): string {
+    return `${API_BASE}/index/documents/${encodeURIComponent(filename)}/raw?t=${Date.now()}`;
   },
 
   async searchKnowledge(q: string, top_k = 5): Promise<any[]> {
@@ -805,6 +897,62 @@ export const API = {
     };
 
     return () => eventSource.close();
+  },
+
+  async fetchImageChats(): Promise<ImageChat[]> {
+    const res = await fetch(`${API_BASE}/v1/images/chats`);
+    if (!res.ok) throw new Error('Failed to fetch image chats');
+    return res.json();
+  },
+
+  async createImageChat(title?: string): Promise<ImageChat> {
+    const res = await fetch(`${API_BASE}/v1/images/chats`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: title || 'New Image Chat' }),
+    });
+    if (!res.ok) throw new Error('Failed to create image chat');
+    return res.json();
+  },
+
+  async getImageChat(chatId: string): Promise<ImageChat> {
+    const res = await fetch(`${API_BASE}/v1/images/chats/${encodeURIComponent(chatId)}`);
+    if (!res.ok) throw new Error('Failed to fetch image chat');
+    return res.json();
+  },
+
+  async saveImageMessage(chatId: string, payload: {
+    prompt: string;
+    image_url: string;
+    model: string;
+    size?: string;
+    negative_prompt?: string;
+    steps?: number;
+    cfg_scale?: number;
+    seed?: number;
+    sampler?: string;
+  }): Promise<ImageChatMessage> {
+    const res = await fetch(`${API_BASE}/v1/images/chats/${encodeURIComponent(chatId)}/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) throw new Error('Failed to save image message');
+    return res.json();
+  },
+
+  async deleteImageChat(chatId: string): Promise<void> {
+    const res = await fetch(`${API_BASE}/v1/images/chats/${encodeURIComponent(chatId)}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) throw new Error('Failed to delete image chat');
+  },
+
+  async clearImageChats(): Promise<void> {
+    const res = await fetch(`${API_BASE}/v1/images/chats`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) throw new Error('Failed to clear image chats');
   },
 };
 
@@ -968,6 +1116,8 @@ export const OCR = {
 
 export interface HfAuthStatus {
   connected: boolean;
+  status: 'valid' | 'expired' | 'missing';
+  message?: string;
   username: string | null;
   display_name: string | null;
   avatar_url: string | null;

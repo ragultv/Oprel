@@ -52,8 +52,11 @@ def run_preflight(model_id: str, quantization: str | None, context_length: int |
 
     if context_length is None:
         context_length = default_context(free_vram)
-    if kv_cache_type in ("auto", "turboquant"):
-        kv_cache_type = "q8_0" if kv_cache_type == "auto" else "q4_0"
+    req = str(kv_cache_type or "q4_0").lower()
+    if req in ("q4_0", "iq4_nl", "q4_1", "turboquant", "turbo", "extreme"):
+        kv_cache_type = "q4_0" if req in ("turboquant", "turbo", "extreme") else req
+    else:
+        kv_cache_type = "q4_0"
 
     result = check_fit(meta, free_vram, free_ram, context_length, kv_cache_type, mmproj_gb).to_dict()
     result.update(

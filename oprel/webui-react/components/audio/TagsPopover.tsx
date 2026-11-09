@@ -106,7 +106,7 @@ export function TagsPopover({ tags, onSelectTag, onClose }: TagsPopoverProps) {
 
         {/* Footer */}
         <div className="pt-2 border-t border-white/10 flex items-center justify-between text-[10px] text-muted-foreground">
-          <span>Fish Audio S1-mini</span>
+          <span>Audio Studio</span>
           <span className="text-primary font-medium font-mono">{tags.length} Expressive Tags</span>
         </div>
 

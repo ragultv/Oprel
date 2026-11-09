@@ -5,12 +5,25 @@ HuggingFace Hub integration for model downloads with production-ready reliabilit
 import hashlib
 import os
 import socket
+import sys
 import time
+
+if sys.platform == "win32" and not os.environ.get("FORCE_HF_TRANSFER"):
+    os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
+    os.environ["HF_HUB_DISABLE_XET"] = "1"
+    os.environ["HF_XET_HIGH_PERFORMANCE"] = "0"
+
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional, Callable
 from huggingface_hub import hf_hub_download, list_repo_files, HfFileSystem
 from huggingface_hub.utils import HfHubHTTPError
+import huggingface_hub.constants as _hf_constants
+
+if sys.platform == "win32" and not os.environ.get("FORCE_HF_TRANSFER"):
+    _hf_constants.HF_HUB_DISABLE_XET = True
+    _hf_constants.HF_HUB_ENABLE_HF_TRANSFER = False
+    _hf_constants.HF_XET_HIGH_PERFORMANCE = False
 from tqdm import tqdm
 import requests
 from requests.adapters import HTTPAdapter
@@ -24,6 +37,7 @@ logger = get_logger(__name__)
 
 # M1.13: Connection and read timeouts (30s connect, 300s read for large files)
 DEFAULT_TIMEOUT = (30, 300)
+os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "120")
 # M1.18: Max retries with exponential backoff
 MAX_RETRIES = 3
 BACKOFF_FACTOR = 1.0  # 1s, 2s, 4s
@@ -31,9 +45,23 @@ BACKOFF_FACTOR = 1.0  # 1s, 2s, 4s
 
 def _enable_fast_transfer() -> None:
     """
-    Enable Hugging Face fast transfer (hf_transfer/hf_xet) if installed.
-    Accelerates downloads via multi-threaded chunked transfer.
+    Configure Hugging Face transfer settings.
+    On Windows, hf_transfer and hf_xet hang on raw TCP socket TLS chunking,
+    so we default to standard HTTP streaming unless FORCE_HF_TRANSFER=1 is set.
     """
+    if sys.platform == "win32" and not os.environ.get("FORCE_HF_TRANSFER"):
+        os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
+        os.environ["HF_HUB_DISABLE_XET"] = "1"
+        os.environ["HF_XET_HIGH_PERFORMANCE"] = "0"
+        try:
+            import huggingface_hub.constants as _c
+            _c.HF_HUB_DISABLE_XET = True
+            _c.HF_HUB_ENABLE_HF_TRANSFER = False
+            _c.HF_XET_HIGH_PERFORMANCE = False
+        except Exception:
+            pass
+        return
+
     os.environ["HF_XET_HIGH_PERFORMANCE"] = "1"
     try:
         import hf_transfer  # noqa: F401
@@ -230,34 +258,92 @@ def _check_cache_validity(
         return None
 
 
-class DownloadProgressCallback:
-    """M1.15: Progress tracking with tqdm progress bar"""
-    
-    def __init__(self, filename: str, total_size: int):
-        self.filename = filename
-        self.pbar = tqdm(
-            total=total_size,
-            unit='B',
-            unit_scale=True,
-            unit_divisor=1024,
-            desc=f"Downloading {filename}",
-            bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]'
-        )
-        self.last_logged_mb = 0
-        
-    def __call__(self, downloaded: int):
-        """Update progress bar"""
-        self.pbar.update(downloaded - self.pbar.n)
-        
-        # M1.13: Log progress every 100MB
-        current_mb = downloaded / (1024 * 1024)
-        if current_mb - self.last_logged_mb >= 100:
-            logger.info(f"Downloaded {current_mb:.0f} MB of {self.filename}")
-            self.last_logged_mb = current_mb
-    
-    def close(self):
-        """Close progress bar"""
-        self.pbar.close()
+class RobustDownloadProgress:
+    """
+    Production-grade progress tracking adapter for Hugging Face Hub downloads.
+    Works seamlessly in both interactive CLI terminals and background server threads.
+    Directly tracks byte progress so callbacks never get suppressed by tqdm.disable.
+    """
+    _active_callback: Optional[Callable[[int, int], None]] = None
+    _show_cli_bar: bool = False
+
+    def __init__(self, *args, **kwargs):
+        self.total = int(kwargs.get("total") or 0)
+        self.n = int(kwargs.get("initial") or 0)
+        self.desc = kwargs.get("desc") or "Downloading"
+        self.unit = kwargs.get("unit") or "B"
+        self.callback = getattr(self.__class__, "_active_callback", None)
+        self.show_cli_bar = getattr(self.__class__, "_show_cli_bar", False)
+        self._last_cb_time = 0.0
+        self.pbar = None
+
+        if self.show_cli_bar and not self.callback:
+            try:
+                from tqdm import tqdm as _std_tqdm
+                self.pbar = _std_tqdm(
+                    total=self.total,
+                    initial=self.n,
+                    desc=self.desc,
+                    unit="B",
+                    unit_scale=True,
+                    unit_divisor=1024,
+                    disable=False,
+                    leave=True,
+                    bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]",
+                )
+            except Exception:
+                self.pbar = None
+
+    def __enter__(self):
+        if self.callback and self.total > 0:
+            try:
+                self.callback(int(self.n), int(self.total))
+            except Exception as e:
+                logger.debug("Progress callback error in __enter__: %s", e)
+            self._last_cb_time = time.time()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.pbar:
+            try:
+                self.pbar.close()
+            except Exception:
+                pass
+            self.pbar = None
+
+        if self.callback and self.total > 0 and exc_type is None:
+            try:
+                self.callback(int(self.n), int(self.total))
+            except Exception as e:
+                logger.debug("Progress callback error in __exit__: %s", e)
+
+    def update(self, n: int = 1):
+        self.n += n
+        if self.pbar:
+            try:
+                self.pbar.update(n)
+            except Exception:
+                pass
+
+        if self.callback and self.total > 0:
+            now = time.time()
+            if now - self._last_cb_time >= 0.20 or self.n >= self.total:
+                try:
+                    self.callback(int(self.n), int(self.total))
+                except Exception as e:
+                    logger.debug("Progress callback error in update: %s", e)
+                self._last_cb_time = now
+
+
+def _create_progress_class(
+    callback: Optional[Callable[[int, int], None]] = None,
+    show_cli_bar: bool = False,
+) -> type:
+    class _DynamicProgress(RobustDownloadProgress):
+        pass
+    _DynamicProgress._active_callback = callback
+    _DynamicProgress._show_cli_bar = show_cli_bar
+    return _DynamicProgress
 
 
 def _find_cached_model_for_repo(model_id: str, cache_dir: Path, quantization: Optional[str] = None) -> Optional[Path]:
@@ -473,7 +559,6 @@ def _ensure_mmproj_downloaded(model_id: str, model_path: Path, cache_dir: Path, 
                 repo_id=model_id,
                 filename=mmproj_filename,
                 cache_dir=str(cache_dir),
-                resume_download=True,
                 force_download=force_download,
                 token=token,
             )
@@ -497,6 +582,8 @@ def download_model(
     cache_dir: Optional[Path] = None,
     force_download: bool = False,
     max_retries: int = MAX_RETRIES,
+    progress_callback: Optional[Callable[[int, int], None]] = None,
+    show_cli_progress: Optional[bool] = None,
 ) -> Path:
     """
     Download a model from HuggingFace Hub with production-ready reliability.
@@ -531,13 +618,21 @@ def download_model(
         cached_model = _find_cached_model_for_repo(model_id, cache_dir, quantization)
         if cached_model:
             logger.info(f"Using existing cached model: {quantization}")
-
+            if progress_callback:
+                size = cached_model.stat().st_size
+                progress_callback(size, size)
             
             # Check for mmproj if it's a vision/OCR model
             if _is_vision_model(model_id):
                  _ensure_mmproj_downloaded(model_id, cached_model, cache_dir, force_download)
                  
             return cached_model
+
+    if show_cli_progress is None:
+        show_cli_progress = progress_callback is None and (
+            (hasattr(sys.stdout, "isatty") and sys.stdout.isatty())
+            or (hasattr(sys.stderr, "isatty") and sys.stderr.isatty())
+        )
     
     _enable_fast_transfer()
     
@@ -552,6 +647,8 @@ def download_model(
                     cache_dir=cache_dir,
                     force_download=force_download,
                     attempt=attempt + 1,
+                    progress_callback=progress_callback,
+                    show_cli_progress=show_cli_progress,
                 )
         except (requests.exceptions.RequestException, TimeoutError, ConnectionError, socket.timeout) as e:
             last_error = e
@@ -594,6 +691,8 @@ def _download_model_attempt(
     cache_dir: Path,
     force_download: bool,
     attempt: int,
+    progress_callback: Optional[Callable[[int, int], None]] = None,
+    show_cli_progress: bool = False,
 ) -> Path:
     """
     Single download attempt.
@@ -668,6 +767,9 @@ def _download_model_attempt(
     if not force_download:
         cached_path = _check_cache_validity(model_id, filename, cache_dir)
         if cached_path:
+            if progress_callback:
+                size = cached_path.stat().st_size
+                progress_callback(size, size)
             # Check for mmproj if it's a vision/OCR model
             if _is_vision_model(model_id):
                 _ensure_mmproj_downloaded(model_id, cached_path, cache_dir, force_download)
@@ -676,16 +778,15 @@ def _download_model_attempt(
     logger.info(f"Downloading {filename} from {model_id}")
     
     token = get_active_hf_token()
-    # M1.14: Download with resume support
-    # M1.13: hf_hub_download handles timeouts and streaming internally
+    progress_class = _create_progress_class(callback=progress_callback, show_cli_bar=show_cli_progress)
+    # M1.14: Download with resume support and active progress reporting
     model_path = hf_hub_download(
         repo_id=model_id,
         filename=filename,
         cache_dir=str(cache_dir),
-        resume_download=True,  # M1.14: Resume interrupted downloads
         force_download=force_download,
         token=token,
-        # Note: huggingface_hub handles progress internally but we can customize
+        tqdm_class=progress_class,
     )
     
     downloaded_file = Path(model_path)
@@ -701,9 +802,43 @@ def _download_model_attempt(
     logger.info(f"✓ Successfully downloaded {filename} ({file_size_mb:.1f} MB)")
     logger.info(f"Model path: {model_path}")
 
+    # For split GGUFs, download all remaining shards
+    import re
+    shard_match = re.search(r'-0*(\d+)-of-0*(\d+)\.gguf', filename, re.IGNORECASE)
+    if shard_match:
+        total_shards = int(shard_match.group(2))
+        for shard_n in range(2, total_shards + 1):
+            expected_shard = re.sub(
+                r'-0*\d+-of-0*\d+\.gguf',
+                lambda m: f"-{shard_n:05d}-of-{total_shards:05d}.gguf",
+                filename,
+                flags=re.IGNORECASE
+            )
+            logger.info(f"Downloading split GGUF shard {shard_n}/{total_shards}: {expected_shard}")
+            shard_progress_class = _create_progress_class(callback=progress_callback, show_cli_bar=show_cli_progress)
+            shard_path = hf_hub_download(
+                repo_id=model_id,
+                filename=expected_shard,
+                cache_dir=str(cache_dir),
+                force_download=force_download,
+                token=token,
+                tqdm_class=shard_progress_class,
+            )
+            s_file = Path(shard_path)
+            s_exp_size, s_exp_sha = _fetch_expected_file_info(model_id, expected_shard, token)
+            if not _verify_download(s_file, s_exp_size, s_exp_sha):
+                logger.error(f"Downloaded shard {expected_shard} corrupted, removing {s_file}")
+                s_file.unlink()
+                raise ModelNotFoundError(f"Downloaded shard {expected_shard} failed integrity check")
+            logger.info(f"✓ Successfully downloaded split shard {shard_n}/{total_shards} ({s_file.stat().st_size / (1024*1024):.1f} MB)")
+
     # Save metadata for the downloaded model
     from oprel.downloader.metadata import save_model_metadata
     save_model_metadata(cache_dir, model_id, quantization, downloaded_file)
+
+    if progress_callback:
+        file_size = downloaded_file.stat().st_size
+        progress_callback(file_size, file_size)
 
     # Check for mmproj if it's a vision/OCR model
     if _is_vision_model(model_id):
@@ -749,197 +884,14 @@ def download_model_with_progress(
     progress_callback: Optional[Callable[[int, int], None]] = None,
 ) -> Path:
     """
-    Download a model with real-time progress callbacks.
-
-    Progress is reported via ``progress_callback(downloaded_bytes, total_bytes)``
-    on every tqdm chunk emitted by ``hf_hub_download``.  The callback fires with
-    the exact byte counts that the terminal progress bar also displays.
-
-    ROOT CAUSE ANALYSIS (previous approach was wrong)
-    ==================================================
-    The first fix attempt monkey-patched ``huggingface_hub.file_download.tqdm``,
-    but hf_hub_download does NOT create tqdm instances from that module-level
-    name. It calls ``_get_progress_bar_context(tqdm_class=tqdm_class or tqdm)``
-    where ``tqdm`` is ``huggingface_hub.utils.tqdm.tqdm``.  The monkey-patch was
-    hitting the wrong reference, so tqdm instances were still the original class,
-    causing the callbacks to fire from a separate tracking layer that was out of
-    sync with the actual tqdm display.
-
-    CORRECT FIX
-    ===========
-    ``hf_hub_download`` accepts an official ``tqdm_class`` parameter.
-    We build a ``_ProgressTqdm`` subclass and pass it directly.
-    ``_get_progress_bar_context`` will use our class — the same instance that
-    renders the terminal bar — so terminal % and UI % are driven by
-    the identical ``update()`` calls.
-
-    Args:
-        model_id: Repository ID
-        quantization: Quantization level
-        cache_dir: Custom cache directory
-        force_download: Skip cache
-        progress_callback: Callback(downloaded_bytes, total_bytes) called on
-            every tqdm update.  Both values are exact integers in bytes.
-
-    Returns:
-        Path to downloaded model file.
+    Download a model with real-time progress callbacks for Web UI / server.
+    Delegates to unified download_model with progress_callback and show_cli_progress=False.
     """
-    from huggingface_hub import hf_hub_download as _hf_hub_download
-    from huggingface_hub.utils.tqdm import tqdm as _hf_tqdm
-
-    cache_dir = cache_dir or get_cache_path()
-
-    # ------------------------------------------------------------------
-    # 1.  Cache check — return immediately if already downloaded.
-    # ------------------------------------------------------------------
-    if not force_download:
-        cached_model = _find_cached_model_for_repo(model_id, cache_dir, quantization)
-        if cached_model:
-            logger.info(f"Using cached model: {cached_model}")
-            if progress_callback:
-                size = cached_model.stat().st_size
-                progress_callback(size, size)
-            return cached_model
-
-    # ------------------------------------------------------------------
-    # 2.  Resolve the exact filename to download.
-    # ------------------------------------------------------------------
-    from huggingface_hub import list_repo_files
-
-    files = list_repo_files(model_id)
-    matching_files = [
-        f for f in files if f.endswith(".gguf") and quantization.lower() in f.lower()
-    ]
-
-    if not matching_files:
-        available = [f for f in files if f.endswith(".gguf")]
-        if not available:
-            raise ModelNotFoundError(f"No GGUF files found for {model_id}")
-        filename = available[0]
-        logger.warning(f"Quantization {quantization} not found, using {filename}")
-    else:
-        filename = matching_files[0]
-
-    logger.info(f"Downloading {filename} from {model_id}")
-
-    # ------------------------------------------------------------------
-    # 3.  Build a progress-aware tqdm subclass.
-    #
-    # hf_hub_download accepts an official ``tqdm_class`` kwarg that is
-    # forwarded to ``_get_progress_bar_context``.  The context manager
-    # instantiates our subclass, calls update() on every downloaded
-    # chunk, and renders the terminal bar from the same instance.
-    # So terminal % and callback % are byte-for-byte identical.
-    # ------------------------------------------------------------------
-    tqdm_class_to_use: type = _hf_tqdm  # default (no callback)
-
-    if progress_callback:
-        _cb = progress_callback  # avoid late-binding closure issues
-
-        class _ProgressTqdm(_hf_tqdm):
-            """
-            Official tqdm_class replacement for hf_hub_download.
-
-            hf_hub_download creates this instance via _get_progress_bar_context
-            and calls update(len(chunk)) for every HTTP response chunk.
-            self.n after super().update() is the exact cumulative bytes
-            downloaded — the same value the terminal bar displays.
-            """
-
-            def __init__(self, *args, **kwargs):
-                super().__init__(*args, **kwargs)
-                self._last_cb_time = 0.0
-                # Fire immediately on creation so the UI jumps to the resumed
-                # progress (e.g. 77%) even before the first new chunk arrives.
-                if self.total and self.total > 0:
-                    _cb(int(self.n), int(self.total))
-                    self._last_cb_time = time.time()
-
-            def update(self, n: int = 1) -> bool | None:  # type: ignore[override]
-                result = super().update(n)
-                # Throttled progress callback to avoid excessive synchronous updates
-                if self.total and self.total > 0:
-                    now = time.time()
-                    if now - self._last_cb_time >= 0.25 or self.n >= self.total:
-                        _cb(int(self.n), int(self.total))
-                        self._last_cb_time = now
-                return result
-
-        tqdm_class_to_use = _ProgressTqdm
-
-    # ------------------------------------------------------------------
-    # 4.  Run the download with retry and resume support.
-    # ------------------------------------------------------------------
-    _enable_fast_transfer()
-
-    token = get_active_hf_token()
-    last_error = None
-    for attempt in range(MAX_RETRIES):
-        try:
-            with _socket_timeout(DEFAULT_TIMEOUT[1]):
-                model_path = _hf_hub_download(
-                    repo_id=model_id,
-                    filename=filename,
-                    cache_dir=str(cache_dir),
-                    force_download=force_download,
-                    resume_download=True,
-                    tqdm_class=tqdm_class_to_use,
-                    token=token,
-                )
-            break
-        except (requests.exceptions.RequestException, TimeoutError, ConnectionError, socket.timeout) as e:
-            last_error = e
-            if attempt < MAX_RETRIES - 1:
-                wait_time = BACKOFF_FACTOR * (2 ** attempt)
-                logger.warning(
-                    f"Download attempt {attempt + 1}/{MAX_RETRIES} failed: {e}. "
-                    f"Retrying in {wait_time}s..."
-                )
-                time.sleep(wait_time)
-            else:
-                logger.error(f"All {MAX_RETRIES} download attempts failed for {filename}")
-        except HfHubHTTPError as e:
-            if getattr(e, "response", None) is not None and e.response.status_code in [401, 403, 404]:
-                raise ModelNotFoundError(
-                    f"Model not found or access denied: {model_id}/{filename}"
-                ) from e
-            elif getattr(e, "response", None) is not None and e.response.status_code >= 500 and attempt < MAX_RETRIES - 1:
-                last_error = e
-                wait_time = BACKOFF_FACTOR * (2 ** attempt)
-                logger.warning(
-                    f"Server error {e.response.status_code}. Retrying in {wait_time}s..."
-                )
-                time.sleep(wait_time)
-            else:
-                raise ModelNotFoundError(f"Failed to download model: {e}") from e
-    else:
-        raise ModelNotFoundError(
-            f"Failed to download {model_id}/{filename} after {MAX_RETRIES} attempts: {last_error}"
-        ) from last_error
-
-    downloaded_file = Path(model_path)
-
-    # ------------------------------------------------------------------
-    # 5.  Emit a guaranteed 100 % callback.
-    #
-    # tqdm may leave self.n slightly below self.total due to integer
-    # rounding on the last chunk.  A final callback with the real file
-    # size guarantees the UI always reaches exactly 100 %.
-    # ------------------------------------------------------------------
-    if progress_callback:
-        file_size = downloaded_file.stat().st_size
-        progress_callback(file_size, file_size)
-
-    # ------------------------------------------------------------------
-    # 6.  Post-download bookkeeping.
-    # ------------------------------------------------------------------
-    from oprel.downloader.metadata import save_model_metadata
-
-    save_model_metadata(cache_dir, model_id, quantization, downloaded_file)
-
-    if _is_vision_model(model_id):
-        _ensure_mmproj_downloaded(model_id, downloaded_file, cache_dir, force_download)
-
-    logger.info(f"✓ Downloaded {filename}")
-    return downloaded_file
-
+    return download_model(
+        model_id=model_id,
+        quantization=quantization,
+        cache_dir=cache_dir,
+        force_download=force_download,
+        progress_callback=progress_callback,
+        show_cli_progress=False,
+    )

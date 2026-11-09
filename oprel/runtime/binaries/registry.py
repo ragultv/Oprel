@@ -111,8 +111,60 @@ BINARY_REGISTRY = {
                 "gpu_type": "cpu",
             },
         },
+        "b12189": {  # llama.cpp build 12189 (latest as of Nov 2026)
+            "Darwin-arm64": {
+                "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12189/llama-b12189-bin-macos-arm64.tar.gz",
+                "archive_type": "tar.gz",
+                "binary_name": "llama-server",
+                "gpu_type": "metal",
+            },
+            "Darwin-x86_64": {
+                "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12189/llama-b12189-bin-macos-x64.tar.gz",
+                "archive_type": "tar.gz",
+                "binary_name": "llama-server",
+                "gpu_type": "cpu",
+            },
+            "Linux-x86_64": {
+                "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12189/llama-b12189-bin-ubuntu-x64.tar.gz",
+                "archive_type": "tar.gz",
+                "binary_name": "llama-server",
+                "gpu_type": "cpu",
+            },
+            "Linux-x86_64-vulkan": {
+                "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12189/llama-b12189-bin-ubuntu-vulkan-x64.tar.gz",
+                "archive_type": "tar.gz",
+                "binary_name": "llama-server",
+                "gpu_type": "vulkan",
+            },
+            "Windows-AMD64": {
+                "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12189/llama-b12189-bin-win-cpu-x64.zip",
+                "archive_type": "zip",
+                "binary_name": "llama-server.exe",
+                "gpu_type": "cpu",
+            },
+            "Windows-AMD64-cuda": {
+                # CUDA 12.4 binary for Windows x64
+                "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12189/llama-b12189-bin-win-cuda-12.4-x64.zip",
+                "dll_url": "https://github.com/ggml-org/llama.cpp/releases/download/b12189/cudart-llama-bin-win-cuda-12.4-x64.zip",
+                "archive_type": "zip",
+                "binary_name": "llama-server.exe",
+                "gpu_type": "cuda",
+            },
+            "Windows-AMD64-vulkan": {
+                "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12189/llama-b12189-bin-win-vulkan-x64.zip",
+                "archive_type": "zip",
+                "binary_name": "llama-server.exe",
+                "gpu_type": "vulkan",
+            },
+            "Windows-ARM64": {
+                "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12189/llama-b12189-bin-win-cpu-arm64.zip",
+                "archive_type": "zip",
+                "binary_name": "llama-server.exe",
+                "gpu_type": "cpu",
+            },
+        },
         # Alias to most recent stable version
-        "latest": "b9616",
+        "latest": "b12189",
     },
     "stable-diffusion.cpp": {
         "master-647-72e512a": {
@@ -160,7 +212,52 @@ BINARY_REGISTRY = {
                 "gpu_type": "vulkan",
             },
         },
-        "latest": "master-647-72e512a",
+        "master-1056-9234ad8": {
+            "Darwin-arm64": {
+                "url": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1056-9234ad8/sd-master-9234ad8-bin-Darwin-macOS-26.7.2-arm64.zip",
+                "archive_type": "zip",
+                "binary_name": "sd-cli",
+                "gpu_type": "metal",
+            },
+            "Linux-x86_64": {
+                "url": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1056-9234ad8/sd-master-9234ad8-bin-Linux-Ubuntu-26.04-x86_64.zip",
+                "archive_type": "zip",
+                "binary_name": "sd-cli",
+                "gpu_type": "cpu",
+            },
+            "Linux-x86_64-vulkan": {
+                "url": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1056-9234ad8/sd-master-9234ad8-bin-Linux-Ubuntu-26.04-x86_64-vulkan.zip",
+                "archive_type": "zip",
+                "binary_name": "sd-cli",
+                "gpu_type": "vulkan",
+            },
+            "Linux-x86_64-rocm": {
+                "url": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1056-9234ad8/sd-master-9234ad8-bin-Linux-Ubuntu-24.04-x86_64-rocm-10.1.0.zip",
+                "archive_type": "zip",
+                "binary_name": "sd-cli",
+                "gpu_type": "rocm",
+            },
+            "Windows-AMD64": {
+                "url": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1056-9234ad8/sd-master-9234ad8-bin-win-cpu-x64.zip",
+                "archive_type": "zip",
+                "binary_name": "sd-cli.exe",
+                "gpu_type": "cpu",
+            },
+            "Windows-AMD64-cuda": {
+                "url": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1056-9234ad8/sd-master-9234ad8-bin-win-cuda12-x64.zip",
+                "dll_url": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1056-9234ad8/cudart-sd-bin-win-cu12-x64.zip",
+                "archive_type": "zip",
+                "binary_name": "sd-cli.exe",
+                "gpu_type": "cuda",
+            },
+            "Windows-AMD64-vulkan": {
+                "url": "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1056-9234ad8/sd-master-9234ad8-bin-win-vulkan-x64.zip",
+                "archive_type": "zip",
+                "binary_name": "sd-cli.exe",
+                "gpu_type": "vulkan",
+            },
+        },
+        "latest": "master-1056-9234ad8",
     },
 }
 

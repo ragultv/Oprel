@@ -166,7 +166,7 @@ const ConvGroup = memo(function ConvGroup({
   )
 })
 
-export function Sidebar() {
+export function Sidebar({ width, style }: { width?: number; style?: React.CSSProperties } = {}) {
   const {
     conversations,
     activeConversationId,
@@ -254,7 +254,14 @@ export function Sidebar() {
 
   return (
     <>
-      <aside className="w-65 shrink-0 flex flex-col h-full bg-[#171717] border-r border-border overflow-hidden transition-all duration-300">
+      <aside
+        style={{
+          width: width || 260,
+          minWidth: width || 260,
+          ...style,
+        }}
+        className="shrink-0 flex flex-col h-full bg-[#171717] border-r border-border overflow-hidden select-none transition-none"
+      >
         {/* Logo */}
         <div className="p-4 pb-3 flex items-center gap-3">
           <div className="w-8 h-8 rounded-lg overflow-hidden shrink-0">
@@ -311,6 +318,18 @@ export function Sidebar() {
               <ScanText size={18} />
               <span className="text-[10px]">OCR</span>
             </Link>
+                        <Link
+              href="/audio/"
+              className={cn(
+                "flex flex-col items-center gap-1.5 py-3 rounded-lg border border-border text-xs font-semibold transition-all text-center",
+                isAudioRoute
+                  ? "bg-secondary text-foreground border-border"
+                  : "text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
+              )}
+            >
+              <AudioLines size={18} />
+              <span className="text-[10px]">Audio</span>
+            </Link>
             <Link
               href="/knowledge/"
               className={cn(
@@ -322,18 +341,6 @@ export function Sidebar() {
             >
               <Database size={18} />
               <span className="text-[10px]">Knowledge</span>
-            </Link>
-            <Link
-              href="/audio/"
-              className={cn(
-                "flex flex-col items-center gap-1.5 py-3 rounded-lg border border-border text-xs font-semibold transition-all text-center",
-                isAudioRoute
-                  ? "bg-secondary text-foreground border-border"
-                  : "text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
-              )}
-            >
-              <AudioLines size={18} />
-              <span className="text-[10px]">Audio</span>
             </Link>
             <Link
               href="/dev/"
@@ -451,7 +458,7 @@ export function Sidebar() {
       {/* Delete confirm dialog */}
       {deleteId && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-          <div className="bg-[#1e1e1e] border border-border rounded-xl p-6 w-90 shadow-2xl animate-fade-in-up">
+          <div className="bg-[#1e1e1e] border border-border rounded-xl p-6 w-[360px] shadow-2xl animate-fade-in-up">
             <div className="flex items-center gap-3 mb-4">
               <div className="w-9 h-9 rounded-lg bg-destructive/10 flex items-center justify-center">
                 <Trash2 size={16} className="text-destructive" />

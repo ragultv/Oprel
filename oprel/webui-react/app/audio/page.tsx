@@ -78,8 +78,8 @@ const INITIAL_SPEECH_MODELS: SpeechModel[] = [
 export default function AudioStudioPage() {
   const { toast } = useToast()
 
-  // Navigation tabs (TTS, STT, Cloning)
-  const [activeTab, setActiveTab] = useState<"tts" | "stt" | "cloning">("tts")
+  // Navigation tabs (TTS, STT)
+  const [activeTab, setActiveTab] = useState<"tts" | "stt">("tts")
 
   // Sidebar Tab: Settings | History
   const [sidebarTab, setSidebarTab] = useState<"settings" | "history">("settings")
@@ -745,17 +745,6 @@ export default function AudioStudioPage() {
           >
             Speech To Text
           </button>
-          <button
-            onClick={() => setActiveTab("cloning")}
-            className={cn(
-              "px-4 py-1.5 rounded-full text-xs font-semibold transition-all",
-              activeTab === "cloning"
-                ? "bg-primary text-white shadow-md shadow-primary/20"
-                : "text-muted-foreground hover:text-foreground"
-            )}
-          >
-            Voice Cloning
-          </button>
         </div>
 
         {/* Right Accelerators & Actions */}
@@ -841,17 +830,10 @@ export default function AudioStudioPage() {
               <div className="flex items-center justify-between p-3.5 sm:p-4 border-t border-white/5 bg-black/20 shrink-0">
                 {/* Left: Engine Info Indicator */}
                 <div className="relative">
-                  {selectedEngine === "fish-s1-mini" ? (
-                    <span className="text-[11px] text-muted-foreground italic flex items-center gap-1.5">
-                      <Sparkles size={12} className="text-primary" />
-                      <span>Fish Audio S1-mini (CUDA GPU &bull; up to 3,000 chars)</span>
-                    </span>
-                  ) : (
-                    <span className="text-[11px] text-muted-foreground italic flex items-center gap-1.5">
-                      <Zap size={12} className="text-emerald-400" />
-                      <span>Kokoro-82M (CUDA GPU &bull; up to 100,000 chars)</span>
-                    </span>
-                  )}
+                  <span className="text-[11px] text-muted-foreground italic flex items-center gap-1.5">
+                    <Zap size={12} className="text-emerald-400" />
+                    <span>Kokoro-82M (CUDA GPU &bull; up to 100,000 chars)</span>
+                  </span>
                 </div>
 
                 {/* Right: Character Count + Generate Speech Button */}
@@ -1035,7 +1017,7 @@ export default function AudioStudioPage() {
                         <div className="flex items-center gap-2 truncate">
                           <span className="truncate">{currentModel?.name || selectedEngine}</span>
                           <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-white/10 text-muted-foreground font-semibold">
-                            {selectedEngine === "fish-s1-mini" ? "Stable" : "Fast RTF"}
+                            Fast RTF
                           </span>
                         </div>
                         <ChevronDown
@@ -1420,7 +1402,7 @@ export default function AudioStudioPage() {
           </div>
 
         </div>
-      ) : activeTab === "stt" ? (
+      ) : (
         /* Speech To Text (Whisper) Tab - Fits page nicely without scroll */
         <div className="flex-1 min-h-0 h-full p-2.5 sm:p-3 overflow-hidden flex flex-col w-full">
           {/* Ambient Organic Blurred Glow Mesh Backdrop Container — Fills viewport */}
@@ -1839,51 +1821,6 @@ export default function AudioStudioPage() {
                 </div>
               )}
 
-            </div>
-          </div>
-        </div>
-      ) : (
-        /* Voice Cloning View */
-        <div className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8 space-y-6">
-          <div className="max-w-4xl mx-auto space-y-6">
-            <div className="rounded-3xl border border-white/10 bg-[#141414]/90 p-8 shadow-xl text-center space-y-5">
-              <div className="w-16 h-16 rounded-2xl bg-primary/10 text-primary border border-primary/20 flex items-center justify-center mx-auto shadow-lg shadow-primary/10">
-                <Sparkles size={28} />
-              </div>
-
-              <div className="space-y-2 max-w-lg mx-auto">
-                <h3 className="text-xl font-bold text-foreground">Zero-Shot Voice Cloning</h3>
-                <p className="text-xs text-muted-foreground leading-relaxed">
-                  Fish Audio S1-mini natively supports zero-shot voice cloning by conditioning on a 5-10 second reference audio clip. You can synthesize any text in anyone's voice with exact tone, pitch, and accent.
-                </p>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-left pt-2">
-                <div className="p-4 rounded-2xl bg-black/30 border border-white/5 space-y-1.5">
-                  <span className="text-[10px] font-bold text-primary uppercase font-mono">Step 1</span>
-                  <h5 className="text-xs font-semibold text-foreground">Upload Reference</h5>
-                  <p className="text-[11px] text-muted-foreground">Provide a clean 5-10 second WAV/MP3 recording of the target voice.</p>
-                </div>
-                <div className="p-4 rounded-2xl bg-black/30 border border-white/5 space-y-1.5">
-                  <span className="text-[10px] font-bold text-primary uppercase font-mono">Step 2</span>
-                  <h5 className="text-xs font-semibold text-foreground">Reference Text</h5>
-                  <p className="text-[11px] text-muted-foreground">Whisper automatically transcribes the reference sample to align phonemes.</p>
-                </div>
-                <div className="p-4 rounded-2xl bg-black/30 border border-white/5 space-y-1.5">
-                  <span className="text-[10px] font-bold text-primary uppercase font-mono">Step 3</span>
-                  <h5 className="text-xs font-semibold text-foreground">Synthesize</h5>
-                  <p className="text-[11px] text-muted-foreground">Generate endless new speech using the cloned vocal fingerprint.</p>
-                </div>
-              </div>
-
-              <div className="pt-4 flex items-center justify-center gap-3">
-                <button
-                  onClick={() => setActiveTab("tts")}
-                  className="px-6 py-2.5 rounded-full text-xs font-bold bg-primary hover:bg-primary/90 text-white transition-all shadow-md shadow-primary/25 active:scale-95"
-                >
-                  Open Text To Speech
-                </button>
-              </div>
             </div>
           </div>
         </div>

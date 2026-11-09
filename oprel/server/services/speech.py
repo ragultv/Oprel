@@ -50,7 +50,6 @@ AVAILABLE_TAGS = []
 
 
 # Singleton model cache to avoid reloading weights repeatedly
-_fish_engine: Optional[Dict[str, Any]] = None
 _kokoro_engine: Optional[Any] = None
 _whisper_engine: Optional[Any] = None
 _whisper_loading: bool = False
@@ -73,45 +72,14 @@ def _ensure_exclusive_backend() -> None:
         torch.cuda.empty_cache()
 
 
-_fish_installed_cache: Optional[bool] = None
 _kokoro_installed_cache: Optional[bool] = None
 _whisper_installed_cache: Optional[bool] = None
 
 
 def invalidate_speech_models_cache():
-    global _fish_installed_cache, _kokoro_installed_cache, _whisper_installed_cache
-    _fish_installed_cache = None
+    global _kokoro_installed_cache, _whisper_installed_cache
     _kokoro_installed_cache = None
     _whisper_installed_cache = None
-
-
-def check_fish_audio_installed() -> bool:
-    global _fish_installed_cache
-    if _fish_installed_cache is not None:
-        return _fish_installed_cache
-    models_dir = get_speech_models_dir() / "fish-s1-mini"
-    target_dir = models_dir / "torch_checkpoints"
-    needed = ["model.pth", "codec.pth", "config.json"]
-    has_sub = all((target_dir / f).exists() for f in needed)
-    has_root = all((models_dir / f).exists() for f in needed)
-    if not (has_sub or has_root):
-        legacy_dir = Path("D:/Ragul/oprel-SDK/.speech_models/fish-s1-mini")
-        has_sub = all((legacy_dir / "torch_checkpoints" / f).exists() for f in needed)
-        has_root = all((legacy_dir / f).exists() for f in needed)
-    _fish_installed_cache = has_sub or has_root
-    return _fish_installed_cache
-
-
-def get_fish_audio_checkpoint_dir() -> Path:
-    models_dir = get_speech_models_dir() / "fish-s1-mini"
-    if (models_dir / "torch_checkpoints" / "model.pth").exists():
-        return models_dir / "torch_checkpoints"
-    if (models_dir / "model.pth").exists():
-        return models_dir
-    legacy_dir = Path("D:/Ragul/oprel-SDK/.speech_models/fish-s1-mini")
-    if (legacy_dir / "torch_checkpoints" / "model.pth").exists():
-        return legacy_dir / "torch_checkpoints"
-    return legacy_dir
 
 
 def check_kokoro_installed() -> bool:
@@ -148,7 +116,6 @@ def check_whisper_installed() -> bool:
 def get_speech_models_status(include_all: bool = False) -> List[Dict[str, Any]]:
     """
     Returns the list and download status of speech models for the Audio Studio.
-    Fish Audio is hidden by default in the UI to prioritize lightweight Kokoro ONNX.
     """
     all_models = [
         {
@@ -186,25 +153,6 @@ def get_speech_models_status(include_all: bool = False) -> List[Dict[str, Any]]:
             "voices": [],
         },
     ]
-
-    if include_all:
-        all_models.insert(0, {
-            "id": "fish-s1-mini",
-            "name": "Fish Audio S1-mini",
-            "type": "tts",
-            "engine": "fishaudio",
-            "description": "High-quality neural speech synthesis with CUDA GPU acceleration",
-            "tags_supported": False,
-            "acceleration": "CUDA GPU (GTX 1650 4GB Optimized)",
-            "is_downloaded": check_fish_audio_installed(),
-            "size": "1.74 GB",
-            "hf_repo": "fishaudio/s1-mini",
-            "voices": [
-                {"id": "default", "name": "Default Voice", "gender": "neutral", "avatar": "sparkles"},
-                {"id": "sarah", "name": "Sarah", "gender": "female", "avatar": "female"},
-                {"id": "adrian", "name": "Adrian", "gender": "male", "avatar": "male"},
-            ],
-        })
 
     return all_models
 
@@ -296,25 +244,7 @@ def start_model_download(model_id: str) -> str:
 
     def worker():
         try:
-            if model_id == "fish-s1-mini":
-                dest = get_speech_models_dir() / "fish-s1-mini" / "torch_checkpoints"
-                dest.mkdir(parents=True, exist_ok=True)
-                with _jobs_lock:
-                    job.message = "Downloading native checkpoints from fishaudio/s1-mini..."
-                    job.progress = 0.2
-
-                from huggingface_hub import snapshot_download
-                snapshot_download(
-                    repo_id="fishaudio/s1-mini",
-                    local_dir=str(dest),
-                    allow_patterns=["*.pth", "*.json", "*.tiktoken"],
-                )
-                with _jobs_lock:
-                    job.progress = 1.0
-                    job.status = "completed"
-                    job.message = "Fish Audio S1-mini download complete."
-
-            elif model_id == "kokoro-82m":
+            if model_id == "kokoro-82m":
                 dest = get_speech_models_dir() / "kokoro-82m"
                 dest.mkdir(parents=True, exist_ok=True)
                 with _jobs_lock:
@@ -365,231 +295,6 @@ def start_model_download(model_id: str) -> str:
 # =========================================================================
 # TTS Synthesis Service
 # =========================================================================
-
-def _get_fish_engine():
-    global _fish_engine
-    if _fish_engine is not None:
-        return _fish_engine
-
-    model_folder = get_fish_audio_checkpoint_dir()
-    decoder_pth = model_folder / "codec.pth"
-    if not (model_folder / "model.pth").exists() or not decoder_pth.exists():
-        raise FileNotFoundError(f"Fish Audio checkpoints missing in {model_folder}")
-
-    from fishaudio.fish_speech.models.dac.inference import load_model as load_decoder_model
-    from fishaudio.fish_speech.models.text2semantic.inference import init_model
-    import fishaudio.fish_speech.models.text2semantic.inference as t2s_inference
-
-    # Patch generate_long to support compact sequence length (1536) on 4GB VRAM
-    def safe_generate_long(
-        *,
-        model,
-        device: str | torch.device,
-        decode_one_token: callable,
-        text: str,
-        num_samples: int = 1,
-        max_new_tokens: int = 0,
-        top_p: int = 0.8,
-        repetition_penalty: float = 1.1,
-        temperature: float = 0.8,
-        compile: bool = False,
-        iterative_prompt: bool = True,
-        chunk_length: int = 512,
-        prompt_text: Optional[str | list[str]] = None,
-        prompt_tokens: Optional[torch.Tensor | list[torch.Tensor]] = None,
-    ):
-        use_prompt = prompt_text is not None and prompt_tokens is not None
-        if use_prompt and isinstance(prompt_text, str):
-            prompt_text = [prompt_text]
-            prompt_tokens = [prompt_tokens]
-
-        prompt_tokens = [i.cpu() for i in prompt_tokens] if prompt_tokens else []
-        tokenizer = model.tokenizer
-        base_content_sequence = t2s_inference.ContentSequence(modality="interleave")
-
-        max_length = model.config.max_seq_len
-        if use_prompt:
-            for t, c in zip(prompt_text, prompt_tokens):
-                base_content_sequence.append(
-                    [t2s_inference.TextPart(text=t), t2s_inference.VQPart(codes=c)],
-                    add_end=True,
-                    speaker=0,
-                )
-        base_content_sequence.append([t2s_inference.TextPart(text=text)], add_end=False, speaker=0)
-
-        encoded, audio_masks, audio_parts = base_content_sequence.encode_for_inference(
-            tokenizer, num_codebooks=model.config.num_codebooks
-        )
-        margin = min(256, max_length // 4)
-        if encoded.size(1) > max_length - margin:
-            raise ValueError(f"Prompt is too long: {encoded.size(1)} > {max_length - margin}")
-
-        encoded = encoded.to(device=device)
-        temperature = torch.tensor(temperature, device=device, dtype=torch.float)
-        top_p = torch.tensor(top_p, device=device, dtype=torch.float)
-        repetition_penalty = torch.tensor(repetition_penalty, device=device, dtype=torch.float)
-
-        for sample_idx in range(num_samples):
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
-
-            global_encoded = []
-            seg_idx = 0
-            prompt_length = encoded.size(1)
-
-            # Prevent max_new_tokens from overflowing max_seq_len to avoid CUDA illegal memory access
-            available_tokens = max(16, max_length - prompt_length - 32)
-            actual_max_tokens = min(max_new_tokens, available_tokens) if max_new_tokens > 0 else available_tokens
-
-            t0 = time_module.perf_counter()
-            y = t2s_inference.generate(
-                model=model,
-                prompt=encoded,
-                max_new_tokens=actual_max_tokens,
-                audio_masks=audio_masks,
-                audio_parts=audio_parts,
-                decode_one_token=decode_one_token,
-                temperature=temperature,
-                top_p=top_p,
-                repetition_penalty=repetition_penalty,
-            )
-
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
-
-            codes = y[1:, prompt_length:-1].clone()
-            decoded = y[:, prompt_length:].clone()
-
-            global_encoded.append(decoded.cpu())
-            yield t2s_inference.GenerateResponse(action="sample", codes=codes, text=text)
-            seg_idx += 1
-            yield t2s_inference.GenerateResponse(action="next")
-
-    t2s_inference.generate_long = safe_generate_long
-
-    # Load DualAR LLM on CUDA
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    precision = torch.half
-    llm_model, decode_one_token = init_model(
-        checkpoint_path=model_folder,
-        device=device,
-        precision=precision,
-        compile=False,
-    )
-
-    # Load DAC vocoder directly on CUDA (both models fit in 3.1GB VRAM)
-    decoder_model = load_decoder_model(
-        config_name="modded_dac_vq",
-        checkpoint_path=decoder_pth,
-        device=device,
-    )
-
-    # Reclaim transient loading memory from system RAM
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-
-    _fish_engine = {
-        "llm_model": llm_model,
-        "decode_one_token": decode_one_token,
-        "decoder_model": decoder_model,
-        "t2s_inference": t2s_inference,
-    }
-    return _fish_engine
-
-
-def synthesize_fish_audio(text: str, job_id: Optional[str] = None) -> bytes:
-    """
-    Synthesizes speech using Fish Audio S1-mini directly in VRAM,
-    eliminating CPU RAM spikes and memory thrashing.
-    """
-    _ensure_exclusive_backend()
-
-    # Strip any XML tags or bracket tags completely so raw plain text is spoken naturally
-    text = re.sub(r'<[^>]+>', '', text)
-    text = re.sub(r'\[[^\]]+\]', '', text)
-    text = re.sub(r'\s{2,}', ' ', text).strip()
-
-    with _engine_lock:
-        global _fish_engine
-        try:
-            if _fish_engine is None:
-                print("[OPREL] [Speech] Initializing Fish Audio S1-mini DualAR + DAC models in CUDA VRAM...")
-            engine = _get_fish_engine()
-            llm_model = engine["llm_model"]
-            decode_one_token = engine["decode_one_token"]
-            decoder_model = engine["decoder_model"]
-            t2s_inference = engine["t2s_inference"]
-
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-
-            # Dynamically compute safe token ceiling based on word count (~25 tokens/word) with a hard cap of 512
-            word_count = max(len(text.split()), 4)
-            safe_max_tokens = min(512, max(128, word_count * 30))
-
-            if job_id:
-                with _speech_jobs_lock:
-                    if job_id in _speech_synthesis_jobs:
-                        _speech_synthesis_jobs[job_id].message = "DualAR LLM generating acoustic codes on CUDA..."
-                        _speech_synthesis_jobs[job_id].progress = 0.4
-
-            print(f"[OPREL] [Speech] Fish Audio S1-mini generating acoustic codes on {device.upper()} (up to {safe_max_tokens} tokens)...")
-            generated_codes = None
-            for chunk in t2s_inference.generate_long(
-                model=llm_model,
-                device=device,
-                decode_one_token=decode_one_token,
-                text=text,
-                num_samples=1,
-                max_new_tokens=safe_max_tokens,
-                top_p=0.8,
-                repetition_penalty=1.2,
-                temperature=0.7,
-                compile=False,
-                chunk_length=200,
-            ):
-                if getattr(chunk, "action", None) == "sample":
-                    generated_codes = chunk.codes
-
-            if generated_codes is None:
-                raise RuntimeError("Fish Audio generation produced no codebook tokens.")
-
-            if job_id:
-                with _speech_jobs_lock:
-                    if job_id in _speech_synthesis_jobs:
-                        _speech_synthesis_jobs[job_id].message = "DAC neural vocoder synthesizing audio waveform..."
-                        _speech_synthesis_jobs[job_id].progress = 0.8
-
-            print(f"[OPREL] [Speech] DAC neural vocoder decoding {generated_codes.shape[1]} acoustic frames on {device.upper()}...")
-            # Decode directly on CUDA without ping-ponging models to CPU RAM
-            feature_lengths = torch.tensor([generated_codes.shape[1]], device=device)
-            with torch.inference_mode():
-                decoded_result = decoder_model.decode(
-                    indices=generated_codes[None].to(device),
-                    feature_lengths=feature_lengths,
-                )
-                audio_tensor = decoded_result[0].squeeze()
-
-            audio_np = audio_tensor.float().cpu().numpy()
-            sample_rate = getattr(decoder_model, "sample_rate", 44100)
-
-            # Reclaim intermediate convolution buffer to keep VRAM clean
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-
-            buffer = io.BytesIO()
-            sf.write(buffer, audio_np, sample_rate, format="WAV")
-            return buffer.getvalue()
-
-        except Exception as e:
-            logger.error("Fish Audio synthesis encountered error: %s", e)
-            if "cuda" in str(e).lower():
-                _fish_engine = None
-                gc.collect()
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-            raise
-
 
 def _get_kokoro_engine():
     global _kokoro_engine
@@ -802,31 +507,6 @@ def _run_speech_synthesis_job(
     logger.info("[Speech Job %s] Received synthesis task: model=%s, chars=%d", job_id, model, len(text))
     try:
         model_lower = model.lower()
-        if "fish" in model_lower or "s1" in model_lower:
-            if len(text) > 3000:
-                raise ValueError(
-                    f"Fish Audio S1-mini input exceeds safe limit of 3,000 characters (received {len(text):,}). Please use Kokoro-82M for large texts up to 100,000 characters."
-                )
-            with _speech_jobs_lock:
-                job = _speech_synthesis_jobs[job_id]
-                job.status = "processing"
-                job.message = "Synthesizing with Fish Audio S1-mini on CUDA GPU..."
-                job.progress = 0.2
-
-            audio_bytes = synthesize_fish_audio(text, job_id=job_id)
-
-            with _speech_jobs_lock:
-                job = _speech_synthesis_jobs[job_id]
-                job.status = "completed"
-                job.progress = 1.0
-                job.message = "Synthesis completed successfully"
-                job.audio_bytes = audio_bytes
-                job.completed_at = time_module.time()
-            elapsed = time_module.time() - start_time
-            print(f"[OPREL] [Speech] [{job_id[:8]}] COMPLETED in {elapsed:.2f}s")
-            logger.info("[Speech Job %s] Finished in %.2fs", job_id, elapsed)
-            return
-
         # Kokoro-82M multi-chunk job
         if len(text) > 100000:
             raise ValueError(
