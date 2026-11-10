@@ -54,7 +54,7 @@ _FULL_SCHEMA: dict[str, Any] = {
 }
 
 # Shapes a cut can be: plain solids (cutting a chair out of something is never what was meant).
-CUTTERS = ("cylinder", "box", "sphere", "cone", "capsule", "torus", "extrude", "lathe")
+CUTTERS = ("cylinder", "box", "sphere", "cone", "capsule", "torus", "extrude", "lathe", "sweep")
 # Lengths that, when left out, make the cut go right through the object.
 THROUGH = {"cylinder": ("height",), "box": ("width", "height", "depth"), "extrude": ("thickness",)}
 # side word -> (axis, direction)
@@ -227,7 +227,21 @@ def _report(i: int, cut: dict[str, Any], centre: np.ndarray, placed: list[np.nda
         start = centre.copy()
         start[[0, 2]] -= (mid - middle)[[0, 2]]
         shifted = np.array(placed) + (start - centre)
-        if np.all(shifted[:, [0, 2]] >= blo[[0, 2]]) and np.all(shifted[:, [0, 2]] <= bhi[[0, 2]]):
+        off_centre = float(np.abs((mid - middle)[[0, 2]]).max()) > 1e-6 + 0.01 * float(np.max(bhi - blo))
+        if not off_centre and opened and opened[0] != 1:
+            # Centred already, just spread too wide (seen with Qwen3-8B: bolt holes 0.1 apart across a
+            # 0.1 m flange, so each row sat on an edge): name the spacing that fits.
+            axis, word, edge, _ = opened
+            name = "xyz"[axis]
+            p = cut["params"]
+            half = float(p.get("radius") or max(p.get("width", 0), p.get("depth", 0)) / 2)
+            levels = len(np.unique(np.round(np.array(placed)[:, axis], 6)))
+            room = float(bhi[axis] - blo[axis]) - 2.4 * half
+            fit = (f"spacing along {name} of at most {room / (levels - 1):.3g}" if levels > 1 and room > 0
+                   else f"fewer copies along {name}")
+            return [f"the copies of {label} are spread too wide along {name}: the outer ones break through the "
+                    f"object's {word} face ({name} = {edge:.3g}). Use a {fit}."]
+        if off_centre and np.all(shifted[:, [0, 2]] >= blo[[0, 2]]) and np.all(shifted[:, [0, 2]] <= bhi[[0, 2]]):
             return [f"the copies of {label} run off the object (they are centred at {_fmt(mid)}, the object's "
                     f"middle is {_fmt(middle)}). A linear pattern starts at the cut's position: to centre them use "
                     f"\"position\": {_fmt(start)}."]

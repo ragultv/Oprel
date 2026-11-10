@@ -42,11 +42,12 @@ def test_every_shape_is_watertight_and_rests_on_the_ground(shape):
 READY_MADE = ["table", "chair", "stool", "bench", "bookshelf", "bed", "sofa", "lamp",
               "vase", "bottle", "cup", "bowl", "plant_pot", "wine_glass"]
 PROFILE_SHAPES = ["lathe", "extrude"]  # tested in test_scene3d_profiles.py
+PATH_SHAPES = ["pipe", "elbow", "tee", "reducer", "beam", "spring", "handle", "sweep"]  # test_scene3d_paths.py
 
 
 def test_every_registered_mesh_shape_is_tested():
     meshy = {s.name for s in all_shapes() if s.builder is not None}
-    assert meshy == set(SAMPLE_PARAMS) | set(READY_MADE) | set(PROFILE_SHAPES)
+    assert meshy == set(SAMPLE_PARAMS) | set(READY_MADE) | set(PROFILE_SHAPES) | set(PATH_SHAPES)
 
 
 @pytest.mark.parametrize("shape", READY_MADE)
@@ -218,7 +219,7 @@ def test_warnings_for_floating_and_below_ground():
 
 
 @pytest.mark.parametrize("objects, fragment", [
-    ([{"id": "a", "shape": "blob"}], "must be one of"),
+    ([{"id": "a", "shape": "blob"}], "there is no shape 'blob' (closest:"),
     ([{"id": "a", "shape": "box", "params": {"width": 1}}], "Missing required argument 'height'"),
     ([{"id": "a", "shape": "box", "params": {"width": -1, "height": 1, "depth": 1}}], "must be >="),
     ([{"id": "a", "shape": "cylinder", "params": {"height": 1}}], "needs 'radius'"),
@@ -335,7 +336,8 @@ def test_group_without_parts_is_flagged():
 
 def test_shape_signatures_are_prompt_friendly():
     assert get_shape("box").signature() == "box(width, height, depth)"
-    assert get_shape("cylinder").signature() == "cylinder(radius?, radius_top?, radius_bottom?, height, segments?)"
+    # segments is accepted but left out of the signature: it costs tokens and the default is fine.
+    assert get_shape("cylinder").signature() == "cylinder(radius?, radius_top?, radius_bottom?, height)"
 
 
 def test_size_param_a_shape_does_not_have_is_an_error():

@@ -692,7 +692,10 @@ def test_solid_object_named_like_a_hole_is_flagged(client, token, monkeypatch):
         AssistantTurn(content="ok"),
     ])
     (result,) = _results(events)
-    assert any("named like an opening" in w for w in result["data"]["warnings"])
+    # Overlapping the plate, so it becomes a hole in it (right through: it spans the plate's thickness).
+    assert any("a hole in 'plate' (right through)" in n for n in result["data"]["notes"])
+    saved = {o["id"]: o for o in client.get(f"/scene3d/{CONV}", headers={"X-Oprel-Token": token}).json()["objects"]}
+    assert set(saved) == {"plate"} and len(saved["plate"]["cuts"]) == 1
 
 
 def test_solid_window_inside_a_wall_is_flagged_but_a_door_on_its_own_is_not(client, token, monkeypatch):
@@ -704,9 +707,11 @@ def test_solid_window_inside_a_wall_is_flagged_but_a_door_on_its_own_is_not(clie
         ])]),
         AssistantTurn(content="ok"),
     ])
-    warnings = _results(events)[0]["data"]["warnings"]
-    assert any("'window' is a solid box named like an opening" in w and "cut of 'wall'" in w for w in warnings)
-    assert not any("'door'" in w for w in warnings)
+    data = _results(events)[0]["data"]
+    assert any("Made 'window' a hole in 'wall' (right through)" in n for n in data["notes"])
+    saved = {o["id"]: o for o in client.get(f"/scene3d/{CONV}", headers={"X-Oprel-Token": token}).json()["objects"]}
+    assert "window" not in saved and "depth" not in saved["wall"]["cuts"][0]["params"]  # through the wall
+    assert "door" in saved  # a door panel on its own is a real thing
 
 
 def test_plate_between_two_cylinders_follows_and_survives_deleting_one(client, token, monkeypatch):
@@ -879,3 +884,226 @@ def test_canvas_merge_button_and_stl_download(client, token, monkeypatch):
     r = client.post(f"/scene3d/{CONV}/merge", headers=h, json={"merge": False, "group": "part"})
     assert r.status_code == 200 and r.json()["merged"] == {}
     assert client.post(f"/scene3d/{CONV}/merge", headers=h, json={"merge": True, "group": "big"}).status_code == 400
+
+
+def test_unnamed_pipe_run_joins_each_part_to_the_one_before(client, token, monkeypatch):
+    # Seen with Qwen3-8B: no ids, every part joined to "pipe" / "elbow" (= the first of each).
+    run = [{"shape": "pipe", "params": {"length": 1, "radius": 0.05}}]
+    for shape, ref in [("elbow", "pipe"), ("pipe", "elbow"), ("elbow", "pipe"), ("pipe", "elbow")]:
+        params = {"radius": 0.05} if shape == "elbow" else {"length": 0.5, "radius": 0.05}
+        run.append({"shape": shape, "params": params, "placement": {"relative_to": ref, "side": "end"}})
+    _, _, events, _ = _chat(client, token, monkeypatch, [
+        AssistantTurn(content="", tool_calls=[_call("scene_add_objects", objects=run)]),
+        AssistantTurn(content="done"),
+    ])
+    (result,) = _results(events)
+    assert result["ok"], result["data"]
+    assert result["data"]["warnings"] == []
+    saved = {o["id"]: o for o in client.get(f"/scene3d/{CONV}", headers={"X-Oprel-Token": token}).json()["objects"]}
+    assert saved["elbow2"]["placement"]["relative_to"] == "pipe2"
+    assert saved["pipe3"]["placement"]["relative_to"] == "elbow2"
+
+
+def test_pipe_parts_listed_without_placement_are_joined_into_a_run(client, token, monkeypatch):
+    # Seen with Qwen3-8B: pipe, elbow, pipe listed with no position or placement, all at the origin.
+    run = [{"shape": "pipe", "params": {"length": 1, "radius": 0.05}}, {"shape": "elbow", "params": {"radius": 0.05}},
+           {"shape": "pipe", "params": {"length": 0.5, "radius": 0.05}}]
+    _, _, events, _ = _chat(client, token, monkeypatch, [
+        AssistantTurn(content="", tool_calls=[_call("scene_add_objects", objects=run)]),
+        AssistantTurn(content="done"),
+    ])
+    (result,) = _results(events)
+    assert result["ok"], result["data"]
+    saved = {o["id"]: o for o in client.get(f"/scene3d/{CONV}", headers={"X-Oprel-Token": token}).json()["objects"]}
+    assert saved["elbow"]["placement"] == {"relative_to": "pipe", "side": "end"}
+    assert saved["pipe2"]["placement"] == {"relative_to": "elbow", "side": "end"}
+    by_id = {o["id"]: o for o in result["data"]["objects"]}
+    assert by_id["pipe2"]["max"][1] > 0.5  # the last pipe goes up after the elbow
+
+
+def test_merge_on_a_shape_wraps_it_and_its_parts_in_a_merged_group(client, token, monkeypatch):
+    # Seen with Qwen3-8B, "a bowl with two handles": merge on the bowl, handles parented to it.
+    _, _, events, _ = _chat(client, token, monkeypatch, [
+        AssistantTurn(content="", tool_calls=[_call("scene_add_objects", objects=[
+            {"id": "bowl", "shape": "bowl", "merge": True},
+            {"id": "handle", "shape": "handle", "parent": "bowl", "params": {"height": 0.04},
+             "placement": {"relative_to": "bowl", "side": "right", "vertical": "top"}},
+            {"id": "handle2", "shape": "handle", "parent": "bowl", "params": {"height": 0.04},
+             "placement": {"relative_to": "bowl", "side": "left", "vertical": "top"}},
+        ])]),
+        AssistantTurn(content="done"),
+    ])
+    (result,) = _results(events)
+    assert result["ok"], result["data"]
+    assert result["data"]["warnings"] == []
+    saved = {o["id"]: o for o in client.get(f"/scene3d/{CONV}", headers={"X-Oprel-Token": token}).json()["objects"]}
+    assert saved["bowl_solid"] == {"id": "bowl_solid", "shape": "group", "merge": True}
+    assert saved["bowl"]["parent"] == "bowl_solid" and "merge" not in saved["bowl"]
+
+
+def test_handle_without_a_height_is_sized_to_a_big_vase(client, token, monkeypatch):
+    _, _, events, _ = _chat(client, token, monkeypatch, [
+        AssistantTurn(content="", tool_calls=[_call("scene_add_objects", objects=[
+            {"id": "vase", "shape": "vase", "params": {"height": 1.2, "radius": 0.2}},
+            {"id": "handle", "shape": "handle", "params": {"style": "box"},
+             "placement": {"relative_to": "vase", "side": "right"}},
+        ])]),
+        AssistantTurn(content="done"),
+    ])
+    (result,) = _results(events)
+    assert result["ok"], result["data"]
+    h = {o["id"]: o for o in result["data"]["objects"]}["handle"]
+    assert h["max"][1] - h["min"][1] > 0.5  # half the vase, not 7 cm
+
+
+def test_handles_given_as_cuts_are_added_instead(client, token, monkeypatch):
+    # Qwen3-8B, "a curvy vase with smooth handles on both sides": the handles as cuts.
+    _, _, events, _ = _chat(client, token, monkeypatch, [
+        AssistantTurn(content="", tool_calls=[_call("scene_add_objects", objects=[
+            {"id": "vase", "shape": "vase", "cuts": [{"shape": "handle", "position": [0.1, 0.2, 0]},
+                                                     {"shape": "handle", "position": [-0.1, 0.2, 0]}]},
+            {"id": "box", "shape": "box", "params": {"width": 0.3, "height": 0.2, "depth": 0.2},
+             "position": [1, 0, 0], "cuts": [{"shape": "handle", "params": {"style": "box"}}]},
+        ])]),
+        AssistantTurn(content="done"),
+    ])
+    (result,) = _results(events)
+    assert result["ok"], result["data"]
+    saved = {o["id"]: o for o in client.get(f"/scene3d/{CONV}", headers={"X-Oprel-Token": token}).json()["objects"]}
+    assert saved["vase"]["params"]["handles"] == 2 and "cuts" not in saved["vase"]
+    assert saved["box_handle"]["shape"] == "handle" and saved["box_handle"]["params"]["style"] == "box"
+    assert saved["box_handle"]["placement"]["relative_to"] == "box"
+
+
+def test_hint_example_cuts_match_the_system_hint():
+    from oprel.integrations.scene3d import SYSTEM_HINT
+    from oprel.integrations.scene3d.tools import HINT_EXAMPLE_CUTS
+    flat = SYSTEM_HINT.replace("\\n", "").replace("\n", " ")
+    assert json.dumps(HINT_EXAMPLE_CUTS)[1:-1] in flat
+
+
+def test_example_cuts_copied_into_an_edit_are_left_out(client, token, monkeypatch):
+    # Verbatim from Qwen3-8B, asked "I don't need a handle for the bowl".
+    _chat(client, token, monkeypatch, [
+        AssistantTurn(content="", tool_calls=[_call("scene_add_objects", objects=[
+            {"id": "bowl", "shape": "bowl", "params": {"handles": 2}}])]),
+        AssistantTurn(content="ok"),
+    ])
+    _, _, events, _ = _chat(client, token, monkeypatch, [
+        AssistantTurn(content="", tool_calls=[_call("scene_update_objects", updates=[
+            {"id": "bowl", "shape": "bowl", "params": {"handles": 0},
+             "cuts": [{"shape": "cylinder", "params": {"radius": 0.03, "height": 0.1}},
+                      {"shape": "cylinder", "params": {"radius": 0.004},
+                       "pattern": {"type": "grid", "count": 2, "rows": 2, "spacing": [0.24, 0.24]}}]}])]),
+        AssistantTurn(content="done"),
+    ])
+    (result,) = _results(events)
+    assert result["ok"], result["data"]
+    saved = {o["id"]: o for o in client.get(f"/scene3d/{CONV}", headers={"X-Oprel-Token": token}).json()["objects"]}
+    assert saved["bowl"]["params"]["handles"] == 0 and "cuts" not in saved["bowl"]
+
+
+def test_pipe_run_listed_by_kind_is_not_chained_in_list_order(client, token, monkeypatch):
+    # Verbatim shape of Qwen3-8B's retry: all pipes, then the fittings, no placements.
+    run = [{"shape": "pipe", "params": {"length": 1, "radius": 0.025}},
+           {"shape": "pipe", "params": {"length": 0.5, "radius": 0.025}},
+           {"shape": "elbow", "params": {"radius": 0.025}}]
+    _, _, events, _ = _chat(client, token, monkeypatch, [
+        AssistantTurn(content="", tool_calls=[_call("scene_add_objects", objects=run)]),
+        AssistantTurn(content="done"),
+    ])
+    (result,) = _results(events)
+    assert result["ok"], result["data"]
+    assert any("are not joined" in w and '"side": "end"' in w for w in result["data"]["warnings"])
+    saved = client.get(f"/scene3d/{CONV}", headers={"X-Oprel-Token": token}).json()["objects"]
+    assert not any(o.get("placement") for o in saved)
+
+
+def test_kitchen_counter_with_sink_vase_and_mug(client, token, monkeypatch):
+    # Qwen3-8B, "a kitchen counter ... a round sink hole 40 cm across cut into the top, a vase with two
+    # handles on the left end, a mug with a handle on the right end": the sink as its own cylinder
+    # cut away from itself and merged, everyday shape names. Rejected three times before.
+    _, _, events, _ = _chat(client, token, monkeypatch, [
+        AssistantTurn(content="", tool_calls=[_call("scene_add_objects", objects=[
+            {"id": "counter", "shape": "counter", "params": {"width": 2, "height": 0.9, "depth": 0.6}},
+            {"id": "sink_hole", "shape": "cylinder", "params": {"radius": 0.2, "height": 0.9}, "merge": True,
+             "cuts": [{"shape": "cylinder", "params": {"radius": 0.2}}]},
+            {"id": "vase", "shape": "vase", "params": {"handles": 2},
+             "placement": {"relative_to": "counter", "side": "top", "align": "left"}},
+            {"id": "mug", "shape": "mug", "placement": {"relative_to": "counter", "side": "top", "align": "right"}},
+        ])]),
+        AssistantTurn(content="done"),
+    ])
+    (result,) = _results(events)
+    assert result["ok"], result["data"]
+    saved = {o["id"]: o for o in client.get(f"/scene3d/{CONV}", headers={"X-Oprel-Token": token}).json()["objects"]}
+    assert set(saved) == {"counter", "vase", "mug"}
+    assert saved["counter"]["shape"] == "box" and saved["mug"]["shape"] == "cup" and saved["mug"]["params"]["handle"]
+    (cut,) = saved["counter"]["cuts"]
+    assert cut["params"] == {"radius": 0.2} and cut["position"][1] == pytest.approx(0.45)  # through the top
+    objs = {o["id"]: o for o in result["data"]["objects"]}
+    assert objs["vase"]["min"][1] == pytest.approx(0.9) and objs["mug"]["min"][1] == pytest.approx(0.9)
+
+
+def test_one_broken_object_does_not_stop_the_rest(client, token, monkeypatch):
+    _, _, events, _ = _chat(client, token, monkeypatch, [
+        AssistantTurn(content="", tool_calls=[_call("scene_add_objects", objects=[
+            {"id": "table", "shape": "table"},
+            {"id": "spring", "shape": "spring", "params": {"radius": 0.03, "height": 0.05, "coils": 10}},
+            {"id": "vase", "shape": "vase", "placement": {"relative_to": "table", "side": "top"}},
+            {"id": "tag", "shape": "box", "params": {"width": 0.02, "height": 0.02, "depth": 0.02},
+             "placement": {"relative_to": "spring", "side": "top"}},
+        ])]),
+        AssistantTurn(content="done"),
+    ])
+    (result,) = _results(events)
+    assert result["ok"], result["data"]
+    warnings = result["data"]["warnings"]
+    assert any(w.startswith("NOT ADDED: 'spring' (spring): the coils would touch") for w in warnings)
+    assert any("NOT ADDED: 'tag' needs 'spring'" in w for w in warnings)
+    saved = {o["id"] for o in client.get(f"/scene3d/{CONV}", headers={"X-Oprel-Token": token}).json()["objects"]}
+    assert saved == {"table", "vase"}
+
+
+def test_counter_retry_verbatim_cut_object_and_things_beside_lifted(client, token, monkeypatch):
+    # Verbatim from Qwen3-8B's first call: the sink as {"shape": "cut", ...} on the counter's top, the
+    # vase and mug "left" / "right" of it lifted by 0.45 (meant: on the counter at its ends).
+    _, _, events, _ = _chat(client, token, monkeypatch, [
+        AssistantTurn(content="", tool_calls=[_call("scene_add_objects", objects=[
+            {"shape": "box", "id": "counter", "params": {"width": 2, "height": 0.9, "depth": 0.6}, "position": [0, 0, 0]},
+            {"shape": "cut", "id": "sink_cut", "params": {"shape": "cylinder", "params": {"radius": 0.2}},
+             "placement": {"relative_to": "counter", "side": "top", "toward": "down", "offset": [0, 0.45, 0]}},
+            {"shape": "vase", "id": "vase", "params": {"height": 0.5, "radius": 0.15, "neck_radius": 0.1,
+                                                       "base_radius": 0.15, "top_radius": 0.1, "handles": 2},
+             "placement": {"relative_to": "counter", "side": "left", "toward": "left", "offset": [-0.3, 0.45, 0]}},
+            {"shape": "cup", "id": "mug", "params": {"height": 0.3, "radius": 0.08, "handle": True},
+             "placement": {"relative_to": "counter", "side": "right", "toward": "right", "offset": [0.3, 0.45, 0]}},
+        ])]),
+        AssistantTurn(content="done"),
+    ])
+    (result,) = _results(events)
+    assert result["ok"], result["data"]
+    saved = {o["id"]: o for o in client.get(f"/scene3d/{CONV}", headers={"X-Oprel-Token": token}).json()["objects"]}
+    assert set(saved) == {"counter", "vase", "mug"}
+    (cut,) = saved["counter"]["cuts"]
+    assert cut["shape"] == "cylinder" and cut["params"] == {"radius": 0.2}  # right through the top
+    objs = {o["id"]: o for o in result["data"]["objects"]}
+    assert objs["vase"]["min"][1] == pytest.approx(0.9) and objs["vase"]["min"][0] == pytest.approx(-1.0)
+    assert objs["mug"]["min"][1] == pytest.approx(0.9) and objs["mug"]["max"][0] == pytest.approx(1.0)
+    assert not any("floats" in w for w in result["data"]["warnings"])
+
+
+def test_hole_placed_beside_the_object_it_names_becomes_a_hole_in_it(client, token, monkeypatch):
+    # Qwen3-8B's retry: a "sink_hole" cylinder placed "left" of the counter with a gap.
+    _, _, events, _ = _chat(client, token, monkeypatch, [
+        AssistantTurn(content="", tool_calls=[_call("scene_add_objects", objects=[
+            {"shape": "box", "id": "counter", "params": {"width": 2, "height": 0.9, "depth": 0.6}},
+            {"shape": "cylinder", "id": "sink_hole", "params": {"radius": 0.2, "height": 0.9},
+             "placement": {"relative_to": "counter", "side": "left", "gap": 0.01}},
+        ])]),
+        AssistantTurn(content="done"),
+    ])
+    (result,) = _results(events)
+    assert result["ok"], result["data"]
+    saved = {o["id"]: o for o in client.get(f"/scene3d/{CONV}", headers={"X-Oprel-Token": token}).json()["objects"]}
+    assert set(saved) == {"counter"} and saved["counter"]["cuts"][0]["position"][0] == pytest.approx(0)

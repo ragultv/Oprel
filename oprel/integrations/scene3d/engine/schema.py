@@ -12,7 +12,11 @@ from typing import Any
 from oprel.integrations.scene3d.engine import cuts, patterns
 from oprel.integrations.scene3d.engine.registry import shape_names
 
-SIDES = ["top", "bottom", "left", "right", "front", "back", "center"]
+# start / end / branch: joined to that open end of a pipe, elbow, tee, beam, ... (shapes/paths.py)
+PORT_SIDES = ("start", "end", "branch")
+SIDES = ["top", "bottom", "left", "right", "front", "back", "center", *PORT_SIDES]
+TOWARD = {"up": (0, 1, 0), "down": (0, -1, 0), "left": (-1, 0, 0), "right": (1, 0, 0),
+          "front": (0, 0, 1), "back": (0, 0, -1)}
 VERTICAL = ["bottom", "center", "top"]
 ALIGN_WORDS = {"left", "right", "front", "back", "center"}
 
@@ -26,6 +30,7 @@ PLACEMENT_SCHEMA: dict[str, Any] = {
         "side": {"type": "string", "enum": SIDES},
         "align": {"type": "string"},
         "vertical": {"type": "string", "enum": VERTICAL},
+        "toward": {"type": "string", "enum": list(TOWARD)},
         "gap": {"type": "number", "minimum": 0, "maximum": 1000},
         "offset": _VEC3,
     },

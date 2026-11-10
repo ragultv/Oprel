@@ -230,7 +230,33 @@ def join_midpoint_boxes(objects: list[dict[str, Any]], scene: CompiledScene) -> 
     return notes
 
 
+_BESIDE = {"left", "right", "front", "back"}
+
+
+def onto_the_end(objects: list[dict[str, Any]], scene: CompiledScene) -> list[str]:
+    """
+    Placed beside an object and lifted (offset y) so it hangs in the air: it was meant to stand on
+    top of it at that end. Seen with Qwen3-8B, "a vase on the left end of the counter": side
+    "left", offset y 0.45, floating beside the counter. Put it on top, aligned to that side.
+    """
+    notes: list[str] = []
+    for o in objects:
+        pl = o.get("placement") or {}
+        co, ref = scene.objects.get(o["id"]), scene.objects.get(pl.get("relative_to", ""))
+        if (pl.get("side") not in _BESIDE or vec3(pl.get("offset"))[1] <= TOL or co is None or ref is None
+                or co.bbox[0][1] <= TOL):
+            continue
+        under = [b for oid, c in scene.objects.items() if oid != o["id"] and c.built is not None
+                 for b in _boxes(c) if b[1][1] <= co.bbox[0][1] + TOL and _overlap_xz(co.bbox, b)]
+        if under:
+            continue  # something holds it up
+        side = pl["side"]
+        o["placement"] = {"relative_to": pl["relative_to"], "side": "top", "align": side}
+        notes.append(f"Put '{o['id']}' on top of '{ref.id}' at its {side} end (it was beside it, lifted into the air).")
+    return notes
+
+
 def repair(objects: list[dict[str, Any]], scene: CompiledScene) -> list[str]:
     """Apply every fix to `objects` in place. Returns notes; empty when nothing changed."""
-    return (join_midpoint_boxes(objects, scene) or spread_on_top(objects, scene) or fit_supports(objects, scene)
+    return (onto_the_end(objects, scene) or join_midpoint_boxes(objects, scene) or spread_on_top(objects, scene) or fit_supports(objects, scene)
             or close_gaps(objects, scene) or drop_standing_objects(objects, scene))

@@ -42,7 +42,7 @@ def box(p: dict[str, Any]) -> trimesh.Trimesh:
     return trimesh.creation.box(extents=[p["width"], p["height"], p["depth"]])
 
 
-@shape("cylinder", "Upright cylinder. Give radius, or radius_top and radius_bottom for a tapered one.",
+@shape("cylinder", "Upright; radius, or radius_top + radius_bottom = tapered.",
        {"radius": length("Radius"), "radius_top": length("Top radius (tapered)"),
         "radius_bottom": length("Bottom radius (tapered)"), "height": length("Height"), "segments": SEGMENTS},
        required=("height",))
@@ -63,14 +63,14 @@ def cone(p: dict[str, Any]) -> trimesh.Trimesh:
     return _y_up(trimesh.creation.cone(radius=p["radius"], height=p["height"], sections=p["segments"]))
 
 
-@shape("sphere", "Ball.",
+@shape("sphere", "",
        {"radius": length("Radius"), "segments": integer("Smoothness", 6, 128, 32)},
        required=("radius",))
 def sphere(p: dict[str, Any]) -> trimesh.Trimesh:
     return trimesh.creation.uv_sphere(radius=p["radius"], count=[p["segments"], p["segments"]])
 
 
-@shape("capsule", "Upright pill shape; height is the total height including the round ends.",
+@shape("capsule", "Upright pill; height includes the round ends.",
        {"radius": length("Radius"), "height": length("Total height"), "segments": integer("Smoothness", 6, 128, 32)},
        required=("radius", "height"))
 def capsule(p: dict[str, Any]) -> trimesh.Trimesh:
@@ -93,7 +93,7 @@ def torus(p: dict[str, Any]) -> trimesh.Trimesh:
     return _y_up(mesh)
 
 
-@shape("rectangle", "Flat rectangle lying on the ground (a thin plate): width (X) x depth (Z).",
+@shape("rectangle", "Thin plate lying flat: width (X) x depth (Z).",
        {"width": length("Size along X"), "depth": length("Size along Z"),
         "thickness": length("Thickness", THIN)},
        required=("width", "depth"))

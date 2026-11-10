@@ -18,6 +18,10 @@ from oprel.tools.validation import ToolArgumentError, validate_arguments
 # Sane bounds for any length, in metres: 0.1 mm .. 1 km
 MIN_LEN = 0.0001
 MAX_LEN = 1000.0
+# Accepted but left out of the signatures the model sees (each costs tokens on every turn).
+QUIET_PARAMS = frozenset({"segments", "top_thickness", "leg_radius"})
+# Per shape: sweep's thickness is an alias models reach for ("a 1 cm thick rod").
+QUIET_SHAPE_PARAMS = {"sweep": frozenset({"thickness"}), "cup": frozenset({"handles", "handle_style"})}
 _SIZE_WORDS = re.compile(r"height|width|depth|radius|length|thickness|diameter|size", re.IGNORECASE)
 
 
@@ -52,7 +56,8 @@ class ShapeDef:
 
     def signature(self) -> str:
         """Compact form for prompts: box(width, height, depth, [corner_segments])."""
-        parts = [p if p in self.required else f"{p}?" for p in self.params]
+        quiet = QUIET_PARAMS | QUIET_SHAPE_PARAMS.get(self.name, frozenset())
+        parts = [p if p in self.required else f"{p}?" for p in self.params if p not in quiet]
         return f"{self.name}({', '.join(parts)})"
 
     def validate(self, params: dict[str, Any] | None) -> dict[str, Any]:

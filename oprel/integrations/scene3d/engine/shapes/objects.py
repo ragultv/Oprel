@@ -12,10 +12,12 @@ from __future__ import annotations
 import math
 from typing import Any
 
+import numpy as np
 import trimesh
 
 from oprel.integrations.scene3d.engine.frame import Z_UP_TO_Y_UP
 from oprel.integrations.scene3d.engine.registry import ToolArgumentError, integer, length, shape
+from oprel.integrations.scene3d.engine import attach, sweep
 from oprel.integrations.scene3d.engine.outline import catmull_rom, revolve_profile, vessel_profile
 
 _SEG = 24
@@ -103,7 +105,7 @@ def chair(p: dict[str, Any]) -> trimesh.Trimesh:
     return _join(parts)
 
 
-@shape("stool", "Round stool.",
+@shape("stool", "",
        {"radius": length("Seat radius", 0.18), "height": length("Seat height", 0.65), "legs": integer("Legs", 3, 6, 3)})
 def stool(p: dict[str, Any]) -> trimesh.Trimesh:
     r, h, n = p["radius"], p["height"], p["legs"]
@@ -116,7 +118,7 @@ def stool(p: dict[str, Any]) -> trimesh.Trimesh:
     return _join(parts)
 
 
-@shape("bench", "Bench.",
+@shape("bench", "",
        {"width": length("Length along X", 1.2), "depth": length("Seat depth", 0.35),
         "height": length("Seat height", 0.45), "back": {"type": "boolean", "default": False}})
 def bench(p: dict[str, Any]) -> trimesh.Trimesh:
@@ -130,7 +132,7 @@ def bench(p: dict[str, Any]) -> trimesh.Trimesh:
     return _join(parts)
 
 
-@shape("bookshelf", "Open bookshelf.",
+@shape("bookshelf", "Open.",
        {"width": length("Width", 0.8), "depth": length("Depth", 0.3), "height": length("Height", 1.8),
         "shelves": integer("Inner shelves", 0, 12, 4)})
 def bookshelf(p: dict[str, Any]) -> trimesh.Trimesh:
@@ -156,7 +158,7 @@ def bed(p: dict[str, Any]) -> trimesh.Trimesh:
     return _join(parts)
 
 
-@shape("sofa", "Sofa with back and arms.",
+@shape("sofa", "",
        {"width": length("Width", 2.0), "depth": length("Depth", 0.9), "height": length("Back height", 0.8),
         "seat_height": length("Seat height", 0.42), "arms": {"type": "boolean", "default": True}})
 def sofa(p: dict[str, Any]) -> trimesh.Trimesh:
@@ -170,6 +172,11 @@ def sofa(p: dict[str, Any]) -> trimesh.Trimesh:
 
 
 # --- vessels: smooth hollow solids of revolution (open at the top) ----------------------
+
+_HANDLES = integer("Handles on its sides: 2 = one each side", 0, 2, 0)
+# Not an enum: "smooth", "square", ... are read by sweep.handle_style.
+_HANDLE_STYLE = {"type": "string", "description": "round (smooth) | box", "default": "round"}
+
 
 def _vessel(control: list[tuple[float, float]], radius: float, floor: float, wall: float | None = None,
             segments: int = 48) -> trimesh.Trimesh:
@@ -186,24 +193,42 @@ def _vessel(control: list[tuple[float, float]], radius: float, floor: float, wal
 
 
 @shape("vase", "Hollow. Radii bottom to top: base_radius, radius (belly, 1/3 up), neck_radius, top_radius "
-               "(rim); any can be larger, e.g. a wide top.",
+               "(rim); any can be larger, e.g. a wide top. handles: 2 = one each side.",
        {"height": length("Height", 0.3), "radius": length("Belly radius", 0.08),
         "neck_radius": length("Neck radius", 0.035), "base_radius": length("Base radius"),
-        "top_radius": length("Rim radius")})
+        "top_radius": length("Rim radius"), "handles": _HANDLES, "handle_style": _HANDLE_STYLE})
 def vase(p: dict[str, Any]) -> trimesh.Trimesh:
     h, r, n = p["height"], p["radius"], p["neck_radius"]
     base = p.get("base_radius") or 0.6 * r
     top = p.get("top_radius") or 1.35 * n
     belly_low = base + 0.75 * (r - base)
-    # A rim much wider than the neck needs room to flare, or it looks like a funnel stuck on top.
-    neck_y = 0.82 if top <= 1.5 * n else 0.68
     neck_mid = r + 0.5 * (n - r)
-    profile = [(base, 0), (belly_low, 0.12 * h), (r, 0.35 * h), (neck_mid, (0.35 + neck_y) / 2 * h),
-               (n, neck_y * h), (top, h)]
-    return _vessel(profile, max(base, r, n, top), floor=0.04 * h)
+    if top <= 1.5 * n:
+        neck_y = 0.82
+        profile = [(base, 0), (belly_low, 0.12 * h), (r, 0.35 * h), (neck_mid, (0.35 + neck_y) / 2 * h),
+                   (n, neck_y * h), (top, h)]
+        neck_middle = neck_y
+    else:
+        # A flared rim: a real neck first, then the flare in the top sixth. Flaring all the way up
+        # from the shoulder made a funnel (seen with Qwen3-8B, "an amphora with a flared rim").
+        neck_y = 0.66
+        profile = [(base, 0), (belly_low, 0.12 * h), (r, 0.35 * h), (neck_mid, 0.52 * h), (n, neck_y * h),
+                   (n * 1.05, 0.84 * h), (top, h)]
+        neck_middle = 0.75
+    body = _vessel(profile, max(base, r, n, top), floor=0.04 * h)
+    if not p["handles"]:
+        return body
+    t = max(0.004, min(0.15 * r, 0.05 * h))
+    if p["handles"] == 1:
+        # One handle is a jug's: from just under the rim down onto the body.
+        return _join([body, *_side_handles(body, h, max(base, r, n, top), 1, 0.4, 0.93, t, p["handle_style"])])
+    # Two are an amphora's: from the shoulder (above the belly, where the body turns in) up to the
+    # middle of the neck. Lower down, the belly bulges under the end and the bar meets it like a hook.
+    return _join([body, *_side_handles(body, h, max(base, r, n, top), 2, 0.5, neck_middle, t,
+                                       p["handle_style"])])
 
 
-@shape("bottle", "Hollow.",
+@shape("bottle", "",
        {"height": length("Height", 0.3), "radius": length("Body radius", 0.04),
         "neck_radius": length("Neck radius", 0.013)})
 def bottle(p: dict[str, Any]) -> trimesh.Trimesh:
@@ -214,31 +239,77 @@ def bottle(p: dict[str, Any]) -> trimesh.Trimesh:
                     (n, 0.97 * h), (n * 1.15, h)], r, floor=0.03 * h, wall=wall)
 
 
-@shape("cup", "Hollow, no handle.",
-       {"height": length("Height", 0.1), "radius": length("Top radius", 0.04)})
+def _side_handles(body: trimesh.Trimesh, h: float, r: float, count: int, low: float, high: float,
+                  thickness: float, style: str = "round") -> list[trimesh.Trimesh]:
+    """
+    Handles on a vessel's sides, +X first then -X, from `low` to `high` of its height, built onto
+    its surface by the same engine as the handle shape (engine/attach.py).
+    """
+    out = []
+    for side in ("right", "left")[:count]:
+        f = attach.frame_for(side, "vertical", body.bounds)
+        out.append(attach.build(body, f, high * h, low * h, reach=max(0.45 * r, 2 * thickness), thickness=thickness,
+                                style=sweep.handle_style(style), ear=True))
+    return out
+
+
+def _lug_handles(body: trimesh.Trimesh, h: float, r: float, count: int, level: float, thickness: float,
+                 style: str = "round") -> list[trimesh.Trimesh]:
+    """
+    Sideways loops near the rim (a pot's or a bowl's lugs): ends side by side at `level` of the
+    height, on +X then -X. A low bowl has no room for an upright handle.
+    """
+    out = []
+    span = 0.7 * r
+    for side in ("right", "left")[:count]:
+        f = attach.frame_for(side, "horizontal", body.bounds)
+        f.k0 = level * h
+        out.append(attach.build(body, f, span / 2, -span / 2, reach=max(2 * thickness, 0.3 * span),
+                                thickness=thickness, style=sweep.handle_style(style), ear=False))
+    return out
+
+
+@shape("cup", "Hollow; handle: true = a mug.",
+       {"height": length("Height", 0.1), "radius": length("Top radius", 0.04),
+        "handle": {"type": "boolean", "default": False}, "handles": _HANDLES, "handle_style": _HANDLE_STYLE})
 def cup(p: dict[str, Any]) -> trimesh.Trimesh:
     h, r = p["height"], p["radius"]
-    return _vessel([(0.82 * r, 0), (0.9 * r, 0.4 * h), (r, h)], r, floor=0.08 * h)
+    control = [(0.82 * r, 0), (0.9 * r, 0.4 * h), (r, h)]
+    body = _vessel(control, r, floor=0.08 * h)
+    count = p["handles"] or (1 if p["handle"] else 0)
+    if not count:
+        return body
+    return _join([body, *_side_handles(body, h, r, count, 0.2, 0.8, max(0.004, 0.2 * r), p["handle_style"])])
 
 
-@shape("bowl", "Hollow.",
-       {"radius": length("Rim radius", 0.08), "height": length("Height", 0.06)})
+@shape("bowl", "handles: 2 = one each side.",
+       {"radius": length("Rim radius", 0.08), "height": length("Height", 0.06),
+        "handles": _HANDLES, "handle_style": _HANDLE_STYLE})
 def bowl(p: dict[str, Any]) -> trimesh.Trimesh:
     h, r = p["height"], p["radius"]
-    return _vessel([(0.45 * r, 0), (0.5 * r, 0.08 * h), (0.8 * r, 0.35 * h), (0.96 * r, 0.7 * h), (r, h)],
-                   r, floor=0.1 * h)
+    control = [(0.45 * r, 0), (0.5 * r, 0.08 * h), (0.8 * r, 0.35 * h), (0.96 * r, 0.7 * h), (r, h)]
+    body = _vessel(control, r, floor=0.1 * h)
+    if not p["handles"]:
+        return body
+    t = max(0.004, min(0.12 * r, 0.15 * h))
+    return _join([body, *_lug_handles(body, h, r, p["handles"], 0.8, t, p["handle_style"])])
 
 
-@shape("plant_pot", "Hollow, with rim.",
-       {"height": length("Height", 0.2), "radius": length("Top radius", 0.1)})
+@shape("plant_pot", "Also a cooking pot: handles 2 = side lugs.",
+       {"height": length("Height", 0.2), "radius": length("Top radius", 0.1), "handles": _HANDLES,
+        "handle_style": _HANDLE_STYLE})
 def plant_pot(p: dict[str, Any]) -> trimesh.Trimesh:
     h, r = p["height"], p["radius"]
     # Straight segments (no smoothing): a pot has crisp edges.
     profile = [(0.7 * r, 0), (0.92 * r, 0.85 * h), (1.06 * r, 0.86 * h), (1.06 * r, h)]
-    return revolve_profile(vessel_profile(profile, max(0.004, 0.07 * r), 0.08 * h), 48)
+    body = revolve_profile(vessel_profile(profile, max(0.004, 0.07 * r), 0.08 * h), 48)
+    if not p["handles"]:
+        return body
+    t = max(0.005, min(0.1 * r, 0.12 * h))
+    return _join([body, *_lug_handles(body, h, r, p["handles"], 0.75, t, p["handle_style"])])
 
 
-@shape("wine_glass", "Foot, stem, hollow bowl.",
+@shape("wine_glass", "",
        {"height": length("Height", 0.2), "radius": length("Bowl radius", 0.04)})
 def wine_glass(p: dict[str, Any]) -> trimesh.Trimesh:
     h, r = p["height"], p["radius"]
@@ -248,7 +319,7 @@ def wine_glass(p: dict[str, Any]) -> trimesh.Trimesh:
     return revolve_profile(vessel_profile(foot + cup_[1:], max(0.0015, 0.04 * r), stem_top + 0.06 * h), 48)
 
 
-@shape("lamp", "Floor lamp.",
+@shape("lamp", "Floor lamp",
        {"height": length("Total height", 1.6), "shade_radius": length("Shade radius", 0.2)})
 def lamp(p: dict[str, Any]) -> trimesh.Trimesh:
     h, sr = p["height"], p["shade_radius"]

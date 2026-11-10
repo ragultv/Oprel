@@ -17,11 +17,13 @@ from oprel.tools.base import Tool
 # Short on purpose: it is resent every turn and local models often have a 4k context.
 SYSTEM_HINT = """\
 You can draw in a 3D scene next to the chat with the scene_* tools.
-Ready-made objects (table, chair, stool, bench, bookshelf, bed, sofa, lamp, vase, bottle, cup, bowl, plant_pot, \
-wine_glass) are complete and well proportioned: ALWAYS use them for those things, one object each, default sizes \
-unless asked (a table's legs and round/rectangle top are params). Their front faces +Z. \
-Build from primitives only what is not ready-made. Other round things (glass, chess piece, lampshade): \
-"lathe" with a [radius, height] profile from the bottom up. Flat outlines (bracket, star, letter): "extrude".
+Ready-made shapes (table ... lamp, vessels, pipe ... handle in the shape list) are complete and well \
+proportioned: ALWAYS use them for those things, one object each, default sizes unless asked. Furniture faces +Z. \
+Build from primitives only what is not ready-made. Other round things: "lathe" with a [radius, height] profile \
+from the bottom up. Flat outlines (bracket, letter): "extrude". Along a path (rail, bent rod, hook): "sweep". No ready-made shape for it? Build it from lathe / extrude / sweep, "cuts" and a merged group: a screw thread is a sweep of a triangle outline along {"helix": {...}} merged with a cylinder (or cut into one).
+radius = half the diameter. A pipe run: list the parts in order; each is joined to the end of the one before. \
+To turn an elbow or tee: "placement": {"relative_to": "<part before>", "side": "end", "toward": "up|front|..."} \
+on it (toward = where its outlet or branch heads).
 Holes, slots, windows, doors: "cuts" on that object, never extra objects. A plate with a hole in the middle and \
 4 corner holes: "cuts": [{"shape": "cylinder", "params": {"radius": 0.03}}, {"shape": "cylinder", "params": \
 {"radius": 0.004}, "pattern": {"type": "grid", "count": 2, "rows": 2, "spacing": [0.24, 0.24]}}] (a ring of holes: \
@@ -35,10 +37,10 @@ Seat things around another object: "pattern": {"type": "around", "relative_to": 
 (spaced along its sides, each turned to face it).
 Prefer placement to coordinates: {"relative_to": "<id>", "side": "top|bottom|left|right|front|back|center", \
 "align": "front-right", "gap": 0.1}; the engine computes the exact spot (side = where it goes, bottom = underneath; \
-gap = between the surfaces). A part joining two objects (plate, beam, bridge): "placement": {"between": ["a", "b"]} \
+gap = between the surfaces; "on the left end of the table" = side "top", align "left"). A part joining two objects (plate, beam, bridge): "placement": {"between": ["a", "b"]} \
 and leave out its width: the engine sizes and turns it.
 rotation = degrees [x, y, z] about the object's centre; it stays resting where it was.
-One solid part (for flow simulation, 3D printing): the group gets "merge": true, and its parts are fused. To merge \
+One solid part (for simulation, CAD export, 3D printing): the group gets "merge": true, and its parts are fused. To merge \
 what is already drawn, add {"id": "part", "shape": "group", "merge": true} with no parts.
 Custom multi-part objects: a "group", then parts with "parent": "<group id>" (positions relative to the group). \
 Never list identical parts one by one; use one object with a pattern: \

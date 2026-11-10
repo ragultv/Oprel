@@ -23,13 +23,15 @@ from typing import Any, Iterable
 import numpy as np
 import trimesh
 
-from oprel.integrations.scene3d.engine import cuts, merge, patterns
+from oprel.integrations.scene3d.engine import attach, cuts, intent, merge, patterns, sweep
 from oprel.integrations.scene3d.engine.merge import MergedSolid
 from oprel.integrations.scene3d.engine.frame import (
     IDENTITY, aabb, rotation_deg, transform_points, translation, vec3,
 )
+from trimesh import transformations as tf
 from oprel.integrations.scene3d.engine.registry import get_shape, shape_names
-from oprel.integrations.scene3d.engine.schema import ALIGN_WORDS, object_schema
+from oprel.integrations.scene3d.engine.schema import ALIGN_WORDS, PORT_SIDES, TOWARD, object_schema
+from oprel.integrations.scene3d.engine.shapes.paths import ATTACHED, PORTED
 from oprel.tools.validation import ToolArgumentError, validate_arguments
 
 MAX_OBJECTS = 300
@@ -53,6 +55,11 @@ class BuiltMesh:
     mesh: trimesh.Trimesh  # bottom-centre at the origin; shared, never mutate
     points: np.ndarray     # vertices used for exact bounds after any rotation
     notes: tuple[str, ...] = ()  # from cuts: what the model should check (a cut that misses)
+    # Open ends another part can be joined to: name -> (point, outward unit direction)
+    ports: tuple[tuple[str, np.ndarray, np.ndarray], ...] = ()
+
+    def port(self, name: str) -> tuple[np.ndarray, np.ndarray] | None:
+        return next(((p, d) for n, p, d in self.ports if n == name), None)
 
 
 @dataclass
@@ -90,8 +97,11 @@ def _build(shape_name: str, params_json: str, cuts_json: str = "[]") -> BuiltMes
     sd = get_shape(shape_name)
     assert sd is not None and sd.builder is not None
     mesh = sd.builder(json.loads(params_json))
+    raw_ports = mesh.metadata.pop("ports", {})
     lo, hi = mesh.bounds
-    mesh.apply_translation([-(lo[0] + hi[0]) / 2, -lo[1], -(lo[2] + hi[2]) / 2])
+    anchor = np.array([-(lo[0] + hi[0]) / 2, -lo[1], -(lo[2] + hi[2]) / 2])
+    mesh.apply_translation(anchor)
+    ports = tuple((name, np.asarray(p, float) + anchor, np.asarray(d, float)) for name, (p, d) in raw_ports.items())
     notes: list[str] = []
     if cuts_json != "[]":
         # Cut in the anchored frame: cut positions are from the uncut object's bottom-centre.
@@ -99,7 +109,7 @@ def _build(shape_name: str, params_json: str, cuts_json: str = "[]") -> BuiltMes
     points = np.asarray(mesh.vertices)
     if len(points) > _MAX_EXTENT_POINTS:
         points = _corners(*aabb(points))
-    return BuiltMesh(mesh, points, tuple(notes))
+    return BuiltMesh(mesh, points, tuple(notes), ports)
 
 
 def _is_around(obj: dict[str, Any]) -> bool:
@@ -132,6 +142,46 @@ def _label(obj: dict[str, Any], index: int) -> str:
     return f"'{obj['id']}'" if obj.get("id") else f"objects[{index}]"
 
 
+_OBJECT_KEYS = set(object_schema()["properties"])
+_HARMLESS_PARAMS = {"axis", "orientation", "direction", "toward", "rotation", "position", "color", "colour",
+                    "material", "name", "label", "units", "unit"}
+
+
+def _hoist_params(raw: Any) -> Any:
+    """
+    A shape's own params written next to "shape" instead of inside "params" ({"shape": "pipe",
+    "length": 1, ...}) would be dropped as unknown keys and the shape then lacks them (seen with
+    Qwen3-8B: three pipes "missing 'length'"). Move them into params.
+    """
+    if not isinstance(raw, dict):
+        return raw
+    sd = get_shape(str(raw.get("shape", "")))
+    def own(k: str) -> bool:
+        return sd is not None and (k in sd.params or (k.endswith("diameter")
+                                                      and k[: -len("diameter")] + "radius" in sd.params))
+
+    loose = [k for k in raw if k not in _OBJECT_KEYS and own(k)]
+    if not loose:
+        return raw
+    out = {k: v for k, v in raw.items() if k not in loose}
+    out["params"] = {**{k: raw[k] for k in loose}, **(raw.get("params") or {})}
+    return out
+
+
+def _from_diameters(params: dict[str, Any], known: dict[str, Any]) -> dict[str, Any]:
+    """
+    "diameter": 0.05 for a shape that takes a radius (users and models speak in diameters):
+    radius = half. Works for any *_diameter -> *_radius pair the shape has.
+    """
+    for key in [k for k in params if k.endswith("diameter")]:
+        target = key[: -len("diameter")] + "radius"
+        value = params[key]
+        if target in known and target not in params and isinstance(value, (int, float)) and key not in known:
+            params[target] = value / 2
+            params.pop(key)
+    return params
+
+
 def _check(objects: list[dict[str, Any]]) -> tuple[dict[str, dict[str, Any]], list[str]]:
     errors: list[str] = []
     if len(objects) > MAX_OBJECTS:
@@ -139,8 +189,24 @@ def _check(objects: list[dict[str, Any]]) -> tuple[dict[str, dict[str, Any]], li
 
     schema = object_schema()
     checked: dict[str, dict[str, Any]] = {}
+    failed: set[str] = set()  # ids whose own errors are reported: don't also call them missing
     for i, raw in enumerate(objects):
         label = _label(raw, i)
+        if isinstance(raw, dict) and isinstance(raw.get("shape"), str) and get_shape(raw["shape"]) is None:
+            raw = dict(raw)
+            intent.normalize_shape(raw)  # "counter" -> box, "mug" -> cup with a handle
+            if get_shape(raw["shape"]) is None:
+                if isinstance(raw.get("id"), str):
+                    failed.add(raw["id"])
+                near = intent.closest_shapes(raw["shape"])
+                errors.append(f"{label}: there is no shape '{raw['shape']}'"
+                              + (f" (closest: {', '.join(near)})" if near else "")
+                              + ". Use one from the list, or build it from box / cylinder / lathe / extrude / sweep "
+                                "with cuts")
+                continue
+        raw = _hoist_params(raw)
+        if isinstance(raw.get("id"), str):
+            failed.add(raw["id"])
         try:
             obj = validate_arguments(schema, raw)
         except ToolArgumentError as exc:
@@ -156,12 +222,17 @@ def _check(objects: list[dict[str, Any]]) -> tuple[dict[str, dict[str, Any]], li
         if sd is None:
             errors.append(f"{label}: unknown shape '{obj['shape']}'. Shapes: {', '.join(shape_names())}")
             continue
-        params = dict(obj.get("params") or {})
+        params = _from_diameters(dict(obj.get("params") or {}), sd.params)
         if _spans(obj, params):
             # A box between two objects with no width reaches from one's centre to the other's;
             # the compiler works the width out once it knows where they are.
             params["width"] = 1.0
             obj["_span"] = True
+        # Direction words a shape doesn't take (an elbow's "axis": joining sets its direction) are
+        # harmless; warning about them sent Qwen3-8B round three more times re-sending them.
+        ignored = sorted(k for k in params if k not in sd.params and k not in _HARMLESS_PARAMS)
+        if ignored:
+            obj["_ignored"] = ignored
         try:
             obj["params"] = sd.validate(params)
         except ToolArgumentError as exc:
@@ -186,6 +257,16 @@ def _check(objects: list[dict[str, Any]]) -> tuple[dict[str, dict[str, Any]], li
         except ToolArgumentError as exc:
             errors.append(f"{label}: {exc}")
             continue
+        side = obj.get("placement", {}).get("side")
+        if side in PORT_SIDES and obj["shape"] in ATTACHED:
+            # Seen with Qwen3-8B: a vase's handle joined to its "end". A handle goes on the side.
+            obj["placement"]["side"] = side = "right"
+        if obj.get("placement", {}).get("toward") and side not in PORT_SIDES:
+            obj["placement"].pop("toward")  # only turns parts joined to an end; harmless elsewhere
+        if side in PORT_SIDES and obj["shape"] not in PORTED:
+            errors.append(f"{label}: only {', '.join(sorted(PORTED))} have ends to join; place a {obj['shape']} "
+                          f"with side left/right/front/back/top instead")
+            continue
         align = obj.get("placement", {}).get("align")
         if align:
             words = set(align.replace("-", " ").replace("_", " ").split())
@@ -193,11 +274,13 @@ def _check(objects: list[dict[str, Any]]) -> tuple[dict[str, dict[str, Any]], li
                 errors.append(f"{label}: placement.align must use the words {sorted(ALIGN_WORDS)}, e.g. 'front-right'")
                 continue
         checked[obj["id"]] = obj
+        failed.discard(obj["id"])
 
     for oid, obj in checked.items():
         parent = obj.get("parent")
         if parent is not None and parent not in checked:
-            errors.append(f"'{oid}': parent '{parent}' does not exist")
+            if parent not in failed:
+                errors.append(f"'{oid}': parent '{parent}' does not exist")
         elif parent == oid:
             errors.append(f"'{oid}' cannot be its own parent")
         placement = obj.get("placement")
@@ -209,7 +292,8 @@ def _check(objects: list[dict[str, Any]]) -> tuple[dict[str, dict[str, Any]], li
                 if ref == oid:
                     errors.append(f"'{oid}' cannot be placed between itself and something else")
                 elif ref not in checked:
-                    errors.append(f"'{oid}': placement.between '{ref}' does not exist")
+                    if ref not in failed:
+                        errors.append(f"'{oid}': placement.between '{ref}' does not exist")
                 elif ref in _ancestors(oid, checked):
                     errors.append(f"'{oid}' cannot be placed between '{ref}', which contains it, and another object")
         elif placement and not placement.get("relative_to"):
@@ -220,7 +304,8 @@ def _check(objects: list[dict[str, Any]]) -> tuple[dict[str, dict[str, Any]], li
             if ref == oid:
                 errors.append(f"'{oid}' cannot be placed relative to itself")
             elif ref not in checked:
-                errors.append(f"'{oid}': placement.relative_to '{ref}' does not exist")
+                if ref not in failed:  # its own error above is the one to fix
+                    errors.append(f"'{oid}': placement.relative_to '{ref}' does not exist")
             elif ref != parent and ref in _ancestors(oid, checked):
                 errors.append(f"'{oid}' is placed relative to '{ref}', which contains it. "
                               f"Place it relative to its direct parent or a sibling part.")
@@ -314,6 +399,17 @@ def _place_between(boxes: list[tuple[np.ndarray, np.ndarray]], own_pts: np.ndarr
     return t + np.array(vec3(placement.get("offset")))
 
 
+def _align(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Rotation turning unit vector a onto unit vector b (a half turn keeps up as up when it can)."""
+    c = float(np.clip(np.dot(a, b), -1, 1))
+    if c > 1 - 1e-9:
+        return IDENTITY
+    if c < -1 + 1e-9:
+        axis = np.array([0.0, 1.0, 0.0]) if abs(a[1]) < 0.9 else np.array([1.0, 0.0, 0.0])
+        return tf.rotation_matrix(np.pi, axis - a * np.dot(axis, a))
+    return tf.rotation_matrix(np.arccos(c), np.cross(a, b))
+
+
 class _Resolver:
     def __init__(self, objs: dict[str, dict[str, Any]], built: dict[str, BuiltMesh | None]):
         self.objs = objs
@@ -393,6 +489,8 @@ class _Resolver:
         """
         def compute() -> np.ndarray:
             obj = self.objs[oid]
+            if (obj.get("placement") or {}).get("side") in PORT_SIDES:
+                return self._attach_rotation(oid)
             if _is_around(obj):
                 return IDENTITY  # each copy is turned to face the reference instead
             if _between(obj) and not any(obj.get("rotation") or []):
@@ -423,12 +521,88 @@ class _Resolver:
             placement = obj.get("placement")
             if not placement:
                 return np.array(vec3(obj.get("position")))
+            if placement.get("side") in PORT_SIDES:
+                # The part's start end on the reference's end, facing it (gap = space between them).
+                start, _ = self._own_port(oid, "start")
+                end, facing = self._target_port(oid)
+                at = end + facing * float(placement.get("gap", 0))
+                return at - transform_points(self.rotation(oid), start[None])[0] + np.array(vec3(placement.get("offset")))
             own_pts = transform_points(self.rotation(oid), self.extent(oid))
             if placement.get("between"):
                 return _place_between(self.between_boxes(oid), own_pts, placement)
             ref_pts = self._points_in_content_frame(oid, placement["relative_to"], self._parent(oid))
             return _place(ref_pts, own_pts, placement)
         return self._memo("position", oid, compute)
+
+    def mesh_in_frame(self, ref: str, frame: str | None, leave_out: str) -> trimesh.Trimesh:
+        """
+        `ref`'s mesh (a group: all its parts' meshes) in `frame`'s content frame, first copy of
+        everything. `leave_out` (the part asking, when it is inside `ref`) is not included.
+        """
+        to = np.linalg.inv(self.content_frames(frame)[0])
+        parts: list[trimesh.Trimesh] = []
+
+        def add(oid: str) -> None:
+            if oid == leave_out:
+                return
+            if self.built[oid] is not None:
+                m = self.built[oid].mesh.copy()
+                m.apply_transform(to @ self.frames(oid)[0] @ self.copies(oid)[0])
+                parts.append(m)
+            for child in self.children[oid]:
+                add(child)
+
+        add(ref)
+        if not parts:
+            raise SceneError([f"'{leave_out}' is attached to '{ref}', which has nothing in it to attach to"])
+        return trimesh.util.concatenate(parts) if len(parts) > 1 else parts[0]
+
+    def _own_port(self, oid: str, name: str) -> tuple[np.ndarray, np.ndarray]:
+        built = self.built[oid]
+        port = built.port(name) if built else None
+        if port is None:
+            raise SceneError([f"'{oid}' ({self.objs[oid]['shape']}) has no {name} end to join with"])
+        return port
+
+    def _target_port(self, oid: str) -> tuple[np.ndarray, np.ndarray]:
+        """The end `oid` is joined to: (point, outward direction) in `oid`'s parent's content frame."""
+        placement = self.objs[oid]["placement"]
+        ref, name = placement["relative_to"], placement["side"]
+        built = self.built[ref]
+        port = built.port(name) if built else None
+        if port is None:
+            have = [n for n, _, _ in built.ports] if built else []
+            what = (f"it only has {' and '.join(have)}" if have else
+                    f"a {self.objs[ref]['shape']} has no open ends (only {', '.join(sorted(PORTED))} do)")
+            raise SceneError([f"'{oid}' is joined to the {name} of '{ref}', but {what}."])
+        p, d = port
+        pts = np.array([p, p + d])
+        frame = self._parent(oid)
+        if ref != frame:
+            pts = self._to_frame(ref, frame, transform_points(self.copies(ref)[0], pts))[:2]
+        d2 = pts[1] - pts[0]
+        return pts[0], d2 / np.linalg.norm(d2)
+
+    def _attach_rotation(self, oid: str) -> np.ndarray:
+        """
+        Turn the part so its start end faces the reference's end; "toward" then rolls it about
+        that line so its other end (an elbow's outlet, a tee's branch) heads that way.
+        """
+        _, own_dir = self._own_port(oid, "start")
+        _, facing = self._target_port(oid)
+        r = _align(own_dir, -facing)
+        toward = self.objs[oid]["placement"].get("toward")
+        built = self.built[oid]
+        other = (built.port("branch") or built.port("end")) if built else None
+        if toward and other is not None:
+            heads = r[:3, :3] @ other[1]
+            want = np.array(TOWARD[toward], float)
+            heads_p = heads - facing * np.dot(heads, facing)
+            want_p = want - facing * np.dot(want, facing)
+            if np.linalg.norm(heads_p) > 1e-6 and np.linalg.norm(want_p) > 1e-6:
+                angle = np.arctan2(np.dot(np.cross(heads_p, want_p), facing), np.dot(heads_p, want_p))
+                r = tf.rotation_matrix(angle, facing) @ r
+        return r
 
     def between_boxes(self, oid: str) -> list[tuple[np.ndarray, np.ndarray]]:
         """Bounds of the two objects `oid` is placed between, in `oid`'s parent's content frame."""
@@ -460,7 +634,11 @@ class _Resolver:
                 raise SceneError([f"'{oid}' is placed relative to its own group '{ref}', which has no shape "
                                   f"of its own. Place it relative to a part inside the group."])
             return own.points
-        pts = transform_points(self.local(ref), self.extent(ref))
+        return self._to_frame(ref, frame, self.extent(ref))
+
+    def _to_frame(self, ref: str, frame: str | None, pts: np.ndarray) -> np.ndarray:
+        """Points in `ref`'s own frame -> `frame`'s content frame (copies of ancestors appended)."""
+        pts = transform_points(self.local(ref), pts)
         node = self._parent(ref)
         while node != frame:
             if node is None:
@@ -552,7 +730,9 @@ def _misplaced_twins(scene: CompiledScene, instance_boxes: dict[str, list[tuple[
     on_ground: dict[tuple[Any, str, str], str] = {}
     # Only parts of one group: two separate top-level objects (a vase on a shelf next to the
     # same vase on the floor) are not a y/z mix-up.
-    instance_boxes = {oid: b for oid, b in instance_boxes.items() if scene.objects[oid].spec.get("parent")}
+    # Placed parts are where the engine put them (a second elbow up a pipe run is not a mix-up).
+    instance_boxes = {oid: b for oid, b in instance_boxes.items()
+                      if scene.objects[oid].spec.get("parent") and not scene.objects[oid].spec.get("placement")}
     for oid, boxes in instance_boxes.items():
         spec = scene.objects[oid].spec
         key = (spec.get("parent"), spec["shape"], json.dumps(spec.get("params"), sort_keys=True))
@@ -582,6 +762,16 @@ def _odd_proportions(scene: CompiledScene) -> list[str]:
     """
     out: list[str] = []
     for oid, co in scene.objects.items():
+        params = co.spec.get("params") or {}
+        if co.spec["shape"] == "vase" and params.get("top_radius") and params.get("neck_radius"):
+            # Seen with Qwen3-8B, "an amphora with a flared rim": top_radius 0.2 on a 0.05 neck and a
+            # 0.15 belly, a funnel on a pot. A flared rim is a lip, about 1.3-1.6 x the neck.
+            top, neck = params["top_radius"], params["neck_radius"]
+            belly = max(params.get("radius") or 0, params.get("base_radius") or 0)
+            if top > max(belly, 2.5 * neck):
+                out.append(f"'{oid}': its rim (top_radius {top:g}) is wider than its belly ({belly:g}), so the top "
+                           f"is a funnel. A flared rim is about 1.5 x the neck: top_radius {round(1.5 * neck, 3):g}. "
+                           f"Keep {top:g} only if the user asked for a rim that wide.")
         limit = _MAX_WIDTH_TO_HEIGHT.get(co.spec["shape"])
         if not limit or co.built is None:
             continue
@@ -675,6 +865,68 @@ def _loose_connectors(scene: CompiledScene) -> list[str]:
     return out
 
 
+_HANDLE_WORDS = re.compile(r"handle|grip", re.IGNORECASE)
+
+
+def _stray_handles(scene: CompiledScene) -> list[str]:
+    """
+    A box or cylinder named "handle" that touches nothing. Seen with Qwen3-8B, "a curvy vase with a
+    box handle": a 5 cm box on the floor beside the vase. The handle shape attaches itself.
+    """
+    out: list[str] = []
+    for co in scene.objects.values():
+        name = f"{co.id} {co.spec.get('label', '')}"
+        if co.built is None or co.spec["shape"] == "handle" or not _HANDLE_WORDS.search(name):
+            continue
+        others = sorted((_box_gap(co.bbox, o.bbox), o.id) for o in scene.objects.values()
+                        if o is not co and o.built is not None)
+        if not others or others[0][0] <= _TOUCH_TOL:
+            continue
+        style = "box" if co.spec["shape"] in ("box", "rectangle") else "round"
+        out.append(f"'{co.id}' touches nothing ({others[0][0]:.3f} m from '{others[0][1]}'). For a handle use "
+                   f"{{\"id\": \"{co.id}\", \"shape\": \"handle\", \"params\": {{\"style\": \"{style}\"}}, "
+                   f"\"placement\": {{\"relative_to\": \"{others[0][1]}\", \"side\": \"right\"}}}}: it attaches "
+                   f"to the surface and is sized to the object (delete '{co.id}' first, or use a new id).")
+    return out
+
+
+def _loose_ends(scene: CompiledScene) -> list[str]:
+    """
+    Two open ends close together, facing each other, but not joined (a pipe run with a gap), and
+    two parts joined to the same end (they sit inside each other).
+    """
+    ends = []
+    for oid, co in scene.objects.items():
+        if co.built is None or not co.built.ports or len(co.instances) != 1:
+            continue
+        m = co.instances[0]
+        size = float(np.max(co.bbox[1] - co.bbox[0]))
+        ends += [(oid, n, transform_points(m, p[None])[0], m[:3, :3] @ d, size) for n, p, d in co.built.ports]
+    out: list[str] = []
+    on_end: dict[tuple[str, str], list[str]] = {}
+    for oid, co in scene.objects.items():
+        pl = co.spec.get("placement") or {}
+        if pl.get("side") in PORT_SIDES:
+            on_end.setdefault((pl["relative_to"], pl["side"]), []).append(oid)
+    for (ref, side), parts in on_end.items():
+        if len(parts) > 1:
+            out.append(f"{' and '.join(repr(p) for p in parts)} are all joined to the {side} of '{ref}', so they "
+                       f"overlap. Join each part to the one before it, e.g. '{parts[1]}' to the end of '{parts[0]}'.")
+    for i, (oa, na, pa, da, sa) in enumerate(ends):
+        for ob, nb, pb, db, sb in ends[i + 1:]:
+            dist = float(np.linalg.norm(pa - pb))
+            if oa == ob or dist <= _TOUCH_TOL or dist > min(0.1, 0.25 * max(sa, sb)) or np.dot(da, db) > -0.5:
+                continue
+            if nb == "start":
+                fix = f': put "placement": {{"relative_to": "{oa}", "side": "{na}"}} on \'{ob}\''
+            elif na == "start":
+                fix = f': put "placement": {{"relative_to": "{ob}", "side": "{nb}"}} on \'{oa}\''
+            else:
+                fix = '. Join them with placement side "end" so they meet exactly'
+            out.append(f"The {na} of '{oa}' is {dist:.3f} m from the {nb} of '{ob}' but they are not joined{fix}.")
+    return out
+
+
 def _below_ground(oid: str, lowest: float, spec: dict[str, Any]) -> str:
     placement = spec.get("placement") or {}
     if placement.get("side") == "bottom" and placement.get("relative_to"):
@@ -690,6 +942,12 @@ def _warnings(scene: CompiledScene, objs: dict[str, dict[str, Any]]) -> list[str
     instance_boxes: dict[str, list[tuple[np.ndarray, np.ndarray]]] = {}
     has_parts = {obj.get("parent") for obj in objs.values()}
     for oid, co in scene.objects.items():
+        if co.spec.get("_ignored"):
+            # Seen with Qwen3-8B: "handles": 2 on a plant_pot (which had none) silently dropped.
+            sd = get_shape(co.spec["shape"])
+            out.append(f"'{oid}': a {co.spec['shape']} has no {', '.join(repr(k) for k in co.spec['_ignored'])}, so "
+                       f"{'it was' if len(co.spec['_ignored']) == 1 else 'they were'} ignored. Its params: "
+                       f"{sd.signature() if sd else ''}.")
         if co.spec.get("placement") and co.spec.get("position"):
             out.append(f"'{oid}': both position and placement were given; position was ignored.")
         if co.built is None:
@@ -710,6 +968,8 @@ def _warnings(scene: CompiledScene, objs: dict[str, dict[str, Any]]) -> list[str
     out.extend(_detached_parts(scene, instance_boxes))
     out.extend(_misplaced_twins(scene, instance_boxes))
     out.extend(_odd_proportions(scene))
+    out.extend(_loose_ends(scene))
+    out.extend(_stray_handles(scene))
 
     def subtree(root: str) -> set[str]:
         ids = {root}
@@ -745,6 +1005,31 @@ def _warnings(scene: CompiledScene, objs: dict[str, dict[str, Any]]) -> list[str
 # entry point
 # ---------------------------------------------------------------------------
 
+def _is_attached(obj: dict[str, Any]) -> bool:
+    """A handle placed beside an object: built onto that object's surface."""
+    pl = obj.get("placement") or {}
+    return obj["shape"] in ATTACHED and bool(pl.get("relative_to")) and pl.get("side") in attach.SIDES
+
+
+def _attached_mesh(resolver: _Resolver, oid: str) -> trimesh.Trimesh:
+    """A handle built onto the surface of the object it is placed beside, in its parent's content frame."""
+    obj = resolver.objs[oid]
+    pl, p = obj["placement"], obj.get("params") or {}
+    ref, side = pl["relative_to"], pl["side"]
+    target = resolver.mesh_in_frame(ref, resolver._parent(oid), oid)
+    orientation = "horizontal" if str(p.get("orientation", "")).lower().startswith("h") else "vertical"
+    f = attach.frame_for(side, orientation, target.bounds)
+    off = np.array(vec3(pl.get("offset")))
+    extent = float(abs(np.ptp(target.bounds, axis=0) @ f.U))
+    span, thickness, reach = attach.defaults(p.get("height"), p.get("thickness"), p.get("reach"), extent,
+                                             orientation, side)
+    u_hi, u_lo, level = attach.ends(target.bounds, f, span, side, orientation, pl.get("vertical"), float(off @ f.U))
+    f.k0 = level + float(off @ f.K)
+    return attach.build(target, f, u_hi, u_lo, reach=reach, thickness=thickness,
+                        style=sweep.handle_style(p.get("style")), ear=orientation == "vertical" and side != "top",
+                        what=f"'{ref}'")
+
+
 def compile_scene(objects: list[dict[str, Any]]) -> CompiledScene:
     """Build every object. Raises SceneError listing everything the caller must fix."""
     objs, errors = _check(objects)
@@ -756,6 +1041,10 @@ def compile_scene(objects: list[dict[str, Any]]) -> CompiledScene:
         sd = get_shape(obj["shape"])
         if sd is None or sd.builder is None:
             built[oid] = None
+            continue
+        if _is_attached(obj):
+            # A stand-in until the third pass builds it onto its object (its sizes are checked there).
+            built[oid] = _build(sd.name, json.dumps(sd.validate({}), sort_keys=True))
             continue
         try:
             built[oid] = _build(sd.name, json.dumps(obj["params"], sort_keys=True),
@@ -786,6 +1075,29 @@ def compile_scene(objects: list[dict[str, Any]]) -> CompiledScene:
             objs[oid]["params"]["width"] = round(width, 6)
             built[oid] = _build("box", json.dumps(objs[oid]["params"], sort_keys=True),
                                 json.dumps(objs[oid].get("cuts") or [], sort_keys=True))
+        if errors:
+            raise SceneError(errors)
+        resolver = _Resolver(objs, built)
+    attached = [oid for oid, obj in objs.items() if _is_attached(obj)]
+    if attached:
+        # Third pass: handles are built onto the real surface of what they are attached to, now that
+        # it is placed (engine/attach.py), then fixed where they were built.
+        for oid in attached:
+            try:
+                mesh = _attached_mesh(resolver, oid)
+            except ToolArgumentError as exc:
+                errors.append(f"'{oid}' ({objs[oid]['shape']}): {exc}")
+                continue
+            except SceneError as exc:
+                errors.extend(exc.errors)
+                continue
+            lo, hi = mesh.bounds
+            anchor = np.array([(lo[0] + hi[0]) / 2, lo[1], (lo[2] + hi[2]) / 2])
+            mesh.apply_translation(-anchor)
+            pts = np.asarray(mesh.vertices)
+            built[oid] = BuiltMesh(mesh, _corners(*aabb(pts)) if len(pts) > _MAX_EXTENT_POINTS else pts)
+            spec = {k: v for k, v in objs[oid].items() if k not in ("placement", "rotation")}
+            objs[oid] = {**spec, "position": anchor.tolist(), "_attached_to": objs[oid]["placement"]["relative_to"]}
         if errors:
             raise SceneError(errors)
         resolver = _Resolver(objs, built)
