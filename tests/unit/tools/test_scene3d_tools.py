@@ -1107,3 +1107,341 @@ def test_hole_placed_beside_the_object_it_names_becomes_a_hole_in_it(client, tok
     assert result["ok"], result["data"]
     saved = {o["id"]: o for o in client.get(f"/scene3d/{CONV}", headers={"X-Oprel-Token": token}).json()["objects"]}
     assert set(saved) == {"counter"} and saved["counter"]["cuts"][0]["position"][0] == pytest.approx(0)
+
+
+def test_pipe_with_flanges_listed_after_it_gets_one_on_each_end(client, token, monkeypatch):
+    # "a DN50 pipe with flanges on both ends", listed pipe, flange, flange: the second flange goes on
+    # the pipe's start, not stacked on the first.
+    _, _, events, _ = _chat(client, token, monkeypatch, [
+        AssistantTurn(content="", tool_calls=[_call("scene_add_objects", objects=[
+            {"id": "p", "shape": "pipe", "params": {"length": 1, "size": "DN50"}, "position": [0, 0.1, 0]},
+            {"id": "f1", "shape": "flange", "params": {"size": "DN50"}},
+            {"id": "f2", "shape": "flange", "params": {"size": "DN50"}},
+        ])]),
+        AssistantTurn(content="done"),
+    ])
+    (result,) = _results(events)
+    assert result["ok"], result["data"]
+    objs = {o["id"]: o for o in result["data"]["objects"]}
+    assert objs["f1"]["min"][0] == pytest.approx(0.5) and objs["f2"]["max"][0] == pytest.approx(-0.5)
+    assert result["data"]["warnings"] == []
+
+
+def test_bolt_hole_cut_by_bolt_size_is_saved_and_drawn(client, token, monkeypatch):
+    _, _, events, _ = _chat(client, token, monkeypatch, [
+        AssistantTurn(content="", tool_calls=[_call("scene_add_objects", objects=[
+            {"id": "plate", "shape": "box", "params": {"width": 0.1, "height": 0.01, "depth": 0.06},
+             "cuts": [{"bolt": "M10"}]},
+            {"id": "b", "shape": "screw", "params": {"size": "M10", "length": 0.03},
+             "placement": {"relative_to": "plate", "side": "top"}},
+            {"id": "n", "shape": "nut", "params": {"size": "M10"}, "placement": {"relative_to": "b", "side": "bottom"}},
+        ])]),
+        AssistantTurn(content="done"),
+    ])
+    (result,) = _results(events)
+    assert result["ok"], result["data"]
+    assert result["data"]["warnings"] == []
+    objs = {o["id"]: o for o in result["data"]["objects"]}
+    assert objs["b"]["shape"] == "bolt" and objs["n"]["max"][1] == pytest.approx(0.0)
+
+def _draw(client, token, monkeypatch, objects):
+    _, _, events, _ = _chat(client, token, monkeypatch, [
+        AssistantTurn(content="", tool_calls=[_call("scene_add_objects", objects=objects)]),
+        AssistantTurn(content="done"),
+    ])
+    (result,) = _results(events)
+    assert result["ok"], result["data"]
+    saved = {o["id"]: o for o in client.get(f"/scene3d/{CONV}", headers={"X-Oprel-Token": token}).json()["objects"]}
+    return result["data"], {o["id"]: o for o in result["data"]["objects"]}, saved
+
+
+def test_bolt_centred_in_a_plate_verbatim_goes_through_a_drilled_hole(client, token, monkeypatch):
+    # Verbatim from Qwen3-8B (live): "an M10 hex bolt through the middle and a nut under it", the bolt
+    # centred inside the plate (side center, vertical center) and no hole.
+    data, objs, saved = _draw(client, token, monkeypatch, [
+        {"shape": "box", "id": "plate", "params": {"width": 0.1, "height": 0.01, "depth": 0.06}, "position": [0, 0, 0],
+         "color": "#888888"},
+        {"shape": "bolt", "id": "bolt", "params": {"size": "M10", "length": 0.05}, "position": [0, 0.005, 0],
+         "placement": {"relative_to": "plate", "side": "center", "vertical": "center"}},
+        {"shape": "nut", "id": "nut", "params": {"size": "M10"}, "position": [0, 0.01, 0],
+         "placement": {"relative_to": "bolt", "side": "bottom"}}])
+    assert data["warnings"] == []
+    assert saved["plate"]["cuts"] == [{"bolt": "M10", "position": [0.0, 0, 0.0]}]
+    assert objs["bolt"]["min"][1] == pytest.approx(0.01 - 0.05)  # head on the plate, shank through it
+    assert objs["nut"]["max"][1] == pytest.approx(0.0)           # tight under the plate
+
+
+def test_corner_screws_under_a_plate_verbatim_bolt_it_down_from_the_top(client, token, monkeypatch):
+    # Verbatim from Qwen3-8B (live): "bolted down with four M8 socket screws, one near each corner":
+    # side "bottom" and the corner spots as positions (ignored next to a placement).
+    screws = [{"shape": "bolt", "id": f"bolt{i + 1}", "params": {"size": "M8", "length": 0.05}, "position": [x, 0, z],
+               "placement": {"relative_to": "base_plate", "side": "bottom", "toward": t}}
+              for i, (x, z, t) in enumerate([(0.05, 0.05, "front"), (0.05, -0.05, "back"), (-0.05, 0.05, "left"),
+                                             (-0.05, -0.05, "right")])]
+    data, objs, saved = _draw(client, token, monkeypatch, [
+        {"shape": "box", "id": "base_plate", "params": {"width": 0.2, "height": 0.01, "depth": 0.2}, "position": [0, 0, 0],
+         "color": "#888888"}, *screws])
+    assert data["warnings"] == []
+    assert len(saved["base_plate"]["cuts"]) == 4
+    for i, (x, z) in enumerate([(0.05, 0.05), (0.05, -0.05), (-0.05, 0.05), (-0.05, -0.05)]):
+        o = objs[f"bolt{i + 1}"]
+        assert (o["min"][0] + o["max"][0]) / 2 == pytest.approx(x, abs=1e-3)
+        assert (o["min"][2] + o["max"][2]) / 2 == pytest.approx(z, abs=1e-3)
+        assert o["max"][1] == pytest.approx(0.01 + 0.0053)  # hex head on top of the plate
+
+
+def test_gears_drawn_apart_verbatim_mesh(client, token, monkeypatch):
+    # Verbatim from Qwen3-8B (live): "two meshing spur gears ... 30 and 15 teeth, module 2", 1.5 m apart.
+    data, objs, saved = _draw(client, token, monkeypatch, [
+        {"shape": "gear", "params": {"teeth": 30, "module": 2, "thickness": 0.1}, "position": [0, 0, 0],
+         "rotation": [0, 0, 0], "label": "Gear 1"},
+        {"shape": "gear", "params": {"teeth": 15, "module": 2, "thickness": 0.1}, "position": [1.5, 0, 0],
+         "rotation": [0, 0, 0], "label": "Gear 2"}])
+    assert saved["gear2"]["placement"] == {"relative_to": "gear", "side": "right"}
+    assert objs["gear2"]["min"][0] < objs["gear"]["max"][0]  # teeth in each other's gaps
+    assert data["warnings"] == []
+
+
+def test_gear_train_with_merge_on_each_verbatim(client, token, monkeypatch):
+    # Verbatim from Qwen3-8B (live): "three gears with 20, 40 and 20 teeth, module 1.5, side by side".
+    gear = {"shape": "gear", "merge": True}
+    data, objs, saved = _draw(client, token, monkeypatch, [
+        {**gear, "params": {"teeth": z, "module": 1.5, "thickness": 0.2, "helix_angle": 0, "axis": "z"},
+         "position": [x, 0, 0]} for z, x in ((20, 0), (40, 1.5), (20, 3))])
+    assert set(saved) == {"gear", "gear2", "gear3"}  # no merged groups of one gear
+    assert saved["gear3"]["placement"] == {"relative_to": "gear2", "side": "right"}
+    assert saved["gear"]["position"][1] > 0  # lifted so the 40-tooth gear stands on the ground
+    assert data["warnings"] == []
+
+
+def test_flanges_on_a_pipe_on_the_floor_verbatim_lift_the_run(client, token, monkeypatch):
+    # Verbatim from Qwen3-8B (live): "a 1 m DN50 pipe with flanges on both ends"; the flanges went
+    # 5 cm into the floor.
+    data, objs, saved = _draw(client, token, monkeypatch, [
+        {"shape": "pipe", "params": {"length": 1, "size": "DN50"}},
+        {"shape": "flange", "params": {"size": "DN50"}, "placement": {"relative_to": "pipe", "side": "start"}},
+        {"shape": "flange", "params": {"size": "DN50"}, "placement": {"relative_to": "pipe", "side": "end"}}])
+    assert data["warnings"] == []
+    assert objs["flange"]["min"][1] == pytest.approx(0.0, abs=1e-4)
+    assert saved["pipe"]["position"][1] == pytest.approx((0.165 - 0.0603) / 2, abs=1e-3)
+
+def test_bolt_and_nut_parented_to_the_plate_verbatim(client, token, monkeypatch):
+    # Verbatim from Qwen3-8B (live, second run): bolt and nut as parts of the plate (by its label),
+    # with positions and no placement; the bolt stood up out of the middle of the plate.
+    data, objs, saved = _draw(client, token, monkeypatch, [
+        {"shape": "box", "params": {"width": 0.1, "height": 0.01, "depth": 0.06}, "position": [0, 0, 0],
+         "label": "Steel plate"},
+        {"shape": "bolt", "params": {"size": "M10", "length": 0.05}, "position": [0, 0.005, 0], "parent": "Steel plate",
+         "label": "M10 hex bolt"},
+        {"shape": "nut", "params": {"size": "M10"}, "position": [0, 0.01, 0], "parent": "Steel plate", "label": "Nut"}])
+    assert data["warnings"] == []
+    assert saved["bolt"]["placement"] == {"relative_to": "box", "side": "top"}
+    assert saved["nut"]["placement"] == {"relative_to": "bolt", "side": "bottom"}
+    assert saved["box"]["cuts"] == [{"bolt": "M10", "position": [0.0, 0, 0.0]}]
+    assert objs["bolt"]["min"][1] == pytest.approx(0.01 - 0.05) and objs["nut"]["max"][1] == pytest.approx(0.0)
+
+def test_clamped_plates_laid_out_by_coordinates_verbatim_stack_the_fasteners(client, token, monkeypatch):
+    # Verbatim from Qwen3-8B (live): "clamp two plates ... with an M12 bolt, a washer under the head and a
+    # nut underneath": one merged group, bolt, washer and nut all at [0, 0.005, 0].
+    group = {"parent": "clamp_group"}
+    data, objs, saved = _draw(client, token, monkeypatch, [
+        {"shape": "group", "id": "clamp_group", "merge": True},
+        {**group, "shape": "box", "id": "plate1", "params": {"width": 0.08, "height": 0.01, "depth": 0.08}, "position": [0, 0, 0]},
+        {**group, "shape": "box", "id": "plate2", "params": {"width": 0.08, "height": 0.01, "depth": 0.08},
+         "position": [0, 0.01, 0]},
+        {**group, "shape": "bolt", "id": "bolt", "params": {"size": "M12", "length": 0.12}, "position": [0, 0.005, 0]},
+        {**group, "shape": "washer", "id": "washer", "params": {"size": "M12"}, "position": [0, 0.005, 0]},
+        {**group, "shape": "nut", "id": "nut", "params": {"size": "M12"}, "position": [0, 0.005, 0]}])
+    assert saved["washer"]["placement"] == {"relative_to": "plate2", "side": "top"}
+    assert saved["bolt"]["placement"] == {"relative_to": "washer", "side": "top"}
+    assert saved["nut"]["placement"] == {"relative_to": "bolt", "side": "bottom"}
+    assert objs["washer"]["min"][1] == pytest.approx(0.02) and objs["nut"]["max"][1] == pytest.approx(0.0)
+    assert saved["plate1"]["cuts"] and saved["plate2"]["cuts"]  # drilled through both
+    assert data["warnings"] == []
+
+
+def test_helical_pair_with_the_same_hand_verbatim(client, token, monkeypatch):
+    # Verbatim from Qwen3-8B (live): "a pair of meshing helical gears, 24 and 12 teeth, module 3", both 30.
+    data, objs, saved = _draw(client, token, monkeypatch, [
+        {"shape": "gear", "params": {"teeth": 24, "module": 3, "helix_angle": 30}, "position": [0, 0, 0], "rotation": [0, 0, 0]},
+        {"shape": "gear", "params": {"teeth": 12, "module": 3, "helix_angle": 30}, "position": [0.2, 0, 0], "rotation": [0, 0, 0]}])
+    assert saved["gear2"]["params"]["helix_angle"] == -30
+    assert data["warnings"] == []
+
+
+def test_object_placed_relative_to_itself_verbatim_is_still_drawn(client, token, monkeypatch):
+    # Verbatim from Qwen3-8B (live): an L bracket placed relative to itself; it and the two screws on it
+    # were refused, leaving three empty merged groups.
+    screw = {"shape": "bolt", "params": {"size": "M6", "length": 0.04, "head": "hex"}, "rotation": [0, 0, 0],
+             "placement": {"relative_to": "bracket", "side": "bottom", "toward": "down"}, "merge": True}
+    data, objs, saved = _draw(client, token, monkeypatch, [
+        {"shape": "box", "id": "bracket", "params": {"width": 0.06, "height": 0.04, "depth": 0.06}, "position": [0, 0, 0],
+         "rotation": [0, 0, 0], "placement": {"relative_to": "bracket", "side": "bottom", "toward": "down"},
+         "pattern": {"type": "linear", "count": 2, "step": [0.12, 0, 0]}, "merge": True},
+        {**screw, "id": "screw1", "position": [0.03, 0.02, 0]},
+        {**screw, "id": "screw2", "position": [0.03, 0.02, 0.12]}])
+    assert "bracket" in saved and "screw1" in saved and "screw2" in saved
+    assert not any("NOT ADDED" in w or "empty group" in w for w in data["warnings"])
+
+def test_washer_placed_on_top_of_the_bolt_verbatim_goes_under_its_head(client, token, monkeypatch):
+    # Verbatim from Qwen3-8B (live, second run of the clamp): plates by coordinates, the bolt at
+    # [0, 0.005, 0], the washer "top" of the bolt (it floated above the head), the nut "bottom" of it.
+    data, objs, saved = _draw(client, token, monkeypatch, [
+        {"shape": "box", "id": "plate1", "params": {"width": 0.08, "height": 0.01, "depth": 0.08}, "position": [0, 0, 0]},
+        {"shape": "box", "id": "plate2", "params": {"width": 0.08, "height": 0.01, "depth": 0.08}, "position": [0, 0.01, 0]},
+        {"shape": "bolt", "id": "bolt", "params": {"size": "M12", "length": 0.05, "head": "hex"}, "position": [0, 0.005, 0]},
+        {"shape": "washer", "id": "washer", "params": {"size": "M12"}, "position": [0, 0.005, 0],
+         "placement": {"relative_to": "bolt", "side": "top"}},
+        {"shape": "nut", "id": "nut", "params": {"size": "M12"}, "position": [0, 0.005, 0],
+         "placement": {"relative_to": "bolt", "side": "bottom"}}])
+    assert saved["washer"]["placement"] == {"relative_to": "plate2", "side": "top"}
+    assert saved["bolt"]["placement"] == {"relative_to": "washer", "side": "top"}
+    assert objs["washer"]["min"][1] == pytest.approx(0.02) and objs["bolt"]["max"][1] == pytest.approx(0.0225 + 0.0075)
+    assert objs["nut"]["max"][1] == pytest.approx(0.0)
+    assert data["warnings"] == []
+
+def test_long_request_is_planned_first_then_drawn_from_the_plan(client, token, monkeypatch):
+    plan = ("1. well | box | width 0.04 depth 0.04 height 0.02 | on the ground\n"
+            "2. sprue | cylinder | radius_bottom 0.01 radius_top 0.015 height 0.25 | on top of well\n"
+            "3. cup | cone | radius 0.015 radius_top 0.05 height 0.1 | on top of sprue")
+    model = ScriptedModel([
+        AssistantTurn(content=plan),
+        AssistantTurn(content="", tool_calls=[_call("scene_add_objects", objects=[
+            {"id": "well", "shape": "box", "params": {"width": 0.04, "depth": 0.04, "height": 0.02}},
+            {"id": "sprue", "shape": "cylinder", "params": {"radius_bottom": 0.01, "radius_top": 0.015, "height": 0.25},
+             "placement": {"relative_to": "well", "side": "top"}},
+            {"id": "cup", "shape": "cone", "params": {"radius": 0.015, "radius_top": 0.05, "height": 0.1},
+             "placement": {"relative_to": "sprue", "side": "top"}}])]),
+        AssistantTurn(content="Drew the sprue well, sprue and pouring cup."),
+    ])
+    monkeypatch.setattr(loop, "resolve_adapter", lambda name: model)
+    text = ("Add a 4 cm square sprue well, a 25 cm tall sprue tapering from radius 1 cm to 1.5 cm on it, and a "
+            "10 cm tall pouring cup cone from radius 1.5 cm to 5 cm on top")
+    r = client.post("/v1/chat/completions", headers={"X-Oprel-Token": token}, json={
+        "model": "fake-local", "stream": True, "enable_tools": ["scene3d"], "conversation_id": CONV,
+        "messages": [{"role": "user", "content": text}]})
+    events = [json.loads(line[6:])["oprel_event"] for line in r.text.splitlines()
+              if line.startswith("data: ") and line != "data: [DONE]" and "oprel_event" in json.loads(line[6:])]
+    assert events[0] == {"type": "plan", "text": plan}
+    planning, drawing = model.seen[0], model.seen[1]
+    assert planning["tools"] == []  # room to reason: no tool definitions
+    assert "write only the plan" in planning["messages"][0]["content"]
+    assert drawing["messages"][-1]["content"].endswith("Plan (draw exactly this):\n" + plan)
+    assert "Example, " not in drawing["messages"][0]["content"]  # the planned hint, without the examples
+    (result,) = _results(events)
+    objs = {o["id"]: o for o in result["data"]["objects"]}
+    assert objs["cup"]["min"][1] == pytest.approx(0.27) and result["data"]["warnings"] == []
+
+
+def test_short_edit_is_not_planned(client, token, monkeypatch):
+    _, model, events, _ = _chat(client, token, monkeypatch, [AssistantTurn(content="Nothing to draw.")])
+    assert len(model.seen) == 1 and model.seen[0]["tools"]  # straight to the tool step
+    assert not [e for e in events if e["type"] == "plan"]
+
+def test_placement_naming_no_object_verbatim_is_left_out(client, token, monkeypatch):
+    # Verbatim from Qwen3-8B (live, with a plan): placements with a side but no object; refused five times.
+    data, objs, saved = _draw(client, token, monkeypatch, [
+        {"shape": "box", "id": "box", "params": {"width": 0.3, "height": 0.06, "depth": 0.1}, "position": [0, 0, 0],
+         "placement": {"side": "left", "align": "left", "gap": 0}},
+        {"shape": "box", "id": "riser_box", "params": {"width": 0.1, "height": 0.15, "depth": 0.1},
+         "position": [-0.2, 0, 0], "placement": {"side": "left", "align": "left", "gap": 0}}])
+    assert "placement" not in saved["box"] and "placement" not in saved["riser_box"]
+    assert objs["riser_box"]["max"][0] == pytest.approx(-0.15)  # its position: flush at the casting's left end
+    assert data["warnings"] == []
+
+@pytest.mark.parametrize("text,planned", [
+    # the casting, live with Qwen3-8B: the two-part steps drew better without a plan
+    ("Draw a casting box 30 cm long, 10 cm deep, 6 cm tall, with a riser box 10 x 10 cm and 15 cm tall on the "
+     "ground at its left end, flush with it.", False),
+    ("Add an ingate box 4 x 2 x 1.5 cm on the ground at the middle of the casting's right end, and a runner box "
+     "2.5 cm wide, 2 cm tall, 22 cm long running front to back, its middle touching the ingate.", False),
+    ("At the runner's front end add a 4 cm square, 2 cm tall sprue well, a 25 cm tall sprue tapering from radius "
+     "1 cm at the bottom to 1.5 cm at the top on it, and a 10 cm tall pouring cup cone from radius 1.5 cm to 5 cm "
+     "on top. Make everything one solid part.", True),
+    ("Draw a table and a chair, then merge them into one solid", True),
+    ("make it taller", False),
+])
+def test_which_requests_are_planned(text, planned):
+    from oprel.integrations.scene3d import integration
+    assert integration.wants_plan(text) is planned
+
+
+def test_clean_plan_casting_verbatim():
+    # Verbatim from Qwen3-8B (live): the pouring cup listed twice, the second "on top of" the first
+    # (a pointed cone), so two cups were drawn, touching at a tip, and the merge never fused.
+    from oprel.integrations.scene3d.plan import clean_plan
+    plan = (
+        "4. sprue_well | box | width 0.04 height 0.02 depth 0.04 | at the front end of runner  \n"
+        "5. sprue | cylinder | radius_bottom 0.01 radius_top 0.015 height 0.25 | on top of sprue_well at its front end  \n"
+        "6. pouring_cup | cone | radius 0.015 height 0.1 | on top of sprue at its front end  \n"
+        "7. pouring_cup | cone | radius_bottom 0.015 radius_top 0.05 height 0.1 | on top of pouring_cup at its front end  \n"
+        "8. merge everything into one solid")
+    assert clean_plan(plan).splitlines() == [
+        "1. sprue_well | box | width 0.04 height 0.02 depth 0.04 | in front of runner",
+        "2. sprue | cylinder | radius_bottom 0.01 radius_top 0.015 height 0.25 | on top of sprue_well at its front end",
+        "3. pouring_cup | cone | radius 0.015 height 0.1 radius_bottom 0.015 radius_top 0.05 | "
+        "on top of sprue at its front end",
+        "after: merge everything into one solid"]
+
+
+def test_clean_plan_keeps_a_good_plan():
+    from oprel.integrations.scene3d.plan import clean_plan
+    plan = ("1. desk | table | width 1.2 | on the ground\n"
+            "2. lamp | lamp | | on top of desk at its left end\n"
+            "3. hole in desk | cylinder | radius 0.02 | middle\n"
+            "4. hole in desk | cylinder | radius 0.01 | front left corner\n"
+            "after: merge everything into one solid")
+    assert clean_plan(plan) == plan
+
+
+def test_clean_plan_later_where_wins_unless_it_names_itself():
+    from oprel.integrations.scene3d.plan import clean_plan
+    plan = ("1. post | cylinder | radius 0.05 height 1 | on the ground\n"
+            "2. cap | sphere | radius 0.05 | on the ground\n"
+            "3. cap | sphere | radius 0.06 | on top of post")
+    assert clean_plan(plan).splitlines()[1] == "2. cap | sphere | radius 0.06 | on top of post"
+
+
+def test_reference_by_a_word_of_the_id(client, token, monkeypatch):
+    # Live: the plan called it "casting", the drawing had named it 'casting_box'.
+    data, objs, saved = _draw(client, token, monkeypatch, [
+        {"id": "casting_box", "shape": "box", "params": {"width": 0.3, "height": 0.06, "depth": 0.1}},
+        {"id": "ingate", "shape": "box", "params": {"width": 0.04, "height": 0.015, "depth": 0.02},
+         "placement": {"relative_to": "casting", "side": "right"}}])
+    assert saved["ingate"]["placement"]["relative_to"] == "casting_box"
+    assert objs["ingate"]["min"][0] == pytest.approx(0.15)
+
+def test_riser_set_a_width_away_verbatim_is_moved_flush(client, token, monkeypatch):
+    # Verbatim from Qwen3-8B (live, no plan): "a riser box ... at its left end, flush with it" by coordinates,
+    # the riser's centre at x = -0.3: a 0.1 m gap, exactly the riser's width.
+    data, objs, saved = _draw(client, token, monkeypatch, [
+        {"shape": "box", "params": {"width": 0.3, "height": 0.06, "depth": 0.1}, "position": [0, 0, 0], "label": "casting box"},
+        {"shape": "box", "params": {"width": 0.1, "height": 0.15, "depth": 0.1}, "position": [-0.3, 0, 0], "label": "riser box"}])
+    assert objs["box2"]["max"][0] == pytest.approx(-0.15) and saved["box2"]["position"] == [-0.2, 0, 0]
+    assert data["warnings"] == []
+
+
+def test_a_spacing_that_is_not_a_width_is_kept(client, token, monkeypatch):
+    data, objs, _ = _draw(client, token, monkeypatch, [
+        {"id": "a", "shape": "box", "params": {"width": 0.3, "height": 0.06, "depth": 0.1}},
+        {"id": "b", "shape": "box", "params": {"width": 0.1, "height": 0.15, "depth": 0.1}, "position": [-0.27, 0, 0]}])
+    assert objs["b"]["max"][0] == pytest.approx(-0.22)
+
+def test_ingate_centred_on_the_casting_end_verbatim_is_pushed_out(client, token, monkeypatch):
+    # Verbatim from Qwen3-8B (live): the ingate "at the middle of the casting's right end" at x = 0.15, its
+    # centre on the end face, half inside the casting.
+    data, objs, _ = _draw(client, token, monkeypatch, [
+        {"id": "casting", "shape": "box", "params": {"width": 0.3, "height": 0.06, "depth": 0.1}},
+        {"shape": "box", "id": "ingate", "params": {"width": 0.04, "height": 0.02, "depth": 0.015},
+         "position": [0.15, 0, 0], "rotation": [0, 0, 0]}])
+    assert objs["ingate"]["min"][0] == pytest.approx(0.15) and objs["ingate"]["max"][0] == pytest.approx(0.19)
+
+def test_gap_given_with_a_position_on_the_face_verbatim_is_dropped(client, token, monkeypatch):
+    # Verbatim from Qwen3-8B (live): the casting shortened to 20 cm, then the ingate with position x = 0.1
+    # (the casting's right face) and placement right of it with gap 0.1: it stood 10 cm away.
+    data, objs, saved = _draw(client, token, monkeypatch, [
+        {"shape": "box", "id": "casting_box", "params": {"width": 0.2, "height": 0.06, "depth": 0.1}, "position": [0, 0, 0]},
+        {"shape": "box", "id": "ingate", "params": {"width": 0.04, "height": 0.02, "depth": 0.015}, "position": [0.1, 0, 0],
+         "placement": {"relative_to": "casting_box", "side": "right", "toward": "front", "gap": 0.1}}])
+    assert objs["ingate"]["min"][0] == pytest.approx(0.1)
+    assert "gap" not in saved["ingate"]["placement"]

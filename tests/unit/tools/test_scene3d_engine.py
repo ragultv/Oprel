@@ -43,11 +43,12 @@ READY_MADE = ["table", "chair", "stool", "bench", "bookshelf", "bed", "sofa", "l
               "vase", "bottle", "cup", "bowl", "plant_pot", "wine_glass"]
 PROFILE_SHAPES = ["lathe", "extrude"]  # tested in test_scene3d_profiles.py
 PATH_SHAPES = ["pipe", "elbow", "tee", "reducer", "beam", "spring", "handle", "sweep"]  # test_scene3d_paths.py
+PART_SHAPES = ["bolt", "nut", "washer", "gear", "flange"]  # test_scene3d_parts.py
 
 
 def test_every_registered_mesh_shape_is_tested():
     meshy = {s.name for s in all_shapes() if s.builder is not None}
-    assert meshy == set(SAMPLE_PARAMS) | set(READY_MADE) | set(PROFILE_SHAPES) | set(PATH_SHAPES)
+    assert meshy == set(SAMPLE_PARAMS) | set(READY_MADE) | set(PROFILE_SHAPES) | set(PATH_SHAPES) | set(PART_SHAPES)
 
 
 @pytest.mark.parametrize("shape", READY_MADE)

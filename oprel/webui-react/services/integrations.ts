@@ -66,6 +66,7 @@ export type ToolEvent =
   | { type: 'tool_call'; call_id: string; tool: string; title: string; kind: 'read' | 'write'; integration: string; arguments: Record<string, any>; approval: 'auto' | 'manual'; invalid?: boolean }
   | { type: 'approval_required'; approval_id: string; call_id: string; tool: string; title: string; kind: 'read' | 'write'; integration: string; arguments: Record<string, any>; expires_in: number; reason: 'policy' | 'write_limit' }
   | { type: 'tool_result'; call_id: string; tool: string; ok: boolean; data: Record<string, any>; duration_ms: number; rejected?: boolean }
+  | { type: 'plan'; text: string }
   | { type: 'error'; message: string }
   | { type: 'done'; finish_reason: 'stop' | 'approval_required' | 'max_iterations' | 'error'; conversation_id: string | null }
 

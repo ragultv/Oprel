@@ -6,6 +6,7 @@ run_tool_loop() / resume_after_approval() are async generators of *events*:
   {"type": "tool_call",          "call_id", "tool", "title", "kind", "arguments", "approval": "auto"|"manual"}
   {"type": "approval_required",  "approval_id", "call_id", "tool", "title", "kind", "arguments", "expires_in"}
   {"type": "tool_result",        "call_id", "tool", "ok", "data", "duration_ms"}
+  {"type": "plan",               "text"}   (integrations with a planner: what the tool step will build)
   {"type": "content",            "text"}
   {"type": "error",              "message"}
   {"type": "done",               "finish_reason": "stop"|"approval_required"|"max_iterations"|"error",
@@ -103,15 +104,17 @@ class NoToolsAvailable(Exception):
 # helpers
 # ---------------------------------------------------------------------------
 
-def _system_prompt(bound: list[BoundTool], existing: str | None, conversation_id: str | None = None) -> str:
+def _system_prompt(bound: list[BoundTool], existing: str | None, conversation_id: str | None = None,
+                   planned: bool = False) -> str:
     hints = []
     seen = set()
     for b in bound:
         if b.integration.id in seen:
             continue
         seen.add(b.integration.id)
-        if b.integration.system_hint:
-            hints.append(b.integration.system_hint)
+        hint = (planned and b.integration.planned_hint) or b.integration.system_hint
+        if hint:
+            hints.append(hint)
         try:
             # Live state (e.g. what is already drawn): the client's history holds only chat text,
             # so without this a follow-up message can't see what earlier tool calls made.
@@ -454,8 +457,60 @@ async def run_tool_loop(
         "queue": [],
         "events": [],
     }
+    async for ev in _plan_first(state, bound, messages, params):
+        yield ev
     async for ev in _drive(state, bound):
         yield ev
+
+
+_THINK = re.compile(r"<think>.*?</think>", re.DOTALL)
+
+
+async def _plan_first(state: dict[str, Any], bound: list[BoundTool], messages: list[dict[str, Any]],
+                      params: SamplingParams) -> AsyncIterator[dict[str, Any]]:
+    """
+    Two steps for integrations that ask for it: a plan written with a short prompt and no tools,
+    then the tool loop with the plan attached. Seen with Qwen3-8B at 4k context: the tool
+    definitions leave ~800 tokens, and working out how the parts go together while writing the
+    JSON fell apart on multi-part requests ("add a sprue well, a sprue and a pouring cup on it, and
+    make everything one solid" took eight calls and still drew it upside down).
+    """
+    planner = next((b.integration for b in bound if b.integration.planner_prompt), None)
+    last = state["messages"][-1] if state["messages"] else {}
+    text = last.get("content") if last.get("role") == "user" else None
+    if planner is None or not isinstance(text, str) or not planner.wants_plan(text):
+        return
+    conv_id = state.get("conversation_id")
+    system = planner.planner_prompt
+    try:
+        context = planner.context_hint(conv_id)
+    except Exception as exc:  # never let a state summary break the chat
+        logger.warning(f"context_hint failed for {planner.id}: {exc}")
+        context = ""
+    if context:
+        system += "\n\n" + context
+    try:
+        adapter = resolve_adapter(state["model"])
+        turn = await adapter.complete([{"role": "system", "content": system}, {"role": "user", "content": text}],
+                                      [], SamplingParams(**state["params"]))
+    except Exception as exc:  # no plan: the tool step works from the request as before
+        logger.warning(f"planning step failed: {redact(exc)}")
+        return
+    plan = _THINK.sub("", turn.content or "").strip()
+    try:
+        plan = planner.clean_plan(plan).strip() or plan
+    except Exception as exc:  # a tidy-up must never cost the plan
+        logger.warning(f"clean_plan failed for {planner.id}: {exc}")
+    if not plan:
+        return
+    state["plan"] = plan
+    existing = "\n\n".join(m["content"] for m in messages if m.get("role") == "system"
+                           and isinstance(m.get("content"), str) and m["content"].strip())
+    state["messages"][0] = {"role": "system", "content": _system_prompt(bound, existing, conv_id, planned=True)}
+    state["messages"][-1] = {**last, "content": planner.plan_request(text, plan)}
+    event = {"type": "plan", "text": plan}
+    state["events"].append(event)  # saved with the reply, so the plan card survives a reload
+    yield event
 
 
 class ApprovalError(ValueError):

@@ -15,6 +15,7 @@ frame before the parent's own pattern), so parts of a patterned group follow eve
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -31,6 +32,7 @@ from oprel.integrations.scene3d.engine.frame import (
 from trimesh import transformations as tf
 from oprel.integrations.scene3d.engine.registry import get_shape, shape_names
 from oprel.integrations.scene3d.engine.schema import ALIGN_WORDS, PORT_SIDES, TOWARD, object_schema
+from oprel.integrations.scene3d.engine.shapes import parts
 from oprel.integrations.scene3d.engine.shapes.paths import ATTACHED, PORTED
 from oprel.tools.validation import ToolArgumentError, validate_arguments
 
@@ -40,6 +42,9 @@ MAX_TRIANGLES = 400_000
 # Above this many points an extent is reduced to its box corners (exact enough, much faster).
 _MAX_EXTENT_POINTS = 4000
 _TOUCH_TOL = 0.002  # metres
+_SIDE_VECTORS = {"left": (-1, 0, 0), "right": (1, 0, 0), "front": (0, 0, 1), "back": (0, 0, -1),
+                 "top": (0, 1, 0), "bottom": (0, -1, 0)}
+_PERP = np.array([1.0, 0.0, 0.0])  # a gear's tooth 0 points along +X (both axes it can have)
 
 
 class SceneError(ValueError):
@@ -98,14 +103,16 @@ def _build(shape_name: str, params_json: str, cuts_json: str = "[]") -> BuiltMes
     assert sd is not None and sd.builder is not None
     mesh = sd.builder(json.loads(params_json))
     raw_ports = mesh.metadata.pop("ports", {})
+    notes: list[str] = list(mesh.metadata.pop("notes", []))  # how the builder read loose values
+    mesh.metadata.pop("standard", None)
     lo, hi = mesh.bounds
     anchor = np.array([-(lo[0] + hi[0]) / 2, -lo[1], -(lo[2] + hi[2]) / 2])
     mesh.apply_translation(anchor)
     ports = tuple((name, np.asarray(p, float) + anchor, np.asarray(d, float)) for name, (p, d) in raw_ports.items())
-    notes: list[str] = []
     if cuts_json != "[]":
         # Cut in the anchored frame: cut positions are from the uncut object's bottom-centre.
-        mesh, notes = cuts.apply(mesh, json.loads(cuts_json), round_body=shape_name in _ROUND_SHAPES)
+        mesh, cut_notes = cuts.apply(mesh, json.loads(cuts_json), round_body=shape_name in _ROUND_SHAPES)
+        notes += cut_notes
     points = np.asarray(mesh.vertices)
     if len(points) > _MAX_EXTENT_POINTS:
         points = _corners(*aabb(points))
@@ -173,6 +180,14 @@ def _from_diameters(params: dict[str, Any], known: dict[str, Any]) -> dict[str, 
     "diameter": 0.05 for a shape that takes a radius (users and models speak in diameters):
     radius = half. Works for any *_diameter -> *_radius pair the shape has.
     """
+    for word in ("top", "bottom"):
+        # "top_radius" for a cone / cylinder that names it "radius_top" (a vase is the other way round)
+        given, own = f"{word}_radius", f"radius_{word}"
+        if given in params and given not in known and own in known and own not in params:
+            params[own] = params.pop(given)
+        given_d = f"{word}_diameter"
+        if given_d in params and own in known and own not in params and isinstance(params[given_d], (int, float)):
+            params[own] = params.pop(given_d) / 2
     for key in [k for k in params if k.endswith("diameter")]:
         target = key[: -len("diameter")] + "radius"
         value = params[key]
@@ -491,6 +506,9 @@ class _Resolver:
             obj = self.objs[oid]
             if (obj.get("placement") or {}).get("side") in PORT_SIDES:
                 return self._attach_rotation(oid)
+            meshing = self.gear_mesh(oid)
+            if meshing is not None:
+                return meshing[0]
             if _is_around(obj):
                 return IDENTITY  # each copy is turned to face the reference instead
             if _between(obj) and not any(obj.get("rotation") or []):
@@ -527,12 +545,103 @@ class _Resolver:
                 end, facing = self._target_port(oid)
                 at = end + facing * float(placement.get("gap", 0))
                 return at - transform_points(self.rotation(oid), start[None])[0] + np.array(vec3(placement.get("offset")))
+            meshing = self.gear_mesh(oid)
+            if meshing is not None:
+                return meshing[1] + np.array(vec3(placement.get("offset")))
             own_pts = transform_points(self.rotation(oid), self.extent(oid))
             if placement.get("between"):
                 return _place_between(self.between_boxes(oid), own_pts, placement)
-            ref_pts = self._points_in_content_frame(oid, placement["relative_to"], self._parent(oid))
-            return _place(ref_pts, own_pts, placement)
+            ref = placement["relative_to"]
+            ref_pts = self._points_in_content_frame(oid, ref, self._parent(oid))
+            if obj["shape"] == "nut" and self.objs[ref]["shape"] == "bolt":
+                return self._on_bolt(oid, ref, ref_pts, own_pts) + np.array(vec3(placement.get("offset")))
+            t = _place(ref_pts, own_pts, placement)
+            seat = self.built[oid].port("seat") if self.built[oid] else None
+            if seat is not None and placement.get("side") == "top" and self.rotation(oid) is IDENTITY:
+                # A bolt on a part: its head rests on it and the shank goes in (into the hole for it).
+                t[1] -= seat[0][1] - aabb(own_pts)[0][1]
+            return t
         return self._memo("position", oid, compute)
+
+    def _on_bolt(self, oid: str, bolt: str, bolt_pts: np.ndarray, own_pts: np.ndarray) -> np.ndarray:
+        """
+        A nut on a bolt: on its axis, tight under what the bolt holds (the stack of parts it rests
+        on, e.g. washer and plate), or near its end when it holds nothing.
+        """
+        blo, bhi = aabb(bolt_pts)
+        olo, ohi = aabb(own_pts)
+        t = (blo + bhi) / 2 - (olo + ohi) / 2
+        held: list[float] = []
+        node = bolt
+        while True:
+            pl = self.objs[node].get("placement") or {}
+            if pl.get("side") != "top" or not pl.get("relative_to") or len(held) > 20:
+                break
+            node = pl["relative_to"]
+            held.append(float(aabb(self._points_in_content_frame(oid, node, self._parent(oid)))[0][1]))
+        if held:
+            under = min(held)
+            # and whatever is stacked right under that on the bolt's axis (a second plate laid by coordinates)
+            axis = (blo + bhi) / 2
+            frame = self._parent(oid)
+            boxes = []
+            for other, spec in self.objs.items():
+                if other in (oid, bolt) or spec["shape"] in _FASTENERS or self.built[other] is None:
+                    continue
+                try:
+                    boxes.append(aabb(self._points_in_content_frame(oid, other, frame)))
+                except SceneError:
+                    continue  # placed from this nut: not under it
+            moved = True
+            while moved:
+                moved = False
+                for lo, hi in boxes:
+                    if (lo[0] <= axis[0] <= hi[0] and lo[2] <= axis[2] <= hi[2]
+                            and abs(hi[1] - under) <= _TOUCH_TOL and lo[1] < under - _TOUCH_TOL and lo[1] > blo[1]):
+                        under, moved = float(lo[1]), True
+        else:
+            under = blo[1] + 0.2 * (bhi[1] - blo[1]) + (ohi[1] - olo[1])
+        t[1] = under - ohi[1]
+        return t
+
+    def gear_mesh(self, oid: str) -> tuple[np.ndarray, np.ndarray] | None:
+        """
+        (rotation, position) of a gear placed beside another gear (no gap): at the exact centre
+        distance, turned so its teeth sit in the other's gaps. None when it isn't meshing.
+        """
+        obj = self.objs[oid]
+        pl = obj.get("placement") or {}
+        ref = pl.get("relative_to")
+        if (obj["shape"] != "gear" or not ref or self.objs[ref]["shape"] != "gear" or pl.get("gap")
+                or pl.get("side") not in _SIDE_VECTORS):
+            return None
+
+        def compute():
+            own, other = self.built[oid].port("axis"), self.built[ref].port("axis")
+            c_own, n = own
+            pts = np.array([other[0], other[0] + other[1], other[0] + _PERP])
+            frame = self._parent(oid)
+            if ref != frame:
+                pts = self._to_frame(ref, frame, transform_points(self.copies(ref)[0], pts))[:3]
+            c_ref, n_ref = pts[0], pts[1] - pts[0]
+            if abs(float(np.dot(n_ref, n))) < 0.999:
+                return None  # axes not parallel: placed like anything else
+            d = np.array(_SIDE_VECTORS[pl["side"]], float)
+            d -= n * np.dot(d, n)
+            if np.linalg.norm(d) < 0.5:
+                return None  # stacked along the axis (a compound gear), not meshing
+            d /= np.linalg.norm(d)
+            e_ref = pts[2] - pts[0]  # where the other gear's tooth 0 points now
+            theta1 = np.arctan2(np.dot(np.cross(_PERP, e_ref), n), np.dot(_PERP, e_ref))
+            phi = np.arctan2(np.dot(np.cross(_PERP, d), n), np.dot(_PERP, d))
+            z1, z2 = self.objs[ref]["params"]["teeth"], obj["params"]["teeth"]
+            r1 = parts.gear_module(self.objs[ref]["params"]) * z1 / 2
+            r2 = parts.gear_module(obj["params"]) * z2 / 2
+            # Pitch circles roll on each other: tooth of one opposite a gap of the other.
+            theta2 = (z1 * (phi - theta1) + z2 * (phi + np.pi) - np.pi) / z2
+            rot = tf.rotation_matrix(theta2, n, c_own)
+            return rot, c_ref + d * (r1 + r2) - c_own
+        return self._memo("gear", oid, compute)
 
     def mesh_in_frame(self, ref: str, frame: str | None, leave_out: str) -> trimesh.Trimesh:
         """
@@ -742,7 +851,9 @@ def _misplaced_twins(scene: CompiledScene, instance_boxes: dict[str, list[tuple[
         spec = scene.objects[oid].spec
         twin = on_ground.get((spec.get("parent"), spec["shape"], json.dumps(spec.get("params"), sort_keys=True)))
         lowest = min(b[0][1] for b in boxes)
-        if twin and twin != oid and abs(lowest) > _TOUCH_TOL:
+        resting = any(_boxes_touch_below(box, other) and abs(other[1][1] - box[0][1]) <= _TOUCH_TOL
+                      for box in boxes for o2, obs in instance_boxes.items() if o2 != oid for other in obs)
+        if twin and twin != oid and abs(lowest) > _TOUCH_TOL and not resting:  # stacked plates are meant
             out.append(
                 f"'{oid}' is identical to '{twin}', which stands on the ground, but its bottom is at y={lowest:.2f}. "
                 f"Positions are [x, y, z] with y = height: to move a part sideways change z, not y "
@@ -901,7 +1012,8 @@ def _loose_ends(scene: CompiledScene) -> list[str]:
             continue
         m = co.instances[0]
         size = float(np.max(co.bbox[1] - co.bbox[0]))
-        ends += [(oid, n, transform_points(m, p[None])[0], m[:3, :3] @ d, size) for n, p, d in co.built.ports]
+        ends += [(oid, n, transform_points(m, p[None])[0], m[:3, :3] @ d, size) for n, p, d in co.built.ports
+                 if n in PORT_SIDES]  # not a bolt's seat or a gear's axis
     out: list[str] = []
     on_end: dict[tuple[str, str], list[str]] = {}
     for oid, co in scene.objects.items():
@@ -927,8 +1039,151 @@ def _loose_ends(scene: CompiledScene) -> list[str]:
     return out
 
 
-def _below_ground(oid: str, lowest: float, spec: dict[str, Any]) -> str:
+_FASTENERS = {"bolt", "nut", "washer"}
+
+
+def _inside_solid(mesh: trimesh.Trimesh, pts: np.ndarray) -> np.ndarray:
+    """Which points are inside a closed mesh (odd number of crossings along a skewed ray)."""
+    lo, hi = mesh.bounds
+    inside = np.all((pts > lo) & (pts < hi), axis=1)
+    if not inside.any():
+        return inside
+    d = np.array([0.0123, 1.0, 0.0071])
+    d /= np.linalg.norm(d)
+    hits = attach.ray_hits(mesh, pts[inside], d, float(np.linalg.norm(hi - lo)) * 2 + 1.0)
+    inside[np.flatnonzero(inside)] = [len(h) % 2 == 1 for h in hits]
+    return inside
+
+
+def _bolts_in_solid(scene: CompiledScene) -> list[str]:
+    out = []
+    for gap in missing_bolt_holes(scene):
+        copies = f"{gap['copies']} of its copies go" if gap["copies_total"] > 1 else "it goes"
+        out.append(f"'{gap['bolt']}' has no hole: {copies} into solid '{gap['host']}'. Add the hole to "
+                   f"'{gap['host']}' (keep its other cuts): \"cuts\": {json.dumps(gap['cuts'])}.")
+    return out
+
+
+def missing_bolt_holes(scene: CompiledScene) -> list[dict[str, Any]]:
+    """
+    Bolts whose shank runs through solid material (seated on a part with no hole under it): the
+    hole each needs, in the part's own frame, sized for the bolt. Also used by the repair pass.
+    """
+    out: list[dict[str, Any]] = []
+    hosts = [co for co in scene.objects.values() if co.built is not None and co.spec["shape"] not in _FASTENERS]
+    for co in scene.objects.values():
+        seat = co.built.port("seat") if co.built is not None and co.spec["shape"] == "bolt" else None
+        if seat is None or not hosts:
+            continue
+        p, up = seat
+        shank = float(p[1] - co.built.mesh.bounds[0][1])
+        # dense enough not to step over a thin plate (a 10 mm plate on a 120 mm bolt)
+        axis = np.array([p - up * t for t in np.linspace(0.02, 0.98, int(np.clip(shank / 0.0005, 7, 240))) * shank])
+        hit: dict[str, list[np.ndarray]] = {}  # every part it goes through (two clamped plates)
+        for m in co.instances:
+            world = transform_points(m, axis)
+            for host in hosts:
+                h = host.instances[0]
+                local = transform_points(np.linalg.inv(h), world)
+                inside = _inside_solid(host.built.mesh, local)
+                if inside.any():
+                    hit.setdefault(host.id, []).append(local[np.flatnonzero(inside)[0]])
+        size = parts.standards.metric(co.spec["params"]["size"])[0].name
+        # Countersunk: only the part its head sits in gets the countersink.
+        sunk = co.spec["params"].get("head") == "countersunk"
+        seated_on = (co.spec.get("placement") or {}).get("relative_to")
+        for host_id, where in hit.items():
+            extra = {"countersunk": True} if sunk and (host_id == seated_on or len(hit) == 1) else {}
+
+            def hole(at: np.ndarray, **more: Any) -> dict[str, Any]:
+                return {"bolt": size, "position": [round(float(at[0]), 4), 0, round(float(at[2]), 4)], **more, **extra}
+
+            if len(where) == len(co.instances) > 1 and co.spec.get("pattern"):
+                # every copy: one cut with the bolts' own pattern, centred where they are
+                cuts_ = [hole(np.mean(where, axis=0), pattern=co.spec["pattern"])]
+            else:
+                cuts_ = [hole(at) for at in where]
+            out.append({"bolt": co.id, "host": host_id, "cuts": cuts_, "copies": len(where),
+                        "copies_total": len(co.instances)})
+    return out
+
+
+def _nuts_off_bolts(scene: CompiledScene) -> list[str]:
+    """A nut threaded onto a bolt too short to reach through what it holds."""
+    out: list[str] = []
+    for co in scene.objects.values():
+        ref = (co.spec.get("placement") or {}).get("relative_to")
+        bolt = scene.objects.get(ref) if co.spec["shape"] == "nut" and ref else None
+        if bolt is None or bolt.spec["shape"] != "bolt" or bolt.built is None:
+            continue
+        _, pitch = parts.standards.metric(bolt.spec["params"]["size"])
+        # A bolt should stick out at least two threads past its nut.
+        short = float(bolt.bbox[0][1] - (co.bbox[0][1] - 2 * pitch / 1000))
+        if short <= 1e-4:
+            continue
+        seat = bolt.built.port("seat")
+        now = float(seat[0][1] - bolt.built.mesh.bounds[0][1]) if seat else 0.0
+        need = math.ceil((now + short - 1e-9) / 0.005) * 0.005
+        hangs = float(bolt.bbox[0][1] - co.bbox[0][1])
+        what = (f"hangs {hangs * 1000:.1f} mm off the end of '{ref}'" if hangs > 0 else
+                f"leaves only {-hangs * 1000:.1f} mm of '{ref}' sticking out (at least 2 threads, "
+                f"{2 * pitch:g} mm, should)")
+        out.append(f"'{co.id}' {what}: the bolt is too short for what it holds. Use \"length\": {need:g} on '{ref}'.")
+    return out
+
+
+def _gear_pairs(scene: CompiledScene) -> list[str]:
+    """Gears placed to mesh that can't: different module, or helical with the same hand."""
+    out: list[str] = []
+    for co in scene.objects.values():
+        ref = (co.spec.get("placement") or {}).get("relative_to")
+        other = scene.objects.get(ref) if co.spec["shape"] == "gear" and ref else None
+        if other is None or other.spec["shape"] != "gear":
+            continue
+        a, b = co.spec["params"], other.spec["params"]
+        ma, mb = parts.gear_module(a), parts.gear_module(b)
+        if abs(ma - mb) > 1e-9:
+            out.append(f"'{co.id}' (module {ma * 1000:g} mm) can't mesh with '{ref}' (module {mb * 1000:g} mm): "
+                       f"meshing gears need the same module. Use \"module\": {mb * 1000:g} on '{co.id}'.")
+        ha, hb = a.get("helix_angle") or 0, b.get("helix_angle") or 0
+        if (ha or hb) and abs(ha + hb) > 1e-6:
+            out.append(f"'{co.id}' and '{ref}' are helical gears on parallel axes: their helix angles must be "
+                       f"opposite. Use \"helix_angle\": {-hb + 0:g} on '{co.id}'.")
+    return out
+
+
+def _through_a_part(spec: dict[str, Any], objs: dict[str, dict[str, Any]]) -> bool:
+    """A bolt seated on a part (or a nut on such a bolt): through a plate on the floor is meant."""
+    pl = spec.get("placement") or {}
+    ref = objs.get(pl.get("relative_to") or "")
+    if spec["shape"] == "nut" and ref is not None and ref["shape"] == "bolt":
+        return True
+    return spec["shape"] == "bolt" and ref is not None and pl.get("side") == "top"
+
+
+def _meshing(spec: dict[str, Any], objs: dict[str, dict[str, Any]]) -> bool:
+    """A gear placed to mesh with another: held at the other's axis height, whatever is under it."""
+    pl = spec.get("placement") or {}
+    ref = objs.get(pl.get("relative_to") or "")
+    return (spec["shape"] == "gear" and ref is not None and ref["shape"] == "gear" and not pl.get("gap")
+            and pl.get("side") in _SIDE_VECTORS)
+
+
+def _below_ground(oid: str, lowest: float, spec: dict[str, Any], objs: dict[str, dict[str, Any]]) -> str:
     placement = spec.get("placement") or {}
+    root = oid
+    while (objs[root]["shape"] == "gear" and (objs[root].get("placement") or {}).get("relative_to") in objs
+           and objs[objs[root]["placement"]["relative_to"]]["shape"] == "gear"):
+        root = objs[root]["placement"]["relative_to"]
+        if root == oid:
+            break
+    if root != oid:
+        # Meshing gears share their axis height, so the train has to go up together.
+        pos = list(vec3(objs[root].get("position")))
+        pos[1] += -lowest
+        return (f"'{oid}' goes {-lowest:.3f} m below the ground: it meshes with the gears before it at their axis "
+                f"height. Lift the first gear of the train: \"position\": [{', '.join(f'{v:.4g}' for v in pos)}] "
+                f"on '{root}'.")
     if placement.get("side") == "bottom" and placement.get("relative_to"):
         # Seen with Qwen3-8B: side "bottom" used to mean "at the bottom, next to it".
         return (f"'{oid}' goes {-lowest:.3f} m below the ground: side \"bottom\" puts it underneath "
@@ -959,8 +1214,8 @@ def _warnings(scene: CompiledScene, objs: dict[str, dict[str, Any]]) -> list[str
         boxes = [aabb(transform_points(m, co.built.points)) for m in co.instances]
         instance_boxes[oid] = boxes
         lowest = min(b[0][1] for b in boxes)
-        if lowest < -_TOUCH_TOL:
-            out.append(_below_ground(oid, lowest, co.spec))
+        if lowest < -_TOUCH_TOL and not _through_a_part(co.spec, objs):
+            out.append(_below_ground(oid, lowest, co.spec, objs))
 
     out.extend(_overhanging_supports(scene))
     out.extend(_inside_another(scene))
@@ -970,6 +1225,9 @@ def _warnings(scene: CompiledScene, objs: dict[str, dict[str, Any]]) -> list[str
     out.extend(_odd_proportions(scene))
     out.extend(_loose_ends(scene))
     out.extend(_stray_handles(scene))
+    out.extend(_bolts_in_solid(scene))
+    out.extend(_nuts_off_bolts(scene))
+    out.extend(_gear_pairs(scene))
 
     def subtree(root: str) -> set[str]:
         ids = {root}
@@ -986,8 +1244,9 @@ def _warnings(scene: CompiledScene, objs: dict[str, dict[str, Any]]) -> list[str
         if co.spec.get("parent"):
             continue  # parts are judged together with their top-level object
         lo = co.bbox[0]
-        if lo[1] <= _TOUCH_TOL:
-            continue
+        if (lo[1] <= _TOUCH_TOL or (co.spec.get("placement") or {}).get("side") in PORT_SIDES
+                or _through_a_part(co.spec, objs) or _meshing(co.spec, objs)):
+            continue  # on the ground, held by the end it is joined to (a flange wider than its pipe) or a bolt
         own = subtree(oid)
         if not own & instance_boxes.keys():
             continue  # empty group

@@ -22,6 +22,7 @@ from oprel.integrations.scene3d.engine.registry import all_shapes
 from oprel.integrations.scene3d.engine import intent
 from oprel.integrations.scene3d.engine.cuts import CUTTERS, THROUGH
 from oprel.integrations.scene3d.engine.schema import PORT_SIDES, lean, object_schema, update_schema
+from oprel.integrations.scene3d.engine.shapes import parts
 from oprel.integrations.scene3d.engine.shapes.paths import PORTED
 from oprel.tools.base import Tool, ToolContext, ToolError
 
@@ -83,8 +84,16 @@ async def _compile(objects: list[dict[str, Any]]) -> CompiledScene:
 
 async def _compile_and_repair(objects: list[dict[str, Any]]) -> tuple[CompiledScene, list[str]]:
     """Compile, apply the deterministic fixes in repair.py (editing `objects`), recompile."""
+    dropped: dict[str, list[float]] = {}
+    for o in objects:
+        if o.get("placement") and "position" in o:
+            # Placement decides where it goes; warning about the unused position cost Qwen3-8B a whole
+            # extra round per draw ("both position and placement were given") at 4k context.
+            dropped[o["id"]] = list(vec3(o.pop("position")))
     compiled = await _compile(objects)
-    notes: list[str] = []
+    notes: list[str] = _gap_slips(objects, compiled, dropped)
+    if notes:
+        compiled = await _compile(objects)
     for _ in range(3):  # fitting legs can expose a gap, which the next round closes
         fixes = repair(objects, compiled)
         if not fixes:
@@ -92,6 +101,31 @@ async def _compile_and_repair(objects: list[dict[str, Any]]) -> tuple[CompiledSc
         notes += fixes
         compiled = await _compile(objects)
     return compiled, notes
+
+
+_SIDE_AXES = {"left": (0, 0), "right": (0, 1), "back": (2, 0), "front": (2, 1), "bottom": (1, 0), "top": (1, 1)}
+
+
+def _gap_slips(objects: list[dict[str, Any]], scene: CompiledScene, dropped: dict[str, list[float]]) -> list[str]:
+    """
+    A gap in a placement whose (dropped) position sits right on the face it is placed against: the
+    position says "touching", so the gap was a slip. Seen with Qwen3-8B: an ingate "at the middle of
+    the casting's right end" with position x = 0.1 (the casting's right face) and gap 0.1.
+    """
+    notes: list[str] = []
+    for o in objects:
+        pl = o.get("placement") or {}
+        ref = scene.objects.get(pl.get("relative_to", ""))
+        if o["id"] not in dropped or not pl.get("gap") or pl.get("side") not in _SIDE_AXES or ref is None:
+            continue
+        if o.get("parent") != ref.spec.get("parent"):
+            continue  # positions in a different frame
+        axis, hi = _SIDE_AXES[pl["side"]]
+        face = ref.bbox[1 if hi else 0][axis]
+        if abs(dropped[o["id"]][axis] - face) <= 0.002:
+            notes.append(f"'{o['id']}' touches '{ref.id}' (its position was on that face; gap {pl['gap']:g} dropped).")
+            pl.pop("gap")
+    return notes
 
 
 def _result(version: int, scene: CompiledScene, touched: list[str], verb: str) -> dict[str, Any]:
@@ -176,10 +210,29 @@ async def add_objects(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
             obj["id"] = oid
             taken.add(oid)
 
+    for obj in added:
+        if isinstance(obj.get("label"), str) and len(obj["label"]) > 80:
+            obj["label"] = obj["label"][:80]  # a long label refused the whole call (Qwen3-8B)
+        if str(obj.get("shape", "")).lower() == "group" and obj.get("cuts"):
+            # Refusing it cascaded into "parent ... does not exist" for everything put in it.
+            obj.pop("cuts")
+            word_notes.append(f"Left out the cuts on group '{obj['id']}': a group has no shape of its own (put "
+                              f"holes on one of its parts).")
+        pl = obj.get("placement")
+        if isinstance(pl, dict) and not pl.get("relative_to") and not pl.get("between"):
+            # Qwen3-8B sent {"side": "left", "align": "left"} with nothing to be left of, and resent it five
+            # times as each call was refused. Without an object to place against it means nothing.
+            obj.pop("placement")
+            word_notes.append(f"Left out '{obj['id']}''s placement: it named no object to place it against.")
+            continue
+        if isinstance(pl, dict) and pl.get("relative_to") == obj["id"] and not pl.get("between"):
+            # Qwen3-8B placed an L bracket relative to itself; refusing it dropped the screws on it too.
+            obj.pop("placement")
+            word_notes.append(f"Left out '{obj['id']}''s placement: it was relative to itself.")
     wrap_notes = word_notes + await _holes_to_cuts(added, existing, updated)
     for obj in added:
         obj.pop("_hole", None)
-    wrap_notes += _handles_from_cuts(added, taken) + _wrap_merged_shapes(added, taken)
+    wrap_notes += _fit_parts(added, existing) + _handles_from_cuts(added, taken) + _wrap_merged_shapes(added, taken)
     changed = added + [by_id[u] for u in updated]
     notes = wrap_notes + (_chain_references(added) + _join_runs(added, edit_warnings) + _resolve_references(changed, existing + added) + _adopt_orphans(added, existing)
              + _fill_merge_groups(added, existing))
@@ -187,7 +240,14 @@ async def add_objects(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         notes.insert(0, f"{', '.join(repr(u) for u in updated)} {'was' if len(updated) == 1 else 'were'} "
                         f"already there, so {'it was' if len(updated) == 1 else 'they were'} updated "
                         f"instead of adding a copy.")
+    before = list(added)
     added, dropped = await _drop_broken(existing, added)
+    gone = {o["id"] for o in before} - {o["id"] for o in added}
+    if gone:
+        # A group whose parts were all left out (a merged wrapper round a broken shape) is empty now.
+        empty = {g["id"] for g in added if g.get("shape") == "group"
+                 and (kids := [o for o in before if o.get("parent") == g["id"]]) and all(k["id"] in gone for k in kids)}
+        added = [o for o in added if o["id"] not in empty]
     objects = existing + added
     try:
         compiled, fixes = await _compile_and_repair(objects)
@@ -377,6 +437,160 @@ def _same_spot_twin(obj: dict[str, Any], existing: list[dict[str, Any]]) -> dict
     return matches[0] if len(matches) == 1 else None
 
 
+_FASTENERS = {"bolt", "nut", "washer"}
+_GEAR_SIDES = {"z": ((0, "right", "left"), (1, "top", "bottom")), "y": ((0, "right", "left"), (2, "front", "back"))}
+
+
+def _fit_parts(added: list[dict[str, Any]], existing: list[dict[str, Any]]) -> list[str]:
+    """
+    Standard parts the way they go together, from how Qwen3-8B wrote them (live, 4k context: no
+    turn left to fix anything after the first draw):
+      - a bolt placed on a part with side "bottom" / "center" ("bolted down", "through the middle"):
+        it goes in from the top, head resting on the part;
+      - a fastener with both a position and a placement: the position was its spot on the part
+        (four corner screws at [0.05, 0, 0.05] ...), so it becomes the placement's offset;
+      - gears listed one after another with positions side by side ("two meshing gears" drawn
+        1.5 m apart): each meshes with the one before it, on the side it was put; a "merge" on a
+        single gear means nothing and is dropped.
+    """
+    notes: list[str] = []
+    shapes = {o["id"]: o.get("shape") for o in existing + added}
+    bolt_in: dict[str, str] = {}
+
+    def named(ref: Any) -> Any:
+        """An id, or the one object with that label or shape (references are resolved later)."""
+        if not isinstance(ref, str) or ref in shapes:
+            return ref
+        key = ref.strip().lower()
+        hits = [o["id"] for o in existing + added if str(o.get("label", "")).strip().lower() == key
+                or str(o.get("shape", "")).lower() == key]
+        return hits[0] if len(hits) == 1 else ref
+
+    for obj in added:
+        # Parented to a solid part instead of placed on it (Qwen3-8B, live: bolt and nut with "parent":
+        # "Steel plate" and positions): on that part, the nut on the bolt that goes through it.
+        host = named(obj.get("parent"))
+        if (obj.get("shape") in _FASTENERS and not obj.get("placement") and isinstance(host, str)
+                and shapes.get(host) not in (None, "group", *_FASTENERS)):
+            pos = vec3(obj.get("position"))
+            if obj["shape"] == "nut" and host in bolt_in:
+                obj["placement"] = {"relative_to": bolt_in[host], "side": "bottom"}
+            else:
+                obj["placement"] = {"relative_to": host, "side": "top", **({"offset": [pos[0], 0, pos[2]]}
+                                                                           if pos[0] or pos[2] else {})}
+                if obj["shape"] == "bolt":
+                    bolt_in.setdefault(host, obj["id"])
+            obj.pop("parent")
+            obj.pop("position", None)
+            word = "through" if obj["shape"] == "bolt" else "on"
+            notes.append(f"Put '{obj['id']}' {word} '{obj['placement']['relative_to']}' (it was a part of it).")
+    notes += _stack_fasteners(added, shapes)
+    for obj in added:
+        pl = obj.get("placement") if isinstance(obj.get("placement"), dict) else None
+        if obj.get("shape") not in _FASTENERS or not pl:
+            continue
+        pos = vec3(obj.get("position"))
+        obj.pop("position", None)  # a nut on its bolt: the bolt says where
+        if shapes.get(pl.get("relative_to")) in _FASTENERS | {None}:
+            continue
+        if (pos[0] or pos[2]) and not any(vec3(pl.get("offset"))):
+            pl["offset"] = [pos[0], 0, pos[2]]
+        if obj["shape"] == "bolt" and pl.get("side", "center") in ("bottom", "center"):
+            pl["side"] = "top"
+            pl.pop("vertical", None)
+            notes.append(f"Put '{obj['id']}' through '{pl['relative_to']}' from the top, its head resting on it.")
+    by_id_ = {o["id"]: o for o in existing + added}
+    for w in added:
+        # A washer placed on a bolt is the one under its head (Qwen3-8B, live: side "top" of the bolt, so
+        # it floated above the head): it goes on the part, and the bolt on it.
+        pl = w.get("placement") if isinstance(w.get("placement"), dict) else {}
+        b = by_id_.get(pl.get("relative_to"))
+        held = (b or {}).get("placement") or {}
+        if (w.get("shape") != "washer" or not b or b.get("shape") != "bolt" or pl.get("side") == "bottom"
+                or held.get("side") != "top" or shapes.get(held.get("relative_to")) in _FASTENERS | {None}):
+            continue
+        w["placement"] = {"relative_to": held["relative_to"], "side": "top",
+                          **({"offset": held["offset"]} if held.get("offset") else {})}
+        b["placement"] = {"relative_to": w["id"], "side": "top"}
+        notes.append(f"Put '{w['id']}' under the head of '{b['id']}'.")
+    for obj in added:
+        if obj.get("shape") in _FASTENERS:
+            obj.pop("merge", None)  # one bolt is one solid already: no merged group of one
+    gears = [o for o in added if o.get("shape") == "gear" and not o.get("placement") and not o.get("pattern")]
+    for prev, obj in zip(gears, gears[1:]):
+        a, b = prev.get("params") or {}, obj.get("params") or {}
+        axis = str(b.get("axis") or "z").lower()
+        try:
+            same = (abs(parts.gear_module(a) - parts.gear_module(b)) < 1e-9
+                    and axis == str(a.get("axis") or "z").lower() and prev.get("parent") == obj.get("parent"))
+        except (TypeError, KeyError):
+            same = False
+        if not same or axis not in _GEAR_SIDES:
+            continue
+        d = np.array(vec3(obj.get("position"))) - np.array(vec3(prev.get("position")))
+        a_i, plus, minus = max(_GEAR_SIDES[axis], key=lambda s: abs(d[s[0]]))
+        side = plus if d[a_i] >= 0 else minus
+        obj.pop("position", None)
+        obj["placement"] = {"relative_to": prev["id"], "side": side}
+        for g in (prev, obj):
+            g.pop("merge", None)
+        notes.append(f"Meshed '{obj['id']}' with '{prev['id']}' ({side} of it, at the exact centre distance).")
+    by_id = {o["id"]: o for o in existing + added}
+    for obj in added:
+        # Helical gears on parallel axes mesh only with opposite hands (Qwen3-8B gave both 30).
+        pl = obj.get("placement") if isinstance(obj.get("placement"), dict) else {}
+        ref = by_id.get(pl.get("relative_to"))
+        if obj.get("shape") != "gear" or not ref or ref.get("shape") != "gear" or pl.get("gap"):
+            continue
+        mine, theirs = (obj.get("params") or {}).get("helix_angle") or 0, (ref.get("params") or {}).get("helix_angle") or 0
+        if theirs and isinstance(mine, (int, float)) and mine == theirs:
+            obj["params"]["helix_angle"] = -theirs
+            notes.append(f"Made '{obj['id']}' the opposite hand (helix_angle {-theirs:g}) so it meshes with "
+                         f"'{ref['id']}'.")
+    return notes
+
+
+def _stack_fasteners(added: list[dict[str, Any]], shapes: dict[str, Any]) -> list[str]:
+    """
+    Fasteners laid out by coordinates next to the parts they hold (Qwen3-8B, live: "clamp two plates
+    with an M12 bolt, a washer under the head and a nut underneath" as one group, bolt, washer and
+    nut all at [0, 0.005, 0]): stacked on the top part, washer under the head, nut underneath.
+    """
+    notes: list[str] = []
+    loose = [o for o in added if o.get("shape") in _FASTENERS and not o.get("placement") and not o.get("pattern")]
+    for parent in {o.get("parent") for o in loose}:
+        parts_ = [o for o in added if o.get("parent") == parent and o.get("shape") not in (*_FASTENERS, "group")
+                  and not o.get("placement") and shapes.get(o["id"])]
+        mine = [o for o in loose if o.get("parent") == parent]
+        bolts = [o for o in mine if o["shape"] == "bolt"]
+        if not parts_ or len(bolts) != 1:
+            continue  # nothing to hold, or which nut goes on which bolt is unclear
+        top = max(parts_, key=lambda o: vec3(o.get("position"))[1])
+        bolt = bolts[0]
+        bx, _, bz = vec3(bolt.get("position"))
+        tx, _, tz = vec3(top.get("position"))
+        off = {"offset": [round(bx - tx, 6), 0, round(bz - tz, 6)]} if abs(bx - tx) + abs(bz - tz) > 1e-9 else {}
+        washers = [o for o in mine if o["shape"] == "washer"]
+        seat = top["id"]
+        if washers:
+            washers[0]["placement"] = {"relative_to": top["id"], "side": "top", **off}
+            seat, off = washers[0]["id"], {}
+        bolt["placement"] = {"relative_to": seat, "side": "top", **off}
+        for o in mine:
+            if o["shape"] == "nut":
+                o["placement"] = {"relative_to": bolt["id"], "side": "bottom"}
+        merged = parent is not None and any(o["id"] == parent and o.get("merge") for o in added)
+        for o in mine:
+            o.pop("position", None)
+            if merged:
+                o.pop("parent")  # they hold the parts together; fused in, they'd be loose bodies
+        notes.append(f"Stacked {', '.join(repr(o['id']) for o in mine)} on '{top['id']}'"
+                     f"{' (as separate parts, not fused)' if merged else ''}: "
+                     f"{'washer under the head, ' if washers else ''}bolt through it"
+                     f"{', nut underneath' if any(o['shape'] == 'nut' for o in mine) else ''}.")
+    return notes
+
+
 def _chain_references(added: list[dict[str, Any]]) -> list[str]:
     """
     In a run of unnamed parts joined end to end, "relative_to": "elbow" means the elbow just
@@ -422,6 +636,13 @@ def _join_runs(added: list[dict[str, Any]], warnings: list[str]) -> list[str]:
     notes: list[str] = []
     for prev, obj in loose:
         obj.pop("position", None)
+        held = prev.get("placement") or {}
+        if obj.get("shape") == prev.get("shape") == "flange" and held.get("side") == "end":
+            # "a pipe with flanges on both ends", listed pipe, flange, flange: the second goes on the
+            # pipe's other end, not stacked on the first.
+            obj["placement"] = {"relative_to": held["relative_to"], "side": "start"}
+            notes.append(f"Joined '{obj['id']}' to the start of '{held['relative_to']}'.")
+            continue
         obj["placement"] = {"relative_to": prev["id"], "side": "end"}
         notes.append(f"Joined '{obj['id']}' to the end of '{prev['id']}'.")
     return notes
@@ -443,6 +664,13 @@ def _resolve_references(added: list[dict[str, Any]], objects: list[dict[str, Any
         key = ref.strip().lower()
         matches = [o["id"] for o in objects
                    if str(o.get("shape", "")).lower() == key or str(o.get("label", "")).strip().lower() == key]
+        if not matches:
+            # "casting" for 'casting_box', or for the box labelled "Casting box" (a plan and the drawing named it
+            # differently): the one object whose id or label has every word of it.
+            words = set(re.split(r"[\s_\-]+", key)) - {""}
+            matches = [o["id"] for o in objects if words and (
+                words <= set(re.split(r"[\s_\-]+", str(o["id"]).lower()))
+                or words <= set(re.split(r"[\s_\-]+", str(o.get("label", "")).lower())))]
         return matches[0] if len(matches) == 1 else None
 
     notes = []
@@ -563,6 +791,26 @@ def _wrap_merged_shapes(added: list[dict[str, Any]], taken: set[str]) -> list[st
     merged group; its parts come along, since they hang off it.
     """
     notes: list[str] = []
+    flagged = [o for o in added if o.get("merge") and str(o.get("shape", "")).lower() != "group" and not o.get("parent")]
+    merged_groups = [o for o in added if str(o.get("shape", "")).lower() == "group" and o.get("merge")]
+    if len(flagged) > 1 or (flagged and merged_groups):
+        # "Make everything one solid part" sent as "merge": true on each new part (Qwen3-8B, a casting's
+        # sprue well, sprue and pouring cup): one merged group of all of it, and of what is drawn.
+        if merged_groups:
+            group = merged_groups[0]
+        else:
+            gid, n = "part", 1
+            while gid in taken:
+                n += 1
+                gid = f"part{n}"
+            taken.add(gid)
+            group = {"id": gid, "shape": "group", "merge": True}
+            added.insert(added.index(flagged[0]), group)
+        group["_fill"] = True
+        for obj in flagged:
+            obj.pop("merge")
+            obj["parent"] = group["id"]
+        notes.append(f"Put {', '.join(repr(o['id']) for o in flagged)} in merged group '{group['id']}': one solid.")
     for obj in list(added):
         if not obj.get("merge") or str(obj.get("shape", "")).lower() == "group":
             continue
@@ -589,7 +837,9 @@ def _fill_merge_groups(added: list[dict[str, Any]], existing: list[dict[str, Any
     notes: list[str] = []
     everything = existing + added
     for g in added:
-        if g.get("shape") != "group" or not g.get("merge") or any(o.get("parent") == g["id"] for o in everything):
+        fill = g.pop("_fill", False)  # its parts were merge-flagged ones: "everything" includes what's drawn
+        if g.get("shape") != "group" or not g.get("merge") or (
+                not fill and any(o.get("parent") == g["id"] for o in everything)):
             continue
         tops = [o for o in existing if not o.get("parent") and o["id"] != g["id"]]
         for o in tops:

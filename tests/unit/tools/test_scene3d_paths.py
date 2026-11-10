@@ -297,7 +297,7 @@ def test_a_part_that_failed_is_not_also_called_missing():
         compile_scene([{"id": "p", "shape": "pipe", "params": {"radius": 0.05}},
                        {"id": "e", "shape": "elbow", "params": {"radius": 0.05},
                         "placement": {"relative_to": "p", "side": "end"}}])
-    assert err.value.errors == ["'p' (pipe): Missing required argument 'length'. Expected pipe(length, radius, wall?, axis?)"]
+    assert err.value.errors == ["'p' (pipe): Missing required argument 'length'. Expected pipe(length, radius?, wall?, axis?, size?)"]
 
 
 def test_direction_words_a_shape_does_not_take_are_dropped_quietly():

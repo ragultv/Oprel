@@ -18,6 +18,7 @@ import trimesh
 from shapely.affinity import scale
 from shapely.geometry import Polygon
 
+from oprel.integrations.scene3d.engine import standards
 from oprel.integrations.scene3d.engine import sweep as sw
 from oprel.integrations.scene3d.engine.cuts import to_trimesh
 from oprel.integrations.scene3d.engine.outline import POINTS, explain, pairs
@@ -50,10 +51,11 @@ def _straight(profile, length_: float, axis: str) -> trimesh.Trimesh:
 
 @shape("pipe", "Along X (axis y = upright).",
        {"length": length("Length"), "radius": length("Outer radius"), "wall": length("Wall thickness"),
-        "axis": _AXIS},
-       required=("length", "radius"))
+        "axis": _AXIS, "size": {"type": ["string", "number"], "description": "Nominal size, e.g. \"DN50\""}},
+       required=("length",))
 def pipe(p: dict[str, Any]) -> trimesh.Trimesh:
-    r = p["radius"]
+    _need(p.get("radius") or p.get("size"), "pipe needs 'radius' (outer), or 'size' like \"DN50\"")
+    r = p.get("radius") or standards.nominal(p["size"]).pipe_od / 2000
     return _straight(sw.circle_profile(r, _wall(p, r), _SEG), p["length"], p["axis"])
 
 
@@ -275,6 +277,6 @@ def _helix_sweep(prof: Polygon, spec: dict[str, Any]) -> trimesh.Trimesh:
 
 
 # Parts with open ends another part can be joined to (placement side "start" / "end" / "branch").
-PORTED = frozenset({"pipe", "elbow", "tee", "reducer", "beam", "sweep"})
+PORTED = frozenset({"pipe", "elbow", "tee", "reducer", "beam", "sweep", "flange"})
 # Parts placed beside an object are built onto its surface (engine/attach.py).
 ATTACHED = frozenset({"handle"})

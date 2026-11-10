@@ -2,7 +2,7 @@
 
 import React, { useMemo, useState } from 'react'
 import {
-  AlertTriangle, Check, ChevronDown, ChevronRight, ExternalLink, Loader2, Pencil, ShieldQuestion, X, Wrench,
+  AlertTriangle, Check, ChevronDown, ChevronRight, ExternalLink, ListChecks, Loader2, Pencil, ShieldQuestion, X, Wrench,
 } from 'lucide-react'
 import type { ToolEvent } from '@/services/integrations'
 import { cn } from '@/services/utils'
@@ -24,12 +24,15 @@ interface CallView {
   result?: Extract<ToolEvent, { type: 'tool_result' }>
 }
 
-function groupCalls(events: ToolEvent[]): { calls: CallView[]; errors: string[] } {
+function groupCalls(events: ToolEvent[]): { calls: CallView[]; errors: string[]; plans: string[] } {
   const byId = new Map<string, CallView>()
   const errors: string[] = []
+  const plans: string[] = []
   for (const ev of events) {
     if (ev.type === 'error') { errors.push(ev.message); continue }
+    if (ev.type === 'plan') { plans.push(ev.text); continue }
     if (ev.type === 'done') continue
+    if (!('call_id' in ev) || !ev.call_id) continue  // an event this UI doesn't know: never a stuck tool card
     const view = byId.get(ev.call_id) || {
       callId: ev.call_id,
       tool: ev.tool,
@@ -42,7 +45,27 @@ function groupCalls(events: ToolEvent[]): { calls: CallView[]; errors: string[] 
     if (ev.type === 'tool_result') view.result = ev
     byId.set(ev.call_id, view)
   }
-  return { calls: Array.from(byId.values()), errors }
+  return { calls: Array.from(byId.values()), errors, plans }
+}
+
+/** What the model planned before calling the tools (two-step integrations such as the 3D scene). */
+function PlanCard({ text }: { text: string }) {
+  const [open, setOpen] = useState(true)
+  return (
+    <div className="rounded-lg border border-border/60 bg-secondary/30 text-xs">
+      <button onClick={() => setOpen(o => !o)} className="w-full flex items-center gap-2 px-3 py-2 text-left">
+        <ListChecks size={13} className="text-primary shrink-0" />
+        <span className="font-medium text-foreground">Plan</span>
+        <span className="text-muted-foreground truncate flex-1">{text.split('\n').filter(l => l.trim()).length} steps</span>
+        {open ? <ChevronDown size={12} className="text-muted-foreground shrink-0" /> : <ChevronRight size={12} className="text-muted-foreground shrink-0" />}
+      </button>
+      {open && (
+        <pre className="mx-3 mb-3 whitespace-pre-wrap font-mono text-[11px] text-foreground bg-background/60 border border-border/50 rounded-md p-2 max-h-60 overflow-auto">
+          {text}
+        </pre>
+      )}
+    </div>
+  )
 }
 
 /** Pull a link + label out of a tool result for display (works for any integration returning {url}). */
@@ -287,13 +310,14 @@ export default function ToolActivity({
   events: ToolEvent[]
   onDecision?: ApprovalDecisionHandler
 }) {
-  const { calls, errors } = useMemo(() => groupCalls(events), [events])
-  if (!calls.length && !errors.length) return null
+  const { calls, errors, plans } = useMemo(() => groupCalls(events), [events])
+  if (!calls.length && !errors.length && !plans.length) return null
   return (
     <div className="space-y-2 mb-3">
       <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
         <Wrench size={11} /> Tools
       </div>
+      {plans.map((p, i) => <PlanCard key={`plan-${i}`} text={p} />)}
       {calls.map(view =>
         view.approval && !view.call && !view.result
           ? <ApprovalCard key={view.callId} view={view} onDecision={onDecision} />

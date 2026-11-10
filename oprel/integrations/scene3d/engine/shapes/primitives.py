@@ -56,11 +56,19 @@ def cylinder(p: dict[str, Any]) -> trimesh.Trimesh:
     return _solid_of_revolution([[0, 0], [bottom, 0], [top, p["height"]], [0, p["height"]]], p["segments"])
 
 
-@shape("cone", "Upright cone, point at the top.",
-       {"radius": length("Base radius"), "height": length("Height"), "segments": SEGMENTS},
-       required=("radius", "height"))
+@shape("cone", "Upright, point at the top; radius_top = cut off (funnel, pouring cup: top wider).",
+       {"radius": length("Bottom radius"), "radius_top": {"type": "number", "minimum": 0, "maximum": 1000},
+        "height": length("Height"), "radius_bottom": length("Bottom radius"), "segments": SEGMENTS},
+       required=("height",))
 def cone(p: dict[str, Any]) -> trimesh.Trimesh:
-    return _y_up(trimesh.creation.cone(radius=p["radius"], height=p["height"], sections=p["segments"]))
+    # Qwen3-8B drew "a pouring cup cone from radius 1.5 cm to 5 cm" as a spike: a cone had no top radius.
+    bottom = p.get("radius_bottom", p.get("radius"))
+    if bottom is None:
+        raise ToolArgumentError("cone needs 'radius' (its bottom); add 'radius_top' to cut the point off")
+    top = p.get("radius_top") or 0.0
+    if top <= 1e-9:
+        return _y_up(trimesh.creation.cone(radius=bottom, height=p["height"], sections=p["segments"]))
+    return _solid_of_revolution([[0, 0], [bottom, 0], [top, p["height"]], [0, p["height"]]], p["segments"])
 
 
 @shape("sphere", "",

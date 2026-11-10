@@ -21,7 +21,11 @@ MAX_LEN = 1000.0
 # Accepted but left out of the signatures the model sees (each costs tokens on every turn).
 QUIET_PARAMS = frozenset({"segments", "top_thickness", "leg_radius"})
 # Per shape: sweep's thickness is an alias models reach for ("a 1 cm thick rod").
-QUIET_SHAPE_PARAMS = {"sweep": frozenset({"thickness"}), "cup": frozenset({"handles", "handle_style"})}
+QUIET_SHAPE_PARAMS = {"sweep": frozenset({"thickness"}), "cone": frozenset({"radius_bottom"}), "cup": frozenset({"handles", "handle_style"}),
+                      "bolt": frozenset({"thread"}), "nut": frozenset({"thread"}),
+                      # thickness: shown, Qwen3-8B gave 30 mm gears a 200 mm face; the default fits
+                      "gear": frozenset({"pressure_angle", "radius", "bore_radius", "thickness"}),
+                      "flange": frozenset({"bore_radius", "thickness"})}
 _SIZE_WORDS = re.compile(r"height|width|depth|radius|length|thickness|diameter|size", re.IGNORECASE)
 
 

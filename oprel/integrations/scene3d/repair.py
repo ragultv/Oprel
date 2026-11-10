@@ -7,6 +7,8 @@ rounds (seen with Qwen3-8B at 4k context):
   spread_on_top  several things put "on top" of the same object      -> space them out
   drop_standing  a chair/vase/... hanging in mid-air                 -> set it down
   join_midpoint  a thin box drawn midway between two objects        -> place it between them
+  drill_bolt_holes  a bolt through a part with no hole             -> drill the ISO clearance hole
+  lift_trains    flanges / a big gear going into the floor          -> lift the run's first part
 
 The engine has the exact numbers; the model does not. Each fix edits the recipe (so it is
 saved and visible) and is reported back as a note. Anything ambiguous is left to warnings.
@@ -19,8 +21,9 @@ from typing import Any
 import numpy as np
 
 from oprel.integrations.scene3d.engine import patterns
-from oprel.integrations.scene3d.engine.compiler import CompiledObject, CompiledScene
+from oprel.integrations.scene3d.engine.compiler import CompiledObject, CompiledScene, missing_bolt_holes
 from oprel.integrations.scene3d.engine.frame import aabb, transform_points, vec3
+from oprel.integrations.scene3d.engine.schema import PORT_SIDES
 from oprel.integrations.scene3d.engine.shapes.objects import STANDING_OBJECTS
 
 TOL = 0.002
@@ -256,7 +259,108 @@ def onto_the_end(objects: list[dict[str, Any]], scene: CompiledScene) -> list[st
     return notes
 
 
+def drill_bolt_holes(objects: list[dict[str, Any]], scene: CompiledScene) -> list[str]:
+    """
+    A bolt through a part that has no hole for it: drill the ISO clearance hole where the bolt is
+    (a bolt through a plate means a hole in it; at 4k context the model has no turn left to add it).
+    """
+    by_id = {o["id"]: o for o in objects}
+    notes: list[str] = []
+    for gap in missing_bolt_holes(scene):
+        host = by_id.get(gap["host"])
+        if host is None:
+            continue
+        host["cuts"] = list(host.get("cuts") or []) + gap["cuts"]
+        size = gap["cuts"][0]["bolt"]
+        many = f"{gap['copies']} {size} holes" if gap["copies"] > 1 else f"an {size} hole"
+        notes.append(f"Drilled {many} in '{gap['host']}' for '{gap['bolt']}' (ISO clearance).")
+    return notes
+
+
+def _train_root(oid: str, by_id: dict[str, dict[str, Any]]) -> str | None:
+    """The first part of a pipe run (parts joined end to end) or gear train that `oid` belongs to."""
+    seen, node = set(), oid
+    while node in by_id and node not in seen:
+        seen.add(node)
+        o = by_id[node]
+        pl = o.get("placement") or {}
+        ref = pl.get("relative_to")
+        meshing = o.get("shape") == "gear" and by_id.get(ref, {}).get("shape") == "gear" and not pl.get("gap")
+        if ref in by_id and (pl.get("side") in PORT_SIDES or meshing):
+            node = ref
+            continue
+        return node if node != oid else None
+    return None
+
+
+def lift_trains(objects: list[dict[str, Any]], scene: CompiledScene) -> list[str]:
+    """
+    A pipe run or gear train whose wider parts go below the ground (flanges on a pipe lying on the
+    floor, a big gear meshing with a small one): lift the run's first part so its lowest part
+    stands on the ground. The parts are joined, so they can only move together.
+    """
+    by_id = {o["id"]: o for o in objects}
+    depth: dict[str, float] = {}
+    for oid, co in scene.objects.items():
+        root = _train_root(oid, by_id) if co.built is not None and not by_id.get(oid, {}).get("parent") else None
+        low = min((b[0][1] for b in _boxes(co)), default=0.0)
+        if root and low < -TOL and not by_id[root].get("placement") and not by_id[root].get("parent"):
+            depth[root] = max(depth.get(root, 0.0), -low)
+    notes = []
+    for root, d in depth.items():
+        pos = list(vec3(by_id[root].get("position")))
+        pos[1] = round(pos[1] + d, 4)
+        by_id[root]["position"] = pos
+        notes.append(f"Lifted '{root}' by {d:.3f} m so the parts joined to it stand on the ground, not in it.")
+    return notes
+
+
+def close_measured_gaps(objects: list[dict[str, Any]], scene: CompiledScene) -> list[str]:
+    """
+    Two things set side by side by coordinates with a gap exactly one of their widths (or half
+    of one): a position measured from the wrong point, not a spacing anyone asked for. Seen with
+    Qwen3-8B, "a riser flush at the casting's left end": the riser's centre at x = -0.3 instead of
+    -0.2, leaving a gap the size of the riser. Move the later one over to touch.
+    """
+    by_id = {o["id"]: o for o in objects}
+    loose = [o for o in objects if not o.get("placement") and not o.get("parent") and not o.get("pattern")
+             and not any(vec3(o.get("rotation"))) and o["id"] in scene.objects
+             and scene.objects[o["id"]].built is not None and len(scene.objects[o["id"]].instances) == 1]
+    notes: list[str] = []
+    for i, later in enumerate(loose):
+        b = scene.objects[later["id"]].bbox
+        for earlier in loose[:i]:
+            a = scene.objects[earlier["id"]].bbox
+            if abs(a[0][1] - b[0][1]) > TOL:
+                continue  # not standing at the same level
+            for axis, other in ((0, 2), (2, 0)):
+                if abs((a[0][other] + a[1][other]) - (b[0][other] + b[1][other])) / 2 > TOL:
+                    continue  # not lined up across
+                gap = max(b[0][axis] - a[1][axis], a[0][axis] - b[1][axis])
+                sizes = [a[1][axis] - a[0][axis], b[1][axis] - b[0][axis]]
+                right = (b[0][axis] + b[1][axis]) > (a[0][axis] + a[1][axis])
+                if gap < -TOL:
+                    # Its centre put on the other's end face (Qwen3-8B: an ingate at x = 0.15, the casting's
+                    # right end), half of it inside: push it out to touch, if it is the smaller one.
+                    if not (sizes[1] < sizes[0] and abs(-gap - sizes[1] / 2) <= TOL):
+                        continue
+                    shift = -gap if right else gap
+                    gap = -gap
+                elif gap <= TOL or not any(abs(gap - s * f) <= TOL for s in sizes for f in (1, 0.5)):
+                    continue
+                else:
+                    shift = -gap if right else gap
+                pos = list(vec3(by_id[later["id"]].get("position")))
+                pos[axis] = round(pos[axis] + shift, 6)
+                by_id[later["id"]]["position"] = pos
+                notes.append(f"Moved '{later['id']}' {gap:.3g} m to touch '{earlier['id']}' (its position was measured "
+                             f"from the wrong point: {'half of it was inside' if shift * (1 if right else -1) > 0 else 'the gap was exactly a width'}).")
+                break
+    return notes
+
+
 def repair(objects: list[dict[str, Any]], scene: CompiledScene) -> list[str]:
     """Apply every fix to `objects` in place. Returns notes; empty when nothing changed."""
-    return (onto_the_end(objects, scene) or join_midpoint_boxes(objects, scene) or spread_on_top(objects, scene) or fit_supports(objects, scene)
-            or close_gaps(objects, scene) or drop_standing_objects(objects, scene))
+    return ((drill_bolt_holes(objects, scene) + lift_trains(objects, scene)) or close_measured_gaps(objects, scene)
+            or onto_the_end(objects, scene) or join_midpoint_boxes(objects, scene) or spread_on_top(objects, scene)
+            or fit_supports(objects, scene) or close_gaps(objects, scene) or drop_standing_objects(objects, scene))

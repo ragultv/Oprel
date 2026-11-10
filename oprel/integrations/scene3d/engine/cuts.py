@@ -66,10 +66,46 @@ def _words(side: str | None) -> list[str]:
     return (side or "").replace("-", " ").replace("_", " ").replace(",", " ").split()
 
 
+_FASTENER_KEYS = ("bolt", "screw", "for")
+_HOLE_FLAGS = ("tapped", "threaded", "thread", "countersunk")
+
+
+def fastener_hole(cut: Any) -> Any:
+    """
+    A hole named by the bolt it is for: {"bolt": "M10", "position": ...} (also {"shape": "bolt",
+    "params": {"size": "M10"}}) -> the ISO 273 clearance hole; "tapped": true -> the tap drill;
+    "countersunk": true -> clearance hole with a 90 degree countersink flush with the top.
+    """
+    if not isinstance(cut, dict):
+        return cut
+    params = cut.get("params") if isinstance(cut.get("params"), dict) else {}
+    size = next((cut[k] for k in _FASTENER_KEYS if cut.get(k)), None)
+    if size is None and (cut.get("shape") in ("bolt", "screw", "hole")
+                         or (cut.get("shape") == "cylinder" and "radius" not in params)):
+        size = params.get("size") or params.get("bolt")
+    if size is None:
+        return cut
+    from oprel.integrations.scene3d.engine import standards
+    row, _ = standards.metric(size)
+    flag = {k: bool(cut.get(k) or params.get(k)) for k in _HOLE_FLAGS}
+    out = {k: v for k, v in cut.items() if k not in (*_FASTENER_KEYS, *_HOLE_FLAGS, "params", "shape")}
+    if flag["countersunk"] or params.get("head") == "countersunk":
+        # head diameter 2d at 90 degrees, plus a little clearance (both cones are faceted)
+        r, head = row.clearance / 2000, row.d / 1000 * 1.02 + 0.0002
+        tail = 0.5  # down through any part
+        out.update(shape="lathe", params={"profile": [[r, 0], [r, tail], [head, tail + head - r]]})
+        out["side"] = " ".join(dict.fromkeys(["top", *_words(out.get("side"))]))
+        return out
+    radius = (row.tap_drill if flag["tapped"] or flag["threaded"] or flag["thread"] else row.clearance) / 2000
+    out.update(shape="cylinder", params={"radius": radius, **({"height": params["height"]} if params.get("height") else {})})
+    return out
+
+
 def check(cuts: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
     """Validate the cuts of one object; returns them with defaults filled. Raises ToolArgumentError."""
     if not cuts:
         return []
+    cuts = [fastener_hole(c) for c in cuts]
     cuts = validate_arguments({"type": "object", "properties": {"cuts": _FULL_SCHEMA}}, {"cuts": cuts})["cuts"]
     out, total = [], 0
     for i, cut in enumerate(cuts):
@@ -133,8 +169,14 @@ def as_solid(mesh: trimesh.Trimesh, what: str) -> m3.Manifold:
 
 def to_trimesh(m: m3.Manifold) -> trimesh.Trimesh:
     out = m.to_mesh()
-    mesh = trimesh.Trimesh(np.asarray(out.vert_properties)[:, :3].astype(float),
-                           np.asarray(out.tri_verts), process=True)
+    verts, faces = np.asarray(out.vert_properties)[:, :3].astype(float), np.asarray(out.tri_verts)
+    mesh = trimesh.Trimesh(verts, faces, process=True)
+    if not mesh.is_watertight:
+        # Manifold keeps two vertices apart where surfaces only touch (a thread crest on a shank);
+        # merging them by position pinches the surface. Its own mesh is closed: keep that.
+        raw = trimesh.Trimesh(verts, faces, process=False)
+        if raw.is_watertight:
+            mesh = raw
     if mesh.volume < 0:
         mesh.invert()
     return mesh

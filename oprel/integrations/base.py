@@ -62,6 +62,23 @@ class Integration(ABC):
     # False: ask local thinking models (Qwen3, ...) to skip their reasoning step while this
     # integration's tools are active, for tools whose results already check the model's work.
     allow_thinking: bool = True
+    # Two-step requests (server/tools/loop.py): when set and wants_plan() says so, the model first
+    # writes a plan with this prompt and no tools (room to reason), then calls the tools with the
+    # plan attached and `planned_hint` (default: system_hint) as its instructions.
+    planner_prompt: str = ""
+    planned_hint: str = ""
+
+    def wants_plan(self, text: str) -> bool:
+        """Should this user message be planned before the tools are called?"""
+        return False
+
+    def clean_plan(self, plan: str) -> str:
+        """Fix the planner's known slips before the tool step sees the plan."""
+        return plan
+
+    def plan_request(self, text: str, plan: str) -> str:
+        """The user message the tool step sees: the request with the plan attached."""
+        return f"{text}\n\nPlan:\n{plan}"
 
     # -- config ------------------------------------------------------------
 

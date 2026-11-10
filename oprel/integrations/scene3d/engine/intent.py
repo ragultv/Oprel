@@ -46,6 +46,14 @@ SHAPE_WORDS: dict[str, tuple[str, dict[str, Any]]] = {
     "i_beam": ("beam", {"section": "i"}), "channel": ("beam", {"section": "channel"}),
     "angle_iron": ("beam", {"section": "angle"}), "coil": ("spring", {}), "knob": ("sphere", {}),
     "grip": ("handle", {}), "pull": ("handle", {"orientation": "horizontal"}),
+    # standard parts
+    "screw": ("bolt", {}), "hex_bolt": ("bolt", {}), "machine_screw": ("bolt", {}), "set_screw": ("bolt", {}),
+    "cap_screw": ("bolt", {"head": "socket"}), "socket_screw": ("bolt", {"head": "socket"}),
+    "allen_bolt": ("bolt", {"head": "socket"}), "countersunk_screw": ("bolt", {"head": "countersunk"}),
+    "fastener": ("bolt", {}), "hex_nut": ("nut", {}), "locknut": ("nut", {}), "lock_nut": ("nut", {}),
+    "cog": ("gear", {}), "cogwheel": ("gear", {}), "gearwheel": ("gear", {}), "spur_gear": ("gear", {}),
+    "pinion": ("gear", {}), "helical_gear": ("gear", {"helix_angle": 20}),
+    "pipe_flange": ("flange", {}), "blind_flange": ("flange", {"blind": True}),
     # furniture
     "seat": ("chair", {}), "armchair": ("chair", {"arms": True}), "couch": ("sofa", {}), "shelf": ("bookshelf", {}),
     "floor_lamp": ("lamp", {}), "flower_vase": ("vase", {}),
